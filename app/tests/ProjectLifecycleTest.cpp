@@ -98,6 +98,9 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
+#include <QRadioButton>
+#include <limits>
 #include <QAbstractItemView>
 #include <QContextMenuEvent>
 #include <QComboBox>
@@ -373,6 +376,24 @@ QImage placedLayerFile(const QString &manifestPath, const QString &file)
             }
         }
     return pixels;
+}
+
+// THE FILE A SAVED PROJECT HAS AN IMAGE IN (the safe save, 2026-11-23). A save writes over
+// nothing: a picture that changed goes into a new file - its id name with "~2", "~3", ... before
+// ".png" (ProjectIO::imageNameVariant) - and the project file names it. So which file holds a
+// panel's layer is read from the project file, never computed from the ids. `layer` < 0: the
+// panel's flatten. Empty when the project file names none.
+QString savedImageFile(const QString &manifestPath, int panel, int layer, int scene = 0)
+{
+    QFile f(manifestPath);
+    if (!f.open(QIODevice::ReadOnly))
+        return QString();
+    const QJsonObject p = QJsonDocument::fromJson(f.readAll()).object().value(QStringLiteral("scenes")).toArray()
+                              .at(scene).toObject().value(QStringLiteral("panels")).toArray().at(panel).toObject();
+    const QString name = layer < 0 ? p.value(QStringLiteral("pixmapFile")).toString()
+                                   : p.value(QStringLiteral("layers")).toArray().at(layer).toObject()
+                                         .value(QStringLiteral("imageFile")).toString();
+    return name.isEmpty() ? QString() : QFileInfo(manifestPath).absolutePath() + QStringLiteral("/") + name;
 }
 
 // What a save writes for a layer: its drawn tiles, or one pixel when nothing is.
@@ -4395,22 +4416,35 @@ void runIncrementalSavePass(const QString &scratch)
                      : QStringLiteral("p_%1_l_%2.png")
                            .arg(stem, ProjectIO::imageIdStem(panel->layers.at(k).id));
     };
-    const QString strokeFile = nameOf(strokeP, strokeK);
-    const QString flatFile = nameOf(strokeP, -1);
-    QStringList expected{strokeFile, flatFile};
-    expected.sort();
-    const QImage onDiskBefore = placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile);
+    // (The safe save, 2026-11-23) WHICH FILE an image is in is read from the project file: a
+    // picture that changed goes into a NEW file - its id name with "~n" before ".png" - and
+    // nothing is written over. (Until then these checks computed the one name and expected
+    // the save to rewrite that file.)
+    auto fileOf = [&proj](int p, int k) { return QFileInfo(savedImageFile(proj, p, k)).fileName(); };
+    const QString strokeFileBefore = fileOf(strokeP, strokeK), flatFileBefore = fileOf(strokeP, -1);
+    const QImage onDiskBefore = placedLayerFile(proj, assets + QStringLiteral("/") + strokeFileBefore);
     before = stamps(assets);
     save(proj);
-    check(QStringLiteral("(sv.2) a stroke on one layer rewrites exactly that "
-                         "layer's image and its panel's flatten"),
-          written() == expected && touched(before, assets) == expected,
-          QStringLiteral("expected [%1], written [%2], on disk [%3]")
-              .arg(expected.join(QStringLiteral(", ")),
+    const QString strokeFile = fileOf(strokeP, strokeK);
+    const QString flatFile = fileOf(strokeP, -1);
+    QStringList expected{strokeFile, flatFile};
+    expected.sort();
+    check(QStringLiteral("(sv.2) a stroke on one layer writes exactly that layer's image and its panel's "
+                         "flatten - each into a new file of its own name (\"~n\" before \".png\"), over "
+                         "nothing: the two files they were in are still there, untouched"),
+          written() == expected && touched(before, assets) == expected
+              && strokeFile != strokeFileBefore && flatFile != flatFileBefore
+              && strokeFileBefore == nameOf(strokeP, strokeK) && flatFileBefore == nameOf(strokeP, -1)
+              && ProjectIO::imageBaseName(strokeFile) == strokeFileBefore
+              && ProjectIO::imageBaseName(flatFile) == flatFileBefore
+              && before.contains(strokeFileBefore) && before.contains(flatFileBefore)
+              && stamps(assets).value(strokeFileBefore) == before.value(strokeFileBefore)
+              && stamps(assets).value(flatFileBefore) == before.value(flatFileBefore),
+          QStringLiteral("were in [%1, %2]; now in [%3], written [%4], on disk [%5]")
+              .arg(strokeFileBefore, flatFileBefore, expected.join(QStringLiteral(", ")),
                    written().join(QStringLiteral(", ")),
                    touched(before, assets).join(QStringLiteral(", "))));
-    check(QStringLiteral("(sv.2) CONTROL: the rewritten file really holds the "
-                         "stroke now"),
+    check(QStringLiteral("(sv.2) CONTROL: the new file really holds the stroke now"),
           placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile) != onDiskBefore
               && placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile)
                      == panelAt(strokeP)->layers.at(strokeK).pixels());
@@ -4429,15 +4463,21 @@ void runIncrementalSavePass(const QString &scratch)
           panelAt(strokeP)->layers.at(strokeK).pixels() == preStroke);
     before = stamps(assets);
     save(proj);
-    check(QStringLiteral("(sv.3) save, Undo, save again: the layer and its "
-                         "flatten are rewritten"),
-          written() == expected && touched(before, assets) == expected,
-          QStringLiteral("written [%1], on disk [%2]")
-              .arg(written().join(QStringLiteral(", ")),
+    const QString undoneFile = fileOf(strokeP, strokeK), undoneFlat = fileOf(strokeP, -1);
+    QStringList expectedUndone{undoneFile, undoneFlat};
+    expectedUndone.sort();
+    check(QStringLiteral("(sv.3) save, Undo, save again: the layer and its flatten are written again - into "
+                         "new files once more, the stroke's two files untouched"),
+          written() == expectedUndone && touched(before, assets) == expectedUndone
+              && undoneFile != strokeFile && undoneFlat != flatFile
+              && ProjectIO::imageBaseName(undoneFile) == strokeFileBefore
+              && stamps(assets).value(strokeFile) == before.value(strokeFile)
+              && stamps(assets).value(flatFile) == before.value(flatFile),
+          QStringLiteral("now in [%1], written [%2], on disk [%3]")
+              .arg(expectedUndone.join(QStringLiteral(", ")), written().join(QStringLiteral(", ")),
                    touched(before, assets).join(QStringLiteral(", "))));
-    check(QStringLiteral("(sv.3) ...and the file holds the pre-stroke pixels "
-                         "again"),
-          placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile) == preStroke);
+    check(QStringLiteral("(sv.3) ...and the file the project names now holds the pre-stroke pixels again"),
+          placedLayerFile(proj, assets + QStringLiteral("/") + undoneFile) == preStroke);
 
     // --- (sv.4) a PNG deleted behind the app's back is written again -----
     const QString victim = nameOf(2, 1);
@@ -4467,12 +4507,17 @@ void runIncrementalSavePass(const QString &scratch)
                          "layer"),
           placedLayerFile(proj, assets + QStringLiteral("/") + replaced)
               != panelAt(1)->layers.at(1).pixels());
+    const Stamps foreign = stamps(assets);
     save(proj);
-    check(QStringLiteral("(sv.5) a PNG another program wrote over is rewritten "
-                         "with the layer"),
-          written() == QStringList{replaced}
-              && placedLayerFile(proj, assets + QStringLiteral("/") + replaced)
-                     == panelAt(1)->layers.at(1).pixels(),
+    const QString rewritten = fileOf(1, 1);
+    check(QStringLiteral("(sv.5) a PNG another program wrote over is not taken for the layer: the layer is "
+                         "written again, into a new file the project names from now on, and the other "
+                         "program's file is left as it is"),
+          written() == QStringList{rewritten} && rewritten != replaced
+              && ProjectIO::imageBaseName(rewritten) == replaced
+              && placedLayerFile(proj, assets + QStringLiteral("/") + rewritten)
+                     == panelAt(1)->layers.at(1).pixels()
+              && stamps(assets).value(replaced) == foreign.value(replaced),
           written().join(QStringLiteral(", ")));
 
     // --- (sv.6) Save As to a new folder writes every image ---------------
@@ -4720,23 +4765,31 @@ void runSaveFailurePass(const QString &scratch)
     QFile::remove(assetsDir); // let the next case have its folder back
 
     // --- (i.2) one image of many cannot be written -----------------------
-    // A directory standing where a PNG must go: QImage::save cannot write
+    // A directory standing where a PNG must be made: the writer cannot make
     // it, whatever else on the disk is fine. This is disk-full-at-file-17
     // and antivirus-holds-one-file, without needing either.
     check(QStringLiteral("(i) a good save in between restores the baseline"),
           window.saveProjectForTest(proj));
     pump(300);
-    // Panel 1's layer 2, by the id name the save gives it (2026-11-04).
+    // Panel 1's layer 2. (The safe save, 2026-11-23) a picture that changed is
+    // made in a NEW file - the next free "~n" of its id name, by way of
+    // "<that name>.part" - so that is where the directory stands. Until then
+    // it stood where the layer's own file was, which the save wrote over; a
+    // directory there stops nothing now, as nothing is written there.
     const QString onePng = [&] {
         const Panel *p0 = window.scenesForTest().at(0)->panels.at(0);
-        return assetsDir + QStringLiteral("/p_%1_l_%2.png")
-                               .arg(ProjectIO::imageIdStem(p0->id),
-                                    ProjectIO::imageIdStem(p0->layers.at(1).id));
+        const QString base = QStringLiteral("p_%1_l_%2.png")
+                                 .arg(ProjectIO::imageIdStem(p0->id),
+                                      ProjectIO::imageIdStem(p0->layers.at(1).id));
+        for (int n = 1;; ++n) {
+            const QString file = assetsDir + QStringLiteral("/") + ProjectIO::imageNameVariant(base, n);
+            if (!QFileInfo::exists(file))
+                return file + QStringLiteral(".part");
+        }
     }();
-    QFile::remove(onePng);
-    QDir().mkpath(onePng); // a DIRECTORY where the image belongs
-    check(QStringLiteral("(i) control: one image path is now a directory"),
-          QFileInfo(onePng).isDir());
+    QDir().mkpath(onePng); // a DIRECTORY where the image's new file is made
+    check(QStringLiteral("(i) control: the place one image's new file is made at is now a directory"),
+          QFileInfo(onePng).isDir() && onePng.endsWith(QStringLiteral(".png.part")));
 
     editVisibly(48);
     check(QStringLiteral("(i) control: dirty again before the failing save"),
@@ -4767,7 +4820,9 @@ void runSaveFailurePass(const QString &scratch)
     // --- (i.3) the manifest itself cannot be written ---------------------
     // A directory where the .sankotv goes. The images all write fine, so
     // this is specifically the manifest leg: it must not clear the flag
-    // either, and QSaveFile must leave nothing half-written behind.
+    // either, and the writer must leave nothing half-written behind (it was
+    // QSaveFile's temp file; since the safe save, 2026-11-23, the project
+    // file's own "<name>.sankotv.part").
     QDir(onePng).removeRecursively();
     check(QStringLiteral("(i) a good save in between restores the baseline"),
           window.saveProjectForTest(proj));
@@ -4786,7 +4841,7 @@ void runSaveFailurePass(const QString &scratch)
           !okManifest);
     check(QStringLiteral("(i.3) ...and the project is STILL DIRTY"),
           window.isDirty());
-    check(QStringLiteral("(i.3) ...and QSaveFile left no temp file behind"),
+    check(QStringLiteral("(i.3) ...and the writer left no temp file behind"),
           QDir(dir).entryList({QStringLiteral("*.sankotv.*")},
                               QDir::Files).isEmpty(),
           QDir(dir).entryList({QStringLiteral("*.sankotv.*")},
@@ -8533,15 +8588,21 @@ bool copyFolder(const QString &from, const QString &to)
 
 // Everything in an assets folder that is not a panel image: the audio
 // files - and any half-written leftover, which is what this is for.
+// (The safe save, 2026-11-23) ...and not the kept previous saved version's own
+// file, which a save now leaves there by design (ProjectIO::previousVersionFile):
+// that one name is left out, nothing else - a ".part" a save died in is listed
+// like any leftover (the control at the head of the (aq) pass).
 QStringList media(const QString &project)
 {
     QStringList found;
     const QFileInfo info(project);
     const QDir dir(info.absolutePath() + QStringLiteral("/")
                    + info.completeBaseName() + QStringLiteral("_assets"));
+    const QString previous = QFileInfo(ProjectIO::previousVersionFile(project)).fileName();
     for (const QString &name :
          dir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
-        if (!name.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive))
+        if (!name.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)
+            && name.compare(previous, Qt::CaseInsensitive) != 0)
             found << name;
     return found;
 }
@@ -8638,6 +8699,31 @@ void runAudioTravelsPass(const QString &scratch)
               && fileHash(src) != fileHash(other));
     const QByteArray srcHash = fileHash(src);
     const QString themeName = QStringLiteral("theme.wav");
+    {
+        // The list this pass reads its folders with (media()) leaves out ONE name since
+        // the safe save (2026-11-23): the kept previous saved version's own file. Shown
+        // here on a folder of its own: that file is not listed; a ".part" a save died in,
+        // a file of another name and a folder all still are.
+        const QString probe = base + QStringLiteral("/probe/Probe.sankotv");
+        const QString probeAssets = base + QStringLiteral("/probe/Probe_assets");
+        QDir().mkpath(probeAssets + QStringLiteral("/a folder"));
+        for (const QString &name : {QStringLiteral("_previous_saved_version.json"),
+                                    QStringLiteral("_previous_saved_version.json.part"),
+                                    QStringLiteral("p_0123456789ab.png"), QStringLiteral("p_0123456789ab~2.png.part"),
+                                    QStringLiteral("left.wav.tmp")}) {
+            QFile f(probeAssets + QStringLiteral("/") + name);
+            if (f.open(QIODevice::WriteOnly))
+                f.write("x");
+        }
+        check(QStringLiteral("(aq) control (2026-11-23): the list of what an images folder holds besides "
+                             "pictures leaves out the kept previous saved version's file and nothing else - "
+                             "a \".part\" beside it, a picture's \".part\", a leftover of another name and a "
+                             "folder are all listed"),
+              media(probe) == QStringList({QStringLiteral("_previous_saved_version.json.part"),
+                                           QStringLiteral("a folder"), QStringLiteral("left.wav.tmp"),
+                                           QStringLiteral("p_0123456789ab~2.png.part")}),
+              media(probe).join(QStringLiteral(", ")));
+    }
 
     // ---- import copies the file in; save names it relative -----------------
     {
@@ -13230,9 +13316,13 @@ void runBlockedWritePass(const QString &scratch)
           otherText.left(160));
 
     // AN OVERWRITE REFUSED, NEW FILES ALLOWED (2026-11-08, the user's hand test under
-    // Norton 360): a project saved in Documents, then its first image refused to SankoTV
+    // Norton 360): a project saved in Documents, then a file of it refused to SankoTV
     // as Norton refused it - write denied on that file alone, the folder still taking
-    // new files - and the panel changed so the image must be written again.
+    // new files - and the panel changed so its picture must be written again.
+    // (The safe save, 2026-11-23) Until then the refused file was the project's first
+    // IMAGE, which the save wrote over. A save writes a changed picture into a new file
+    // now, so a refused image stops nothing (the first check below); the one file a save
+    // still replaces is the PROJECT FILE, and that is the refusal the words are for.
     {
         const QString keep = docs + QStringLiteral("_keep");
         QDir().mkpath(keep);
@@ -13257,36 +13347,73 @@ void runBlockedWritePass(const QString &scratch)
                 : QStringList{QDir::toNativeSeparators(file), QStringLiteral("/remove:d"), QStringLiteral("*S-1-1-0")};
             return QProcess::execute(QStringLiteral("icacls"), args) == 0;
         };
-        auto change = [&] {
+        auto change = [&](const QColor &colour) {
             if (!panel)
                 return;
             for (Layer &layer : panel->layers)
                 if (!isGroupLayer(layer) && layer.type != QLatin1String("background")) {
                     layer.unfoldNow();
                     QPainter painter(&layer.image);
-                    painter.fillRect(QRect(10, 10, 30, 30), QColor(250, 20, 120));
+                    painter.fillRect(QRect(10, 10, 30, 30), colour);
                     break;
                 }
         };
-        const bool fileDenied = first && QFileInfo::exists(image) && denyFile(image, true);
+        auto bytesOf = [](const QString &file) {
+            QFile f(file);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        auto filesIn = [](const QString &folder) {
+            return QDir(folder).entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        };
+        // 1. A PICTURE'S FILE REFUSED, as Norton refused it that day: no save writes there now.
+        // (The file's bytes are read before the refusal and after it is lifted: the same
+        // deny that refuses a writer refuses this reader too.)
+        const QByteArray imageBytes = bytesOf(image);
+        const bool imageDenied = first && QFileInfo::exists(image) && denyFile(image, true);
+        const bool imageRefused = ProtectedFolders::overwriteDenied(image);
+        change(QColor(250, 20, 120));
+        titles.clear();
+        const bool savedPastImage = window.saveProjectForTest(kept);
+        pump(300);
+        const QString imageNow = savedImageFile(kept, 0, -1);
+        denyFile(image, false);
+        check(QStringLiteral("(cf) A PICTURE'S FILE REFUSED WHILE NEW FILES ARE ALLOWED (as Norton 360 refused it on "
+                             "2026-11-08) STOPS NO SAVE ANY MORE: the changed picture goes into a new file, the "
+                             "save completes with nothing said and the project stays where it is; the refused "
+                             "file holds the bytes it held"),
+              imageDenied && imageRefused && savedPastImage && titles.isEmpty() && window.projectPathForTest() == kept
+                  && !imageNow.isEmpty() && QFileInfo(imageNow) != QFileInfo(image) && QFileInfo::exists(imageNow)
+                  && bytesOf(image) == imageBytes && !imageBytes.isEmpty(),
+              QStringLiteral("denied %1 (refused to a writer %2), saved %3, said %4; the picture is in %5 now")
+                  .arg(imageDenied).arg(imageRefused).arg(savedPastImage).arg(titles.size())
+                  .arg(QFileInfo(imageNow).fileName()));
+
+        // 2. THE PROJECT FILE REFUSED: the one file a save still replaces.
+        const QStringList folderBefore = filesIn(keep + QStringLiteral("/Kept_assets"));
+        const QByteArray keptBytes = bytesOf(kept);
+        const bool fileDenied = first && denyFile(kept, true);
         const bool newStillAllowed = !ProtectedFolders::writeDenied(keep);
-        change();
+        change(QColor(20, 200, 250));
         titles.clear();
         rescued = free + QStringLiteral("/Rescued3.sankotv");
         const bool savedOver = window.saveProjectForTest(kept);
         pump(400);
         const QString overText = window.lastWriteFailureForTest();
-        check(QStringLiteral("(cf) AN OVERWRITE REFUSED WHILE NEW FILES ARE ALLOWED (Norton 360, 2026-11-08) gets "
-                             "the neutral words - \"Windows or your antivirus blocked SankoTV from saving to "
-                             "Documents ...\" - and the Save As, which saves elsewhere"),
+        denyFile(kept, false);
+        check(QStringLiteral("(cf) AN OVERWRITE REFUSED WHILE NEW FILES ARE ALLOWED (Norton 360, 2026-11-08) - the "
+                             "project file's, the one file a save still replaces - gets the neutral words - "
+                             "\"Windows or your antivirus blocked SankoTV from saving to Documents ...\" - and the "
+                             "Save As, which saves elsewhere; the refused save wrote no picture beside the "
+                             "project file it could not replace, and that file holds the bytes it held"),
               fileDenied && newStillAllowed && !savedOver
                   && overText.contains(QStringLiteral(
                       "Windows or your antivirus blocked SankoTV from saving to Documents. Allow SankoTV in "
                       "your security settings, or save to another folder."))
-                  && titles.size() == 1 && window.projectPathForTest() == rescued && QFileInfo::exists(rescued),
-              QStringLiteral("denied %1, new files allowed %2, saved %3, offered %4; text: %5")
-                  .arg(fileDenied).arg(newStillAllowed).arg(savedOver).arg(titles.size()).arg(overText.left(200)));
-        denyFile(image, false);
+                  && titles.size() == 1 && window.projectPathForTest() == rescued && QFileInfo::exists(rescued)
+                  && filesIn(keep + QStringLiteral("/Kept_assets")) == folderBefore && bytesOf(kept) == keptBytes,
+              QStringLiteral("denied %1, new files allowed %2, saved %3, offered %4, folder as it was %5; text: %6")
+                  .arg(fileDenied).arg(newStillAllowed).arg(savedOver).arg(titles.size())
+                  .arg(filesIn(keep + QStringLiteral("/Kept_assets")) == folderBefore).arg(overText.left(200)));
 
         // Controls: the same refusal in a folder that is not protected keeps the save's
         // own message; and a file read-only by its own attribute in a protected one is
@@ -13295,22 +13422,23 @@ void runBlockedWritePass(const QString &scratch)
         QDir().mkpath(plain);
         const QString plainProject = plain + QStringLiteral("/Plain.sankotv");
         const bool plainFirst = window.saveProjectForTest(plainProject);
-        QString plainImage = plain + QStringLiteral("/")
-            + QFileInfo(image).dir().dirName() + QStringLiteral("/") + QFileInfo(image).fileName();
-        plainImage.replace(QStringLiteral("Kept_assets"), QStringLiteral("Plain_assets"));
-        const bool plainDenied = plainFirst && QFileInfo::exists(plainImage) && denyFile(plainImage, true);
+        const bool plainDenied = plainFirst && denyFile(plainProject, true);
         s = window.scenesForTest().value(0);
         panel = s ? s->panels.value(0) : nullptr;
-        change();
+        change(QColor(250, 20, 120));
         titles.clear();
         const bool savedPlain = window.saveProjectForTest(plainProject);
         pump(300);
         const QString plainText = window.lastWriteFailureForTest();
-        denyFile(plainImage, false);
+        denyFile(plainProject, false);
+        // What the system said is in brackets under the file's name.
+        const int says = int(plainText.indexOf(QStringLiteral("\n\n(")));
+        const bool systemSaid = says > 0 && plainText.indexOf(QLatin1Char(')'), says) > says + 5;
         check(QStringLiteral("(cf) control: the same refusal outside a protected folder keeps the save's own "
                              "message, with what the system said, and offers no Save As"),
-              plainDenied && !savedPlain && plainText.contains(QStringLiteral("The image could not be written"))
-                  && plainText.contains(QStringLiteral(" px; ")) && !plainText.contains(QStringLiteral("blocked SankoTV"))
+              plainDenied && !savedPlain && plainText.contains(QStringLiteral("This project was NOT saved."))
+                  && plainText.contains(QStringLiteral("Could not write to:"))
+                  && systemSaid && !plainText.contains(QStringLiteral("blocked SankoTV"))
                   && window.projectPathForTest() == plainProject,
               QStringLiteral("denied %1 saved %2: %3").arg(plainDenied).arg(savedPlain).arg(plainText.left(200)));
         const QString readOnly = keep + QStringLiteral("/ReadOnly.png");
@@ -15290,12 +15418,17 @@ void runRecoveryPass(const QString &scratch)
     };
     // A manifest for comparison: no header, and one spelling for the image
     // folder (the copy's is "Rec.recovery_assets", the project's "Rec_assets").
+    // (The safe save, 2026-11-23) ...and for an image's file: a Save puts a
+    // picture that changed into a new file, "<name>~n.png", where the copy -
+    // in a folder of its own, written over each time - keeps the plain name.
     auto normalised = [](QJsonObject root) {
         root.remove(QStringLiteral("recovery"));
         QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
         json.replace("Rec.recovery_assets/", "ASSETS/");
         json.replace("Rec_assets/", "ASSETS/");
-        return json;
+        QString text = QString::fromUtf8(json);
+        text.replace(QRegularExpression(QStringLiteral("~[0-9]+\\.png\"")), QStringLiteral(".png\""));
+        return text.toUtf8();
     };
     // Each stroke runs along its own row, 65 px below the last: a stroke drawn
     // inside one the layer already holds changes no pixel, so nothing is
@@ -15442,10 +15575,24 @@ void runRecoveryPass(const QString &scratch)
     check(QStringLiteral("(r1) control: a Save changes the project file's bytes and time (the measure "
                          "sees a write)"),
           bytesOf(proj) != fileBefore && mtime(proj) != fileTimeBefore);
-    check(QStringLiteral("(r1) ...and the copy's manifest was the Save's, but for the header and the "
-                         "image folder's name"),
-          !copyNorm.isEmpty() && copyNorm == normalised(manifest(proj)),
+    check(QStringLiteral("(r1) ...and the copy's manifest was the Save's, but for the header, the "
+                         "image folder's name and the \"~n\" in the names of the 2 pictures the Save put "
+                         "into new files"),
+          !copyNorm.isEmpty() && copyNorm == normalised(manifest(proj))
+              && QString::fromUtf8(QJsonDocument(manifest(proj)).toJson()).count(QRegularExpression(
+                     QStringLiteral("~[0-9]+\\.png\""))) == 2,
           QStringLiteral("%1 vs %2 bytes").arg(copyNorm.size()).arg(normalised(manifest(proj)).size()));
+    {
+        // The comparison leaves out one more thing since 2026-11-23 (the "~n"); it still sees
+        // any other difference: the Save's manifest with a layer in a file of another name.
+        QString other = QString::fromUtf8(QJsonDocument(manifest(proj)).toJson(QJsonDocument::Indented));
+        const int at = int(other.indexOf(QStringLiteral("_l_")));
+        if (at > 0)
+            other.replace(at, 3, QStringLiteral("_L_"));
+        check(QStringLiteral("(r1) control (2026-11-23): the same comparison does not take the Save's manifest "
+                             "with one layer's file under another name for the copy's"),
+              at > 0 && copyNorm != normalised(QJsonDocument::fromJson(other.toUtf8()).object()));
+    }
     // --- (r5) a clean Save removes the copy --------------------------------------
     check(QStringLiteral("(r5) A CLEAN SAVE REMOVES THE RECOVERY COPY, its manifest and images, keeps "
                          "the lock (the project is still open) and clears the bottom bar's word"),
@@ -15658,8 +15805,8 @@ void runRecoveryPass(const QString &scratch)
         const bool copied = ProjectRecovery::hasCopy(proj);
         if (copyPixels)
             *copyPixels = layerOf(0).copy();
-        if (fileLayer)
-            *fileLayer = assets + QStringLiteral("/") + nameOf(0, 1);
+        if (fileLayer) // the file the project has it in (the safe save: read, not computed)
+            *fileLayer = savedImageFile(proj, 0, 1);
         window.markCleanForTest();
         window.closeProjectForTest();
         pump(200);
@@ -16863,26 +17010,57 @@ void runStableIdsPass(const QString &scratch)
     int legacyLeft = 0;
     for (const QString &n : legacyNames)
         legacyLeft += QFileInfo::exists(oldAssets + QStringLiteral("/") + n) ? 1 : 0;
-    check(QStringLiteral("(n2) THE FIRST SAVE RENAMES: 9 files moved to their id names with the same "
-                         "bytes (none re-encoded: 9 renamed, 0 written), the position names gone, "
-                         "the manifest naming the new ones; (n5) every panel got an id on load, "
-                         "saved now"),
-          minted && window.lastSaveRenamedForTest().size() == 9 && window.lastSaveWrittenForTest().isEmpty()
-              && newNames.size() == 9 && allIdNames(newNames) && sameBytes == 9 && legacyLeft == 0
-              && idsIn(manifest(oldProj)) == mintedIds && stamps(oldAssets).size() == 9,
+    // (The safe save, 2026-11-23) Until then the first save RENAMED the nine files to their
+    // id names. A rename before the project file is switched takes a file from under the
+    // project file still on disk, so nothing is renamed any more: the files stay where they
+    // are, under their position names, and the manifest goes on naming them - each until
+    // its picture changes, which goes into a file under its id name (the check after (n7)).
+    check(QStringLiteral("(n2) THE FIRST SAVE OF A PROJECT SAVED BY POSITION RENAMES AND WRITES NOTHING: its 9 "
+                         "files stay where they are under their position names, each with the bytes and the "
+                         "time it had, and the manifest names them still; (n5) every panel got an id on "
+                         "load, saved now"),
+          minted && window.lastSaveRenamedForTest().isEmpty() && window.lastSaveWrittenForTest().isEmpty()
+              && newNames.size() == 9 && bare(newNames) == legacyNames && sameBytes == 9 && legacyLeft == 9
+              && idsIn(manifest(oldProj)) == mintedIds && stamps(oldAssets) == legacyStamps,
           QStringLiteral("minted %1 renamed %2 written %3 same bytes %4 legacy left %5")
               .arg(minted).arg(window.lastSaveRenamedForTest().size()).arg(window.lastSaveWrittenForTest().size())
               .arg(sameBytes).arg(legacyLeft));
-    // Control: a second save renames and writes nothing; the pixels are the
-    // same picture under the new names (n7).
+    // Control: a second save writes nothing either; the pixels are the same
+    // picture (n7).
     save(oldProj);
-    check(QStringLiteral("(n2) control: the next save renames and writes nothing; (n7) the panel's "
-                         "picture is the one it was before the rename"),
+    check(QStringLiteral("(n2) control: the next save renames and writes nothing either; (n7) the panel's "
+                         "picture is the one it was"),
           window.lastSaveRenamedForTest().isEmpty() && window.lastSaveWrittenForTest().isEmpty()
               && panels().at(0)->flattenedPixmap().toImage() == pixelsBefore);
-    check(QStringLiteral("(n7) ...and reopening the migrated project gives the same picture"),
+    check(QStringLiteral("(n7) ...and reopening the project, saved with its ids now, gives the same picture"),
           window.loadProjectForTest(oldProj) && [&] { pump(400); return true; }()
               && panels().at(0)->flattenedPixmap().toImage() == pixelsBefore);
+    {
+        // The position names go as their pictures change.
+        auto legacyOnDisk = [&] {
+            int n = 0;
+            for (const QString &name : legacyNames)
+                n += QFileInfo::exists(oldAssets + QStringLiteral("/") + name) ? 1 : 0;
+            return n;
+        };
+        paint();
+        save(oldProj);
+        int idNamed = 0, positionNamed = 0;
+        for (const QString &name : bare(namesIn(manifest(oldProj))))
+            (ProjectIO::isIdImageName(name) ? idNamed : positionNamed) += 1;
+        const int afterChange = legacyOnDisk();
+        window.undoActionForTest()->trigger();
+        pump(300);
+        save(oldProj);
+        check(QStringLiteral("(n2) A PICTURE OF IT THAT CHANGES GOES INTO A FILE UNDER ITS ID NAME: after a stroke "
+                             "the manifest names 2 id-named files (the layer, its panel's flatten) and 7 "
+                             "position-named ones, and all 9 old files are still on disk (the previous saved "
+                             "version names them); after the next save that changes those two again, the 2 "
+                             "position-named files no saved version names any more are gone"),
+              idNamed == 2 && positionNamed == 7 && afterChange == 9 && legacyOnDisk() == 7,
+              QStringLiteral("named by id %1, by position %2; old files on disk %3, then %4").arg(idNamed)
+                  .arg(positionNamed).arg(afterChange).arg(legacyOnDisk()));
+    }
 
     // --- (n3) two projects in one folder share no name ----------------------------
     const QString other = writeProject(dir, QStringLiteral("Other"), QSize(960, 540), 24, 1, 3);
@@ -16907,9 +17085,21 @@ void runStableIdsPass(const QString &scratch)
     int present = 0;
     for (const QString &n : copyNames)
         present += QFileInfo::exists(dir + QStringLiteral("/as/") + n) ? 1 : 0;
-    check(QStringLiteral("(n4) SAVE AS copies every image under the same id names into the new "
-                         "project's folder"),
-          bare(copyNames) == bare(namesIn(manifest(proj))) && present == copyNames.size()
+    // (The safe save, 2026-11-23) The project holds a picture written again by a later save in a
+    // "~n" file; the copy's folder is new, so there every picture is under its plain id name.
+    auto plain = [&bare](const QStringList &names) {
+        QStringList p;
+        for (const QString &n : bare(names))
+            p << ProjectIO::imageBaseName(n);
+        p.sort();
+        return p;
+    };
+    check(QStringLiteral("(n4) SAVE AS copies every image into the new project's folder under its id name - "
+                         "the plain one: the pictures the project itself holds in \"~n\" files (written "
+                         "again by a later save) are under their plain names in the copy"),
+          plain(copyNames) == plain(namesIn(manifest(proj))) && bare(copyNames) == plain(copyNames)
+              && bare(namesIn(manifest(proj))) != plain(namesIn(manifest(proj)))
+              && present == copyNames.size()
               && copyNames.first().startsWith(QStringLiteral("IdsCopy_assets/")),
           QStringLiteral("%1 of %2 present").arg(present).arg(copyNames.size()));
 
@@ -16938,9 +17128,14 @@ void runStableIdsPass(const QString &scratch)
             return n;
         };
         // Delete the last panel (panel 3) and save. The folder now holds 13
-        // files: the 9 in use, the 3 of the clone deleted in (n1) (nothing
-        // can bring it back: the history went with the reload), and the
-        // legacy-named dummy.
+        // files: the 6 in use, the 3 of the panel just deleted, the 3 of the
+        // clone deleted in (n1) (nothing can bring it back: the history went
+        // with the reload), and the legacy-named dummy.
+        // (The safe save, 2026-11-23) A deleted panel's files are held by TWO
+        // things now: the undo history, as before, and the previous saved
+        // version - the project as it was saved with the panel, which File >
+        // Restore Previous Saved Version... opens. Until then the history's
+        // going was enough for Clean Up to remove them.
         clickClip(r, 2);
         page->deleteSelectedPanelConfirmedForTest();
         pump(300);
@@ -16949,33 +17144,53 @@ void runStableIdsPass(const QString &scratch)
         const int heldRemoved = window.cleanUpProjectFolderForTest(true);
         const int stillThere = exist(doomed);
         stack->clear(); // the delete can no longer be undone
+        const int keptByPrevious = window.cleanUpProjectFolderForTest(true);
+        const int stillPrevious = exist(doomed);
+        // The next save that changes the project (its frame rate: no picture): from
+        // then on the previous saved version is the project without the panel.
+        window.applyProjectSettingsForTest(window.projectNameForTest(), 25);
+        save(proj);
+        stack->clear();
         const int removed = window.cleanUpProjectFolderForTest(true);
         const int gone = doomed.size() - exist(doomed);
         check(QStringLiteral("(n6) CLEAN UP PROJECT FOLDER: with the deleted panel still undoable it "
                              "removes only the 3 orphan files of (n1)'s clone and keeps the deleted "
-                             "panel's 3; once the history is cleared it removes exactly those 3; the "
-                             "legacy-named file is left alone both times"),
-              beforeClean == 13 && heldRemoved == 3 && stillThere == 3 && removed == 3 && gone == 3
-                  && QFileInfo::exists(legacyDummy) && stamps(assets).size() == 7,
-              QStringLiteral("before %1 held %2 (still %3) removed %4 gone %5 legacy %6 after %7")
-                  .arg(beforeClean).arg(heldRemoved).arg(stillThere).arg(removed).arg(gone)
-                  .arg(QFileInfo::exists(legacyDummy)).arg(stamps(assets).size()));
+                             "panel's 3; with the history cleared it keeps them still (nothing removed), "
+                             "as the previous saved version - the project as saved with the panel - names "
+                             "them; once a later save has made the project without the panel the previous "
+                             "version, it removes exactly those 3; the legacy-named file is left alone "
+                             "every time"),
+              beforeClean == 13 && heldRemoved == 3 && stillThere == 3 && keptByPrevious == 0 && stillPrevious == 3
+                  && removed == 3 && gone == 3 && QFileInfo::exists(legacyDummy) && stamps(assets).size() == 7,
+              QStringLiteral("before %1 held %2 (still %3) kept by the previous version %4 (still %5) removed %6 "
+                             "gone %7 legacy %8 after %9")
+                  .arg(beforeClean).arg(heldRemoved).arg(stillThere).arg(keptByPrevious).arg(stillPrevious)
+                  .arg(removed).arg(gone).arg(QFileInfo::exists(legacyDummy)).arg(stamps(assets).size()));
         // Controls: unsaved changes refuse it; a No removes nothing.
         paint();
         const int refused = window.cleanUpProjectFolderForTest(true);
         window.undoActionForTest()->trigger();
         pump(200);
         save(proj);
-        page->deleteSelectedPanelConfirmedForTest();
-        pump(300);
-        save(proj);
-        stack->clear();
+        // Something for it to ask about: a file under an id name that no saved version
+        // names. (Until 2026-11-23 a second deleted panel's files were that; they are the
+        // previous saved version's now.)
+        const QString orphan = assets + QStringLiteral("/p_0123456789ab.png");
+        {
+            QImage img(8, 8, QImage::Format_ARGB32);
+            img.fill(Qt::blue);
+            img.save(orphan, "PNG");
+        }
         const int before2 = stamps(assets).size();
         const int declined = window.cleanUpProjectFolderForTest(false);
+        const bool keptOnNo = QFileInfo::exists(orphan) && stamps(assets).size() == before2;
+        const int accepted = window.cleanUpProjectFolderForTest(true);
         check(QStringLiteral("(n6) control: with unsaved changes Clean Up refuses (-1); answered No it "
-                             "removes nothing"),
-              refused == -1 && declined == 0 && stamps(assets).size() == before2 && before2 == 7,
-              QStringLiteral("refused %1 declined %2 files %3").arg(refused).arg(declined).arg(before2));
+                             "removes nothing - the file it asked about is still there, and a Yes then "
+                             "removes exactly that one"),
+              refused == -1 && declined == 0 && keptOnNo && accepted == 1 && !QFileInfo::exists(orphan),
+              QStringLiteral("refused %1 declined %2 (kept %3) accepted %4 files %5").arg(refused).arg(declined)
+                  .arg(keptOnNo).arg(accepted).arg(before2));
         QFile::remove(legacyDummy);
     }
     window.markCleanForTest();
@@ -31675,11 +31890,22 @@ void runStageModePass(const QString &scratch)
               r.canvas->perspective()->toJson().value(QStringLiteral("vps")).toArray().at(0).toObject()
                   .value(QStringLiteral("x")).toDouble() == 1000.0 + 100.0);
         {
-            // A WRITE REFUSED SAYS WHY (the hand test of 2026-11-08 could not): panel 2's flatten
-            // file made read-only, panel 2 changed so it must be written again.
+            // A WRITE REFUSED SAYS WHY (the hand test of 2026-11-08 could not): panel 2 changed so
+            // its flatten must be written again, and that write refused.
+            // (The safe save, 2026-11-23) the flatten is made in a NEW file now - the next free
+            // "~n" of its name, by way of "<that name>.part" - so a folder stands where that is
+            // made. Until then the flatten's own file was made read-only; that stops nothing
+            // now, as no save writes over a file.
             Panel *onCanvas = again ? again->panels.value(1) : nullptr;
             const QString flatFile = dir + QStringLiteral("/")
                 + panels.at(1).toObject().value(QStringLiteral("pixmapFile")).toString();
+            QString blocker;
+            for (int n = 1; blocker.isEmpty(); ++n) {
+                const QString candidate = QFileInfo(flatFile).absolutePath() + QStringLiteral("/")
+                    + ProjectIO::imageNameVariant(ProjectIO::imageBaseName(QFileInfo(flatFile).fileName()), n);
+                if (!QFileInfo::exists(candidate))
+                    blocker = candidate + QStringLiteral(".part");
+            }
             bool savedBlocked = true, savedFreed = false;
             QString said;
             if (onCanvas && QFileInfo::exists(flatFile)) {
@@ -31687,7 +31913,7 @@ void runStageModePass(const QString &scratch)
                 QPainter painter(&layer.image);
                 painter.fillRect(QRect(50, 50, 40, 40), Qt::green);
                 painter.end();
-                QFile::setPermissions(flatFile, QFileDevice::ReadOwner | QFileDevice::ReadUser);
+                QDir().mkpath(blocker);
                 QTimer saying;
                 saying.setInterval(150);
                 QObject::connect(&saying, &QTimer::timeout, [&said] {
@@ -31701,15 +31927,14 @@ void runStageModePass(const QString &scratch)
                 savedBlocked = r.window.saveProjectForTest(file);
                 pump(400);
                 saying.stop();
-                QFile::setPermissions(flatFile, QFileDevice::ReadOwner | QFileDevice::WriteOwner
-                                                    | QFileDevice::ReadUser | QFileDevice::WriteUser);
+                QDir(blocker).removeRecursively();
                 savedFreed = r.window.saveProjectForTest(file);
             }
             check(QStringLiteral("(sm10) A WRITE REFUSED SAYS WHY: not saved, and the message names the picture's size "
                                  "and what the system said"),
                   !savedBlocked && said.contains(QStringLiteral("NOT saved")) && said.contains(QStringLiteral(" px; ")),
                   said.mid(said.lastIndexOf(QLatin1Char('('))).simplified().left(200));
-            check(QStringLiteral("(sm10) control: the file writable again, it saves"), savedFreed);
+            check(QStringLiteral("(sm10) control: the place free again, it saves"), savedFreed);
         }
         // A margin the panel's layers do not have: the pixels win, and it is said.
         QFile again2(file);
@@ -34457,6 +34682,1308 @@ void runTrackLocksPass(const QString &scratch)
     r.window.setLockMessageHookForTest({});
 }
 
+// ---- (ss) THE SAFE SAVE (saving step 1, 2026-11-23; approved by the user that day) -------------
+// Until this step a save wrote each changed picture OVER its own file and then replaced the
+// project file. Cut short between the two - a crash, the app ended, the power gone - it left the
+// old project file naming new or half-written pictures; and a layer's place on the stage is in
+// the project file, so old places met new pictures: art that opens shifted.
+// Now a save writes over nothing (ProjectIO.h): each changed picture goes into a file of its own,
+// whole, pushed through to the disk, then named; the project file is the one switch; what it
+// replaced is kept as the previous saved version and replaced only after the next save has
+// completed; superseded pictures are removed last.
+// The checks read the writer's own log of its steps (the order of the pushes); STOP the writer
+// after every step in turn - from then on it does nothing, as a dead process does nothing - and
+// open the project again from disk, which must be the whole old save or the whole new one;
+// really KILL A SECOND PROCESS in the middle of a save; and go through the previous version, the
+// choice in Preferences > Saving, File > Restore Previous Saved Version... and its warning. The
+// controls turn the same instruments on the writer as it was before this step.
+namespace safesave {
+
+using Log = QVector<ProjectIO::SaveStepRecord>;
+using Picture = QVector<QVector<QImage>>; // [panel][layer]: each layer's pixels on its stage
+
+QByteArray pngOf(const QImage &image)
+{
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return bytes;
+}
+
+QString shaOf(const QByteArray &bytes)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+}
+
+QString shaOfFile(const QString &file)
+{
+    QFile f(file);
+    return f.open(QIODevice::ReadOnly) ? shaOf(f.readAll()) : QString();
+}
+
+// A picture as a save followed by an open gives it back.
+QImage asSaved(const QImage &image)
+{
+    if (image.isNull())
+        return QImage();
+    QImage back;
+    back.loadFromData(pngOf(image), "PNG");
+    return back.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+}
+
+// One version of a project: what opens, and the bytes of each panel's flatten file (an open
+// does not read a flatten, so its file is compared as bytes).
+struct Version
+{
+    Picture layers;
+    QStringList flattens;
+    bool operator==(const Version &other) const { return layers == other.layers && flattens == other.flattens; }
+    bool operator!=(const Version &other) const { return !(*this == other); }
+};
+
+// What a project file on disk gives: opened by the loader the window's own open uses, with the
+// PROJECT's folder (a kept previous version's file lies in the images folder; its names are the
+// project's). `missing`: files it names that are not there; `broken`: ones that do not decode.
+struct OnDisk
+{
+    bool opens = false;
+    int named = 0, missing = 0, broken = 0;
+    Version version;
+    QStringList names; // the image files it names, lower-cased, as it names them
+    QString why;
+    bool whole() const { return opens && missing == 0 && broken == 0; }
+    QString state() const
+    {
+        return opens ? QStringLiteral("%1 files named, %2 missing, %3 unreadable").arg(named).arg(missing).arg(broken)
+                     : why;
+    }
+};
+
+OnDisk onDisk(const QString &manifestFile, const QString &projectFile)
+{
+    OnDisk d;
+    QFile f(manifestFile);
+    if (!f.open(QIODevice::ReadOnly)) {
+        d.why = QStringLiteral("no file");
+        return d;
+    }
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &error);
+    if (!doc.isObject()) {
+        d.why = QStringLiteral("not a project file (%1)").arg(error.errorString());
+        return d;
+    }
+    QJsonObject root = doc.object();
+    root.remove(QStringLiteral("previousVersion")); // the kept version's own header
+    const QString folder = QFileInfo(projectFile).absolutePath();
+    auto look = [&](const QString &name) {
+        if (name.isEmpty())
+            return;
+        ++d.named;
+        d.names << name.toLower();
+        const QString file = folder + QStringLiteral("/") + name;
+        if (!QFileInfo(file).isFile())
+            ++d.missing;
+        else if (QImage(file).isNull())
+            ++d.broken;
+    };
+    for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+            const QJsonObject panel = pv.toObject();
+            const QString flatten = panel.value(QStringLiteral("pixmapFile")).toString();
+            look(flatten);
+            d.version.flattens << shaOfFile(folder + QStringLiteral("/") + flatten);
+            for (const QJsonValue &lv : panel.value(QStringLiteral("layers")).toArray())
+                look(lv.toObject().value(QStringLiteral("imageFile")).toString());
+        }
+    for (const QJsonValue &cv : root.value(QStringLiteral("consistencyBoard")).toArray())
+        look(cv.toObject().value(QStringLiteral("thumbnailFile")).toString());
+    ProjectIO::LoadedProject loaded = ProjectIO::projectFromJson(root, folder, manifestFile);
+    for (const Scene *scene : loaded.scenes)
+        for (const Panel *panel : scene->panels) {
+            d.version.layers.append(QVector<QImage>());
+            for (const Layer &layer : panel->layers)
+                d.version.layers.last().append(
+                    isGroupLayer(layer) ? QImage()
+                                        : layer.pixels().convertToFormat(QImage::Format_ARGB32_Premultiplied));
+        }
+    qDeleteAll(loaded.scenes);
+    d.opens = true;
+    return d;
+}
+
+QVector<QVector<qint64>> keysOf(const QVector<Scene *> &scenes)
+{
+    QVector<QVector<qint64>> keys;
+    for (const Scene *scene : scenes)
+        for (const Panel *panel : scene->panels) {
+            keys.append(QVector<qint64>());
+            for (const Layer &layer : panel->layers)
+                keys.last().append(layer.contentKey());
+        }
+    return keys;
+}
+
+// What the window holds, as it will open once saved. A panel none of whose layers changed since
+// `before` keeps the flatten file the saved version has (`saved`); a changed one gets the bytes
+// the writer makes of its flatten.
+Version inWindow(const QVector<Scene *> &scenes, const QVector<QVector<qint64>> &before, const Version &saved)
+{
+    Version v;
+    int p = 0;
+    for (const Scene *scene : scenes)
+        for (const Panel *panel : scene->panels) {
+            v.layers.append(QVector<QImage>());
+            bool changed = p >= before.size() || p >= saved.flattens.size()
+                || before.at(p).size() != panel->layers.size();
+            for (int k = 0; k < panel->layers.size(); ++k) {
+                const Layer &layer = panel->layers.at(k);
+                v.layers.last().append(isGroupLayer(layer) ? QImage() : asSaved(layer.pixels()));
+                changed = changed || before.at(p).at(k) != layer.contentKey();
+            }
+            v.flattens << (changed ? shaOf(pngOf(panel->flattenedPixmap().toImage())) : saved.flattens.at(p));
+            ++p;
+        }
+    return v;
+}
+
+// One brush stroke on the canvas's panel, as the artist's mouse makes it; `dy` moves it down.
+void stroke(MainWindow &window, int dy)
+{
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    if (!canvas)
+        return;
+    const QTransform t = canvas->viewTransformForTest();
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(150, 130 + dy)), Qt::LeftButton);
+    for (int i = 1; i <= 8; ++i)
+        sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(150 + i * 24, 130 + dy + i * 17)), Qt::LeftButton);
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(342, 266 + dy)), Qt::LeftButton);
+    pump(700);
+}
+
+int firstOf(const Log &log, ProjectIO::SaveStep step) // 1-based; 0: not in it
+{
+    for (int i = 0; i < log.size(); ++i)
+        if (log.at(i).step == step)
+            return i + 1;
+    return 0;
+}
+
+QString told(const Log &log)
+{
+    QStringList lines;
+    for (const ProjectIO::SaveStepRecord &record : log)
+        lines << ProjectIO::saveStepName(record.step) + QStringLiteral(" ") + QFileInfo(record.file).fileName();
+    return lines.join(QStringLiteral(" / "));
+}
+
+// THE ORDER THE WRITER'S LOG MUST SHOW. Empty when it does; else the first thing wrong.
+//  - every picture: written, then pushed through to the disk, then named - and every picture
+//    named before the project file is begun;
+//  - the project file: written, pushed, switched;
+//  - the previous saved version: only after the switch - written, pushed, named (or removed);
+//  - pictures removed: last of all.
+QString orderFault(const Log &log)
+{
+    using S = ProjectIO::SaveStep;
+    QHash<QString, int> written, pushed, named;
+    for (int i = 0; i < log.size(); ++i) {
+        QString file = log.at(i).file;
+        if (file.endsWith(QStringLiteral(".part")))
+            file.chop(5);
+        switch (log.at(i).step) {
+        case S::ImageWritten: written.insert(file, i + 1); break;
+        case S::ImagePushed: pushed.insert(file, i + 1); break;
+        case S::ImageNamed: named.insert(file, i + 1); break;
+        case S::ImageOverwritten:
+            return QStringLiteral("a picture was written over its own file: %1").arg(QFileInfo(file).fileName());
+        default: break;
+        }
+    }
+    if (named.isEmpty())
+        return QStringLiteral("no picture was written and named");
+    const int fileWritten = firstOf(log, S::ProjectFileWritten), filePushed = firstOf(log, S::ProjectFilePushed);
+    const int switched = firstOf(log, S::ProjectFileSwitched);
+    for (auto it = named.cbegin(); it != named.cend(); ++it) {
+        const QString name = QFileInfo(it.key()).fileName();
+        if (!written.contains(it.key()))
+            return QStringLiteral("%1 was named without being written first").arg(name);
+        if (!pushed.contains(it.key()))
+            return QStringLiteral("%1 was named without being pushed through to the disk").arg(name);
+        if (!(written.value(it.key()) < pushed.value(it.key()) && pushed.value(it.key()) < it.value()))
+            return QStringLiteral("%1 was not written, pushed and named in that order").arg(name);
+        if (fileWritten && it.value() > fileWritten)
+            return QStringLiteral("%1 was named after the project file was begun").arg(name);
+    }
+    if (written.size() != named.size() || pushed.size() != named.size())
+        return QStringLiteral("a picture was written or pushed and never named");
+    if (!switched)
+        return QStringLiteral("the project file was never switched");
+    if (!fileWritten)
+        return QStringLiteral("the project file was switched without being written beside itself first");
+    if (!filePushed)
+        return QStringLiteral("the project file was switched without being pushed through to the disk");
+    if (!(fileWritten < filePushed && filePushed < switched))
+        return QStringLiteral("the project file was not written, pushed and switched in that order");
+    const int previousWritten = firstOf(log, S::PreviousWritten), previousPushed = firstOf(log, S::PreviousPushed);
+    const int previousNamed = firstOf(log, S::PreviousNamed), previousRemoved = firstOf(log, S::PreviousRemoved);
+    if (previousWritten || previousPushed || previousNamed) {
+        if (!(switched < previousWritten && previousWritten < previousPushed && previousPushed < previousNamed))
+            return QStringLiteral("the previous saved version was not written, pushed and named, in that "
+                                  "order, after the switch");
+    }
+    if (previousRemoved && previousRemoved < switched)
+        return QStringLiteral("the previous saved version was removed before the switch");
+    int lastOther = 0, firstRemoval = 0;
+    for (int i = 0; i < log.size(); ++i) {
+        if (log.at(i).step == S::PictureRemoved)
+            firstRemoval = firstRemoval ? firstRemoval : i + 1;
+        else
+            lastOther = i + 1;
+    }
+    if (firstRemoval && firstRemoval < lastOther)
+        return QStringLiteral("a picture was removed before the save's other steps were done");
+    return QString();
+}
+
+// A modal nobody expected would stop the run: closed, and counted.
+struct ModalGuard
+{
+    QTimer timer;
+    int closed = 0;
+    QStringList said; // each box it closed: its title and its words (gate S1 closed one it could not name)
+    ModalGuard()
+    {
+        timer.setInterval(120);
+        QObject::connect(&timer, &QTimer::timeout, [this] {
+            if (QWidget *modal = QApplication::activeModalWidget()) {
+                ++closed;
+                const auto *box = qobject_cast<QMessageBox *>(modal);
+                said << (box ? box->windowTitle() + QStringLiteral(": ") + box->text() + QStringLiteral(" ")
+                                   + box->informativeText()
+                             : QString::fromLatin1(modal->metaObject()->className()) + QStringLiteral(": ")
+                                   + modal->windowTitle())
+                            .simplified().left(400);
+                modal->close();
+            }
+        });
+        timer.start();
+    }
+};
+
+// Every file of a project's folder, relative to it, sorted - but the session's own
+// bookkeeping beside the project ("<name>.recovery": the lock, the recovery copy), which is
+// no part of a save.
+QStringList filesUnder(const QString &folder)
+{
+    QStringList files;
+    QDirIterator it(folder, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        const QString name = QDir(folder).relativeFilePath(it.filePath());
+        if (!name.contains(QStringLiteral(".recovery/")))
+            files << name;
+    }
+    files.sort();
+    return files;
+}
+
+// Each file under a folder with the bytes it holds and its time.
+QMap<QString, QPair<QString, QDateTime>> stateOf(const QString &folder)
+{
+    QMap<QString, QPair<QString, QDateTime>> state;
+    for (const QString &name : filesUnder(folder))
+        state.insert(name, {shaOfFile(folder + QStringLiteral("/") + name),
+                            QFileInfo(folder + QStringLiteral("/") + name).lastModified()});
+    return state;
+}
+
+// What is in the project's folder that no saved version accounts for: a file of the images
+// folder that neither the project file nor the kept previous version names (but the kept
+// version's own file), and anything a save died in the middle of (".part"), there or beside
+// the project file.
+QStringList straysOf(const QString &projectFile)
+{
+    const QString folder = QFileInfo(projectFile).absolutePath();
+    const QString assets = QFileInfo(projectFile).completeBaseName() + QStringLiteral("_assets");
+    QSet<QString> named;
+    const OnDisk now = onDisk(projectFile, projectFile);
+    for (const QString &name : now.names)
+        named.insert(name);
+    const QString previousFile = ProjectIO::previousVersionFile(projectFile);
+    if (QFileInfo::exists(previousFile))
+        for (const QString &name : onDisk(previousFile, projectFile).names)
+            named.insert(name);
+    QStringList strays;
+    for (const QString &name : filesUnder(folder)) {
+        const QString lower = name.toLower();
+        if (lower.endsWith(QStringLiteral(".part")))
+            strays << name;
+        else if (lower.startsWith(assets.toLower() + QLatin1Char('/')) && !named.contains(lower)
+                 && lower != assets.toLower() + QStringLiteral("/_previous_saved_version.json")
+                 && lower.endsWith(QStringLiteral(".png")))
+            strays << name;
+    }
+    return strays;
+}
+
+struct Fixture
+{
+    QString root, work, proj, assets, pristine, pristineProj;
+    bool ok = false;
+    QString note; // what each step of the building did
+};
+
+// The folder as it was saved, back in place, and the project open again.
+bool restore(MainWindow &window, const Fixture &f)
+{
+    window.markCleanForTest();
+    if (!QDir(f.work).removeRecursively() || !travel::copyFolder(f.pristine, f.work))
+        return false;
+    const bool opened = window.loadProjectForTest(f.proj);
+    pump(400);
+    return opened;
+}
+
+// A project saved three times by the window, a stroke before the second save and another
+// before the third - so with the new writer it has a saved version (two strokes) and a previous
+// saved version (one) - and a copy of its folder as saved, to start every stop from. `lastSave`:
+// the writer's log of the third save, an ordinary one.
+Fixture build(MainWindow &window, const QString &root, const QString &name, bool oldWriter, Log *lastSave)
+{
+    Fixture f;
+    f.root = root;
+    QDir(root).removeRecursively();
+    QDir().mkpath(root);
+    // THE FAMILY'S RANDOM ART IS LEFT AS IT WAS (gate S1, 2026-11-23). Every fixture's art comes
+    // from one sequence (randIn), and this pass was put in the middle of the family: its three
+    // fixtures moved the sequence on, every later fixture got other art, and (mg9)'s control -
+    // which counts a colour in a strip thumbnail - found 4 such pixels in art that had none.
+    // So the sequence is put back where this fixture found it.
+    const quint32 seedBefore = g_seed;
+    f.proj = writeProject(root + QStringLiteral("/work"), name, QSize(960, 540), 24, 1, 3);
+    g_seed = seedBefore;
+    f.work = QFileInfo(f.proj).absolutePath();
+    f.assets = f.work + QStringLiteral("/") + name + QStringLiteral("_assets");
+    f.pristine = root + QStringLiteral("/pristine/") + name;
+    f.pristineProj = f.pristine + QStringLiteral("/") + name + QStringLiteral(".sankotv");
+    ProjectIO::setOverwriteInPlaceForTest(oldWriter);
+    const bool opened = window.loadProjectForTest(f.proj);
+    pump(500);
+    const bool first = window.saveProjectForTest(f.proj);
+    pump(200);
+    stroke(window, 0);
+    const bool second = window.saveProjectForTest(f.proj);
+    pump(200);
+    stroke(window, 30);
+    ProjectIO::setSaveLogForTest(lastSave);
+    const bool third = window.saveProjectForTest(f.proj);
+    ProjectIO::setSaveLogForTest(nullptr);
+    pump(200);
+    ProjectIO::setOverwriteInPlaceForTest(false);
+    window.markCleanForTest();
+    const bool copied = travel::copyFolder(f.work, f.pristine);
+    f.ok = opened && first && second && third && copied;
+    f.note = QStringLiteral("opened %1, saved %2 %3 %4, copied %5").arg(opened).arg(first).arg(second).arg(third)
+                 .arg(copied);
+    return f;
+}
+
+struct Stops
+{
+    int steps = 0, switchAt = 0, bad = 0, modals = 0;
+    bool reference = false; // the whole save, uninterrupted, opens as the new version
+    QStringList kinds, faults;
+    QStringList said; // the boxes that opened meanwhile, in their words
+};
+
+// THE WRITER STOPPED AFTER EACH STEP. From the fixture as saved, each time: the project opened,
+// a stroke drawn, and the save let do `n` steps and no more. Then the disk is read. Before the
+// switch it must hold the whole old save; from the switch on, the whole new one; the previous
+// saved version whole throughout - the one it was until its new file is named (or, with "delete
+// right away", until it is removed).
+Stops stopEverywhere(MainWindow &window, const Fixture &f, bool keep, bool oldWriter)
+{
+    using S = ProjectIO::SaveStep;
+    Stops out;
+    ModalGuard guard;
+    window.setKeepPreviousVersionForTest(keep);
+    ProjectIO::setOverwriteInPlaceForTest(oldWriter);
+    const OnDisk a = onDisk(f.pristineProj, f.pristineProj);
+    const QString pristinePrevious = ProjectIO::previousVersionFile(f.pristineProj);
+    const bool hadPrevious = QFileInfo::exists(pristinePrevious);
+    const OnDisk z = hadPrevious ? onDisk(pristinePrevious, f.pristineProj) : OnDisk();
+    auto attempt = [&](int stopAfter, Log *log, Version *b) {
+        if (!restore(window, f))
+            return false;
+        const QVector<QVector<qint64>> before = keysOf(window.scenesForTest());
+        stroke(window, 60);
+        *b = inWindow(window.scenesForTest(), before, a.version);
+        ProjectIO::setSaveLogForTest(log);
+        ProjectIO::setSaveStopAfterForTest(stopAfter);
+        window.saveProjectForTest(f.proj);
+        ProjectIO::setSaveStopAfterForTest(-1);
+        ProjectIO::setSaveLogForTest(nullptr);
+        pump(100);
+        return true;
+    };
+    auto finish = [&] {
+        out.modals = guard.closed;
+        out.said = guard.said;
+        ProjectIO::setOverwriteInPlaceForTest(false);
+        window.setKeepPreviousVersionForTest(true);
+        window.markCleanForTest();
+        return out;
+    };
+    // One whole save first, its steps one after another: how many there are, and which.
+    Log reference;
+    Version b;
+    if (!attempt(std::numeric_limits<int>::max(), &reference, &b)) {
+        out.faults << QStringLiteral("the fixture could not be put back");
+        return finish();
+    }
+    out.steps = int(reference.size());
+    for (const ProjectIO::SaveStepRecord &record : reference)
+        out.kinds << ProjectIO::saveStepName(record.step);
+    out.switchAt = firstOf(reference, S::ProjectFileSwitched);
+    const int previousNamedAt = firstOf(reference, S::PreviousNamed);
+    const int previousRemovedAt = firstOf(reference, S::PreviousRemoved);
+    {
+        const OnDisk d = onDisk(f.proj, f.proj);
+        out.reference = a.whole() && d.whole() && d.version == b && b != a.version;
+    }
+    for (int n = 1; n <= out.steps; ++n) {
+        Log log;
+        QStringList wrong;
+        if (!attempt(n, &log, &b)) {
+            wrong << QStringLiteral("the fixture could not be put back");
+        } else {
+            const OnDisk d = onDisk(f.proj, f.proj);
+            const bool wantNew = out.switchAt > 0 && n >= out.switchAt;
+            if (!d.whole())
+                wrong << QStringLiteral("the project does not open whole (%1)").arg(d.state());
+            else if (d.version != (wantNew ? b : a.version))
+                wrong << (d.version == a.version ? QStringLiteral("it is still the old save, after the switch")
+                          : d.version == b ? QStringLiteral("it is the new save already, before the switch")
+                                           : QStringLiteral("it is neither the old save nor the new one"));
+            if (!oldWriter) {
+                const QString previousFile = ProjectIO::previousVersionFile(f.proj);
+                const bool replaced = keep && previousNamedAt > 0 && n >= previousNamedAt;
+                if (!keep && previousRemovedAt > 0 && n >= previousRemovedAt) {
+                    if (QFileInfo::exists(previousFile))
+                        wrong << QStringLiteral("the previous version's file is still there after its removal");
+                } else if (hadPrevious || replaced) {
+                    const OnDisk p = onDisk(previousFile, f.proj);
+                    if (!p.whole())
+                        wrong << QStringLiteral("the previous saved version does not open whole (%1)").arg(p.state());
+                    else if (p.version != (replaced ? a.version : z.version))
+                        wrong << (replaced ? QStringLiteral("the previous saved version is not the save that was replaced")
+                                           : QStringLiteral("the previous saved version was changed before its "
+                                                            "new file was named"));
+                }
+            }
+            bool sameSteps = log.size() == n;
+            for (int i = 0; sameSteps && i < n; ++i)
+                sameSteps = log.at(i).step == reference.at(i).step;
+            if (!sameSteps)
+                wrong << QStringLiteral("the writer's steps were not the first %1 of the whole save's (%2)")
+                             .arg(n).arg(told(log));
+        }
+        if (!wrong.isEmpty()) {
+            ++out.bad;
+            out.faults << QStringLiteral("stopped after step %1 of %2 (%3): %4").arg(n).arg(out.steps)
+                              .arg(ProjectIO::saveStepName(reference.at(n - 1).step), wrong.join(QStringLiteral("; ")));
+        }
+    }
+    return finish();
+}
+
+// ---- the second process (ss4) -----------------------------------------------------------------
+// What the victim's window holds when it begins its save, for the pass to compare the disk
+// with: every layer as a PNG, and the flatten of each panel it changed as the bytes the writer
+// makes of it.
+void writeExpectation(const QString &dir, const QVector<Scene *> &scenes, const QVector<QVector<qint64>> &before)
+{
+    QDir().mkpath(dir);
+    int p = 0;
+    for (const Scene *scene : scenes)
+        for (const Panel *panel : scene->panels) {
+            bool changed = p >= before.size() || before.at(p).size() != panel->layers.size();
+            for (int k = 0; k < panel->layers.size(); ++k) {
+                const Layer &layer = panel->layers.at(k);
+                if (!isGroupLayer(layer))
+                    layer.pixels().save(dir + QStringLiteral("/p%1_l%2.png").arg(p).arg(k), "PNG");
+                changed = changed || before.at(p).at(k) != layer.contentKey();
+            }
+            if (changed) {
+                QFile flat(dir + QStringLiteral("/p%1_flat.png").arg(p));
+                if (flat.open(QIODevice::WriteOnly))
+                    flat.write(pngOf(panel->flattenedPixmap().toImage()));
+            }
+            ++p;
+        }
+}
+
+Version expectationFrom(const QString &dir, const Version &saved)
+{
+    Version v;
+    for (int p = 0; p < saved.layers.size(); ++p) {
+        v.layers.append(QVector<QImage>());
+        for (int k = 0; k < saved.layers.at(p).size(); ++k) {
+            const QString file = dir + QStringLiteral("/p%1_l%2.png").arg(p).arg(k);
+            v.layers.last().append(QFileInfo::exists(file)
+                                       ? QImage(file).convertToFormat(QImage::Format_ARGB32_Premultiplied)
+                                       : QImage());
+        }
+        const QString flat = dir + QStringLiteral("/p%1_flat.png").arg(p);
+        v.flattens << (QFileInfo::exists(flat) ? shaOfFile(flat) : saved.flattens.value(p));
+    }
+    return v;
+}
+
+// THE VICTIM: this same program, started by the pass (main() sends it here before anything of
+// the family runs) with a project to open, a stroke to draw and the step of the save to be held
+// at. It says what its window holds, saves, and at that step says "AT STEP" and waits there to
+// be killed. It never comes back from the save.
+int runVictim()
+{
+    const QString proj = qEnvironmentVariable("SANKO_SAFESAVE_VICTIM");
+    const QString expect = qEnvironmentVariable("SANKO_SAFESAVE_EXPECT");
+    const int step = qEnvironmentVariableIntValue("SANKO_SAFESAVE_HOLD");
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    if (!window.loadProjectForTest(proj)) {
+        fputs("VICTIM: the project did not open\n", stdout);
+        fflush(stdout);
+        return 2;
+    }
+    pump(500);
+    const QVector<QVector<qint64>> before = keysOf(window.scenesForTest());
+    stroke(window, 60);
+    writeExpectation(expect, window.scenesForTest(), before);
+    // (A red run only: the writer as it was before this step.)
+    ProjectIO::setOverwriteInPlaceForTest(qEnvironmentVariableIsSet("SANKO_SAFESAVE_OLDWRITER"));
+    ProjectIO::setSaveHoldAtForTest(step, [] {
+        fputs("AT STEP\n", stdout);
+        fflush(stdout);
+        for (;;)
+            QThread::msleep(50);
+    });
+    const bool saved = window.saveProjectForTest(proj);
+    fprintf(stdout, "VICTIM: the save came back (%d) - it was never held\n", int(saved));
+    fflush(stdout);
+    window.markCleanForTest();
+    return 3;
+}
+
+struct Kill
+{
+    int step = 0;
+    bool held = false;      // the child said it was at the step, and was killed there
+    bool midSave = false;   // what a save in progress leaves was on disk, and the project file as expected
+    bool project = false;   // the project opens whole: the old save before the switch, the new from it on
+    bool previous = false;  // the previous saved version whole, and the one it should be
+    bool tidy = false;      // the next save completes and leaves nothing unaccounted for
+    QString note;
+};
+
+Kill killAt(MainWindow &window, const Fixture &f, int step, int switchAt, int previousNamedAt, const Version &a,
+            const Version &z, bool oldWriter)
+{
+    Kill k;
+    k.step = step;
+    window.markCleanForTest();
+    if (!QDir(f.work).removeRecursively() || !travel::copyFolder(f.pristine, f.work)) {
+        k.note = QStringLiteral("the fixture could not be put back");
+        return k;
+    }
+    const QStringList filesBefore = filesUnder(f.work);
+    const QString projectBefore = shaOfFile(f.proj);
+    const QString expect = f.root + QStringLiteral("/expect%1").arg(step);
+    QDir(expect).removeRecursively();
+    QProcess child;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("SANKO_SAFESAVE_VICTIM"), f.proj);
+    env.insert(QStringLiteral("SANKO_SAFESAVE_EXPECT"), expect);
+    env.insert(QStringLiteral("SANKO_SAFESAVE_HOLD"), QString::number(step));
+    env.remove(QStringLiteral("SANKO_LIFECYCLE_ONLY"));
+    env.remove(QStringLiteral("SANKO_SAFESAVE_OLDWRITER"));
+    if (oldWriter) // a red run only
+        env.insert(QStringLiteral("SANKO_SAFESAVE_OLDWRITER"), QStringLiteral("1"));
+    child.setProcessEnvironment(env);
+    child.setProgram(QCoreApplication::applicationFilePath());
+    child.setStandardErrorFile(QProcess::nullDevice()); // only what it says on stdout is read
+    child.start();
+    QByteArray said;
+    QElapsedTimer waited;
+    waited.start();
+    while (!said.contains("AT STEP") && child.state() != QProcess::NotRunning && waited.elapsed() < 120000) {
+        child.waitForReadyRead(200);
+        said += child.readAllStandardOutput();
+    }
+    k.held = said.contains("AT STEP") && child.state() == QProcess::Running;
+    child.kill(); // ended where it stands, as the task manager ends it
+    child.waitForFinished(15000);
+    k.held = k.held && child.exitStatus() == QProcess::CrashExit;
+
+    QStringList left; // what the dead save left that was not there before it
+    for (const QString &name : filesUnder(f.work))
+        if (!filesBefore.contains(name))
+            left << name;
+    const bool wantNew = step >= switchAt;
+    k.midSave = !left.isEmpty() && (shaOfFile(f.proj) == projectBefore) == !wantNew;
+    const Version b = expectationFrom(expect, a);
+    const OnDisk d = onDisk(f.proj, f.proj);
+    k.project = d.whole() && b != a && d.version == (wantNew ? b : a);
+    const bool replaced = previousNamedAt > 0 && step >= previousNamedAt;
+    const OnDisk p = onDisk(ProjectIO::previousVersionFile(f.proj), f.proj);
+    k.previous = p.whole() && p.version == (replaced ? a : z);
+
+    // THE SURVIVOR: opened in the window as the artist would after the crash, drawn on and
+    // saved - the save completes, and nothing the dead one left is unaccounted for after it.
+    bool opened = false, saved = false;
+    if (d.whole()) {
+        opened = window.loadProjectForTest(f.proj);
+        pump(400);
+        stroke(window, 90);
+        saved = window.saveProjectForTest(f.proj);
+        pump(200);
+    }
+    const QStringList strays = straysOf(f.proj);
+    k.tidy = opened && saved && strays.isEmpty() && onDisk(f.proj, f.proj).whole()
+        && onDisk(ProjectIO::previousVersionFile(f.proj), f.proj).whole();
+    window.markCleanForTest();
+    k.note = QStringLiteral("step %1: held %2, left [%3], project %4 (%5), previous %6 (%7), next save %8, strays [%9]")
+                 .arg(step).arg(k.held).arg(left.join(QLatin1Char(' '))).arg(k.project).arg(d.state())
+                 .arg(k.previous).arg(p.state()).arg(saved).arg(strays.join(QLatin1Char(' ')));
+    return k;
+}
+
+QMenu *fileMenu(MainWindow &window)
+{
+    for (QAction *a : window.menuBar()->actions())
+        if (a->menu() && a->text().remove(QLatin1Char('&')) == QLatin1String("File"))
+            return a->menu();
+    return nullptr;
+}
+
+} // namespace safesave
+
+void runSafeSavePass(const QString &scratch)
+{
+    using namespace safesave;
+    using S = ProjectIO::SaveStep;
+    out() << "--- (ss) the safe save: nothing written over, one switch, the previous saved version ---"
+          << Qt::endl;
+    // The writer as it was before this step, in the main checks' place: only ever for a red run.
+    const bool oldWriterInPlace = false;
+    // Where to leave pictures of the new entry, box and page as the widgets draw themselves,
+    // for looking at beside the design (Figma S-1). Asked for by hand; the gate never sets it.
+    const QString pictures = qEnvironmentVariable("SANKO_SAFESAVE_PICTURES");
+    const QString root = scratch + QStringLiteral("/safesave");
+    {
+        QSettings s = sankoSettings();
+        s.remove(QStringLiteral("saving/keepPrevious")); // a first run: keep
+    }
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    ModalGuard guard;
+    auto save = [&window](const QString &path) {
+        const bool ok = window.saveProjectForTest(path);
+        pump(200);
+        return ok;
+    };
+
+    // --- (ss1) the fixture, and (ss2) the order of the pushes -----------------------------------
+    Log ordinary;
+    const Fixture f = build(window, root + QStringLiteral("/new"), QStringLiteral("Safe"), oldWriterInPlace, &ordinary);
+    const QString previousFile = ProjectIO::previousVersionFile(f.proj);
+    const OnDisk a = onDisk(f.pristineProj, f.pristineProj);
+    const OnDisk z = onDisk(ProjectIO::previousVersionFile(f.pristineProj), f.pristineProj);
+    check(QStringLiteral("(ss1) control: the fixture - saved three times by the window, a stroke before the second "
+                         "save and another before the third - holds a saved version and a previous saved "
+                         "version; each opens whole (9 files named, none missing, all readable), and they "
+                         "are not the same picture"),
+          f.ok && a.whole() && z.whole() && a.named == 9 && z.named == 9 && a.version != z.version,
+          QStringLiteral("built %1; saved: %2; previous: %3").arg(f.ok).arg(a.state(), z.state()));
+    {
+        const QString fault = orderFault(ordinary);
+        check(QStringLiteral("(ss2) THE ORDER OF THE PUSHES TO DISK, from the writer's own log of an ordinary save "
+                             "after a stroke: each picture is written whole, pushed through to the disk and only "
+                             "then given its name, and all of them before the project file is begun; the project "
+                             "file is written beside itself, pushed through, then switched in one step; the "
+                             "previous saved version is replaced only after the switch - written, pushed, named; "
+                             "pictures are removed last"),
+              fault.isEmpty() && firstOf(ordinary, S::ProjectFileSwitched) > 0 && firstOf(ordinary, S::PreviousNamed) > 0
+                  && firstOf(ordinary, S::PictureRemoved) > 0,
+              fault.isEmpty() ? told(ordinary) : fault + QStringLiteral(" | ") + told(ordinary));
+        // Control: the same reading of a save whose pushes are left out.
+        Log unpushed;
+        const bool restored = restore(window, f);
+        stroke(window, 45);
+        ProjectIO::setSaveSkipPushForTest(true);
+        ProjectIO::setSaveLogForTest(&unpushed);
+        const bool saved = save(f.proj);
+        ProjectIO::setSaveLogForTest(nullptr);
+        ProjectIO::setSaveSkipPushForTest(false);
+        const QString unpushedFault = orderFault(unpushed);
+        check(QStringLiteral("(ss2) control: the same reading of the same save with the pushes left out says so - "
+                             "the check can see a writer that names a file it never pushed to the disk"),
+              restored && saved && unpushedFault.contains(QStringLiteral("without being pushed")),
+              unpushedFault);
+    }
+
+    // --- (ss3) the writer stopped after each step -------------------------------------------------
+    {
+        const Stops keep = stopEverywhere(window, f, true, oldWriterInPlace);
+        check(QStringLiteral("(ss3) THE WRITER STOPPED AFTER EACH OF ITS 14 STEPS (the previous saved version kept): "
+                             "each time the project re-opened from disk is whole - every file it names there and "
+                             "readable - and is the old save until the project file is switched (step 9) and the "
+                             "new save from then on, never a mix of the two; and the previous saved version is "
+                             "whole at every stop, the one it was until its new file has been named, after the "
+                             "switch"),
+              keep.reference && keep.steps == 14 && keep.switchAt == 9 && keep.bad == 0 && keep.modals == 0,
+              QStringLiteral("%1 steps [%2], the switch is step %3; whole save right %4; %5 bad stop(s)%6; %7 box(es)")
+                  .arg(keep.steps).arg(keep.kinds.join(QStringLiteral(", "))).arg(keep.switchAt).arg(keep.reference)
+                  .arg(keep.bad)
+                  .arg(keep.faults.isEmpty() ? QString() : QStringLiteral(": ") + keep.faults.join(QStringLiteral(" || ")))
+                  .arg(QString::number(keep.modals) + keep.said.join(QStringLiteral(" || "))));
+        const Stops away = stopEverywhere(window, f, false, oldWriterInPlace);
+        check(QStringLiteral("(ss3) ...AND WITH \"DELETE THE PREVIOUS PICTURES RIGHT AWAY\" (14 steps): the same at "
+                             "every stop - the old save whole until the switch, the new one whole from it on, though "
+                             "the pictures of both older versions are being removed after it; the previous saved "
+                             "version whole until its file is removed, after the switch"),
+              away.reference && away.steps == 14 && away.switchAt == 9 && away.bad == 0 && away.modals == 0,
+              QStringLiteral("%1 steps [%2], the switch is step %3; whole save right %4; %5 bad stop(s)%6; %7 box(es)")
+                  .arg(away.steps).arg(away.kinds.join(QStringLiteral(", "))).arg(away.switchAt).arg(away.reference)
+                  .arg(away.bad)
+                  .arg(away.faults.isEmpty() ? QString() : QStringLiteral(": ") + away.faults.join(QStringLiteral(" || ")))
+                  .arg(QString::number(away.modals) + away.said.join(QStringLiteral(" || "))));
+        // Control: the same stops against the writer as it was before this step.
+        const Fixture old = build(window, root + QStringLiteral("/old"), QStringLiteral("Old"), true, nullptr);
+        const Stops before = stopEverywhere(window, old, true, true);
+        check(QStringLiteral("(ss3) control: the same stops against the writer before this step (each picture "
+                             "written over its own file, then the project file) find the save cut short that "
+                             "is neither the old project nor the new - the check can see it"),
+              old.ok && before.steps == 3 && before.switchAt == 3 && before.bad >= 1,
+              QStringLiteral("its fixture: %1; %2 steps [%3]; %4 bad stop(s): %5%6").arg(old.note).arg(before.steps)
+                  .arg(before.kinds.join(QStringLiteral(", "))).arg(before.bad)
+                  .arg(before.faults.join(QStringLiteral(" || ")))
+                  .arg(before.said.isEmpty() ? QString()
+                                             : QStringLiteral("; boxes: ") + before.said.join(QStringLiteral(" || "))));
+
+        // --- (ss4) a second process killed in the middle of a save ------------------------------
+        QVector<int> at{2, 3, keep.switchAt - 1, keep.switchAt, keep.switchAt + 1};
+        QVector<Kill> kills;
+        const int previousNamedAt = keep.kinds.indexOf(ProjectIO::saveStepName(S::PreviousNamed)) + 1;
+        for (int step : at)
+            if (step >= 1 && step <= keep.steps)
+                kills.append(killAt(window, f, step, keep.switchAt, previousNamedAt, a.version, z.version,
+                                    oldWriterInPlace));
+        int held = 0, midSave = 0, right = 0, previousRight = 0, tidy = 0;
+        QStringList notes;
+        for (const Kill &k : kills) {
+            held += k.held ? 1 : 0;
+            midSave += k.midSave ? 1 : 0;
+            right += k.project ? 1 : 0;
+            previousRight += k.previous ? 1 : 0;
+            tidy += k.tidy ? 1 : 0;
+            notes << k.note;
+        }
+        check(QStringLiteral("(ss4) control: each of the 5 second processes was killed IN THE MIDDLE of its save - "
+                             "it had said it stood at its step (a picture pushed but not named; a picture named; "
+                             "the new project file whole beside the old; the switch just made; the previous "
+                             "version's new file written), was ended there, and left on disk what a save in "
+                             "progress leaves, the project file itself untouched before the switch"),
+              kills.size() == 5 && held == 5 && midSave == 5,
+              QStringLiteral("%1 killed, %2 held at their step, %3 mid-save | %4").arg(kills.size()).arg(held)
+                  .arg(midSave).arg(notes.join(QStringLiteral(" || "))));
+        check(QStringLiteral("(ss4) A SECOND PROCESS KILLED IN THE MIDDLE OF A SAVE, five times: the project then "
+                             "re-opens whole - as the old save when killed before the switch, as the new save "
+                             "when killed at it or after - and the previous saved version is whole"),
+              kills.size() == 5 && right == 5 && previousRight == 5,
+              QStringLiteral("%1 of %2 projects right, %3 previous versions right").arg(right).arg(kills.size())
+                  .arg(previousRight));
+        check(QStringLiteral("(ss4) ...AND THE NEXT SAVE TIDIES: after each kill the project opened in the window, "
+                             "drawn on and saved - the save completes, both versions open whole, and no file the "
+                             "dead save left is unaccounted for (no \".part\", no picture that no version names)"),
+              kills.size() == 5 && tidy == 5, QStringLiteral("%1 of %2").arg(tidy).arg(kills.size()));
+    }
+
+    // --- (ss5) a save writes over nothing ---------------------------------------------------------
+    const bool restored = restore(window, f);
+    {
+        const auto before = stateOf(f.work);
+        const QDateTime savedAt = QFileInfo(f.proj).lastModified();
+        stroke(window, 60);
+        ProjectIO::setOverwriteInPlaceForTest(oldWriterInPlace); // (a red run only)
+        const bool saved = save(f.proj);
+        ProjectIO::setOverwriteInPlaceForTest(false);
+        const auto after = stateOf(f.work);
+        const QString projectName = QFileInfo(f.proj).fileName();
+        const QString previousName = QDir(f.work).relativeFilePath(previousFile);
+        QStringList changed, gone;
+        for (auto it = before.cbegin(); it != before.cend(); ++it) {
+            if (it.key() == projectName || it.key() == previousName)
+                continue;
+            if (!after.contains(it.key()))
+                gone << it.key();
+            else if (after.value(it.key()) != it.value())
+                changed << it.key();
+        }
+        const OnDisk now = onDisk(f.proj, f.proj);
+        const OnDisk previous = onDisk(previousFile, f.proj);
+        bool goneUnnamed = true;
+        for (const QString &name : gone)
+            goneUnnamed = goneUnnamed && !now.names.contains(name.toLower()) && !previous.names.contains(name.toLower());
+        QStringList removed;
+        for (const QString &file : window.lastSaveRemovedForTest())
+            removed << QDir(f.work).relativeFilePath(file);
+        removed.sort();
+        check(QStringLiteral("(ss5) A SAVE WRITES OVER NOTHING: after a stroke's save every file that was in the "
+                             "project's folder before it - but the project file and the kept previous version's "
+                             "own - holds the bytes it held, at the time it had, or is gone; and the 2 that are "
+                             "gone are pictures that neither the saved version nor the previous one names, the "
+                             "very ones the save says it removed"),
+              restored && saved && changed.isEmpty() && gone.size() == 2 && goneUnnamed && removed == gone,
+              QStringLiteral("changed [%1]; gone [%2]; the save removed [%3]").arg(changed.join(QLatin1Char(' ')),
+                                                                              gone.join(QLatin1Char(' ')),
+                                                                              removed.join(QLatin1Char(' '))));
+        // --- (ss6) the previous saved version ------------------------------------------------------
+        const ProjectIO::PreviousVersion kept = ProjectIO::readPreviousVersion(f.proj);
+        check(QStringLiteral("(ss6) THE PREVIOUS SAVED VERSION IS WHAT THE SAVE REPLACED: after it the kept version "
+                             "opens whole as the project was saved before - the same picture, layer for layer - "
+                             "and says when that save was made (the replaced project file's own time)"),
+              window.lastSavePreviousKeptForTest() && previous.whole() && previous.version == a.version
+                  && kept.exists && kept.missingFiles == 0
+                  && kept.savedAt.toMSecsSinceEpoch() == savedAt.toMSecsSinceEpoch(),
+              QStringLiteral("kept %1; %2; saved at %3, the replaced file's time %4")
+                  .arg(window.lastSavePreviousKeptForTest()).arg(previous.state())
+                  .arg(kept.savedAt.toString(Qt::ISODateWithMs), savedAt.toString(Qt::ISODateWithMs)));
+        // --- (ss7) a save that changes nothing ---------------------------------------------------------
+        const auto beforeIdle = stateOf(f.work);
+        const bool idle = save(f.proj);
+        check(QStringLiteral("(ss7) A SAVE THAT CHANGES NOTHING REPLACES NOTHING: saved again at once, no file of "
+                             "the project's folder has other bytes or another time - the project file and the "
+                             "previous saved version included, which so stays the save before, not a second copy "
+                             "of this one"),
+              idle && stateOf(f.work) == beforeIdle && !window.lastSavePreviousKeptForTest()
+                  && window.lastSaveRemovedForTest().isEmpty() && window.lastSaveWrittenForTest().isEmpty()
+                  && onDisk(previousFile, f.proj).version == a.version,
+              QStringLiteral("saved %1, folder as it was %2").arg(idle).arg(stateOf(f.work) == beforeIdle));
+    }
+    {
+        // Control of (ss5): the same reading of the writer before this step.
+        const Fixture old = build(window, root + QStringLiteral("/over"), QStringLiteral("Over"), true, nullptr);
+        const auto before = stateOf(old.work);
+        stroke(window, 60);
+        ProjectIO::setOverwriteInPlaceForTest(true);
+        const bool saved = save(old.proj);
+        ProjectIO::setOverwriteInPlaceForTest(false);
+        const auto after = stateOf(old.work);
+        QStringList changed;
+        for (auto it = before.cbegin(); it != before.cend(); ++it)
+            if (it.key() != QFileInfo(old.proj).fileName() && after.contains(it.key()) && after.value(it.key()) != it.value())
+                changed << it.key();
+        check(QStringLiteral("(ss5) control: the same reading of the writer before this step finds the pictures it "
+                             "wrote over - the stroke's layer and its panel's flatten hold other bytes"),
+              old.ok && saved && changed.size() == 2, changed.join(QLatin1Char(' ')));
+        window.markCleanForTest();
+    }
+
+    // --- (ss8) "delete the previous pictures right away" -------------------------------------------
+    QAction *restoreAct = window.restorePreviousActionForTest();
+    QMenu *file = fileMenu(window);
+    auto menuShown = [&] { // the File menu about to open: the entry is looked at again
+        if (file)
+            emit file->aboutToShow();
+    };
+    {
+        const bool reopened = restore(window, f);
+        stroke(window, 60);
+        const bool first = save(f.proj); // saved B, previous A
+        window.setKeepPreviousVersionForTest(false);
+        const bool atTheClick = QFileInfo::exists(previousFile) && onDisk(previousFile, f.proj).whole();
+        stroke(window, 75);
+        const bool second = save(f.proj);
+        const OnDisk now = onDisk(f.proj, f.proj);
+        QStringList pngs;
+        for (const QString &name : QDir(f.assets).entryList({QStringLiteral("*")}, QDir::Files, QDir::Name))
+            pngs << (QFileInfo(f.assets).fileName() + QLatin1Char('/') + name).toLower();
+        QStringList namedNow = now.names;
+        namedNow.sort();
+        pngs.sort();
+        menuShown();
+        const bool greyed = restoreAct && !restoreAct->isEnabled();
+        const QString tip = restoreAct ? restoreAct->toolTip() : QString();
+        if (!pictures.isEmpty() && file)
+            file->grab().save(pictures + QStringLiteral("/file_menu_entry_greyed.png"));
+        check(QStringLiteral("(ss8) \"DELETE THE PREVIOUS PICTURES RIGHT AWAY\": nothing happens at the choice (the "
+                             "previous saved version is still there, whole); the next save, once completed, removes "
+                             "it and every superseded picture - the images folder holds exactly the 9 files the "
+                             "project names, the project opens whole - and File > Restore Previous Saved "
+                             "Version... is greyed, its tooltip saying why"),
+              reopened && first && atTheClick && second && now.whole() && !QFileInfo::exists(previousFile)
+                  && pngs == namedNow && pngs.size() == 9 && !window.lastSavePreviousKeptForTest() && greyed
+                  && tip.contains(QStringLiteral("Preferences > Saving"))
+                  && file && file->toolTipsVisible(), // the menu shows a tooltip set on purpose
+              QStringLiteral("at the choice %1; saved %2; previous file there %3; folder [%4] named [%5]; greyed %6: %7")
+                  .arg(atTheClick).arg(second).arg(QFileInfo::exists(previousFile)).arg(pngs.size()).arg(namedNow.size())
+                  .arg(greyed).arg(tip));
+        window.setKeepPreviousVersionForTest(true);
+        menuShown();
+        const QString tipKeep = restoreAct ? restoreAct->toolTip() : QString();
+        stroke(window, 15);
+        const bool third = save(f.proj);
+        menuShown();
+        // (An action with no tooltip set answers with its own name, which a menu never shows.)
+        check(QStringLiteral("(ss8) control: back on \"keep\", the entry is still greyed until a save has something "
+                             "to keep (its tooltip says one is kept from the next save); that save keeps the "
+                             "version it replaced, and the entry is live, with no reason left on it"),
+              tipKeep.contains(QStringLiteral("from the next save")) && third && window.lastSavePreviousKeptForTest()
+                  && onDisk(previousFile, f.proj).version == now.version && restoreAct && restoreAct->isEnabled()
+                  && restoreAct->toolTip() == QStringLiteral("Restore Previous Saved Version"),
+              QStringLiteral("tooltip '%1', then '%2'; kept %3; enabled %4").arg(tipKeep)
+                  .arg(restoreAct ? restoreAct->toolTip() : QString()).arg(window.lastSavePreviousKeptForTest())
+                  .arg(restoreAct && restoreAct->isEnabled()));
+    }
+
+    // --- (ss9) File > Restore Previous Saved Version... -------------------------------------------
+    {
+        QStringList entries;
+        if (file)
+            for (QAction *action : file->actions())
+                if (!action->isSeparator())
+                    entries << action->text();
+        const int saveAs = int(entries.indexOf(QStringLiteral("Save Project As...")));
+        check(QStringLiteral("(ss9) THE ENTRY: \"Restore Previous Saved Version...\" is in the File menu, right "
+                             "under \"Save Project As...\""),
+              file && saveAs >= 0 && entries.value(saveAs + 1) == QStringLiteral("Restore Previous Saved Version...")
+                  && restoreAct && restoreAct->text() == entries.value(saveAs + 1),
+              entries.join(QStringLiteral(" | ")));
+
+        const OnDisk savedNow = onDisk(f.proj, f.proj);        // D
+        const OnDisk previousNow = onDisk(previousFile, f.proj); // C
+        const ProjectIO::PreviousVersion kept = ProjectIO::readPreviousVersion(f.proj);
+        const QString when = QLocale(QLocale::English, QLocale::UnitedKingdom)
+                                 .toString(kept.savedAt, QStringLiteral("d MMMM 'at' HH:mm"));
+        QStringList asked; // title | text | informative, each time the warning was shown
+        bool answer = false;
+        window.setRestorePromptForTest([&](const QString &title, const QString &text, const QString &informative) {
+            asked << title + QStringLiteral(" | ") + text + QStringLiteral(" | ") + informative;
+            return answer;
+        });
+        // With nothing unsaved open: the question and the one line, and Cancel changes nothing.
+        const auto diskBefore = stateOf(f.work);
+        const bool cancelledClean = !window.restorePreviousVersionForTest();
+        const QString cleanAsk = asked.value(0);
+        check(QStringLiteral("(ss9) THE WARNING, with nothing unsaved open: \"Restore Previous Saved Version\" - "
+                             "\"Open this project as it was saved on <day month> at <hh:mm>?\" with the kept "
+                             "version's own date and time - \"It takes the place of what is open now. Nothing on "
+                             "disk changes until you save.\" - and no word of unsaved changes; cancelled, nothing "
+                             "has changed"),
+              cancelledClean && asked.size() == 1
+                  && cleanAsk == QStringLiteral("Restore Previous Saved Version | Open this project as it was saved on "
+                                                "%1? | It takes the place of what is open now. Nothing on disk "
+                                                "changes until you save.").arg(when)
+                  && !window.isDirty() && stateOf(f.work) == diskBefore,
+              cleanAsk);
+        // With unsaved changes open: the amber line and the line under it; Cancel keeps them.
+        const QVector<QVector<qint64>> keys = keysOf(window.scenesForTest());
+        stroke(window, 100);
+        const Version unsaved = inWindow(window.scenesForTest(), keys, savedNow.version);
+        const bool cancelledDirty = !window.restorePreviousVersionForTest();
+        const QString dirtyAsk = asked.value(1);
+        check(QStringLiteral("(ss9) THE WARNING, with unsaved changes open, adds \"You have changes that are not "
+                             "saved. They are in no saved version and will be lost.\" and \"(Saving them first "
+                             "would replace the previous version you are asking for.)\"; CANCELLED, the window "
+                             "still holds the unsaved stroke, still unsaved, and nothing on disk has changed"),
+              cancelledDirty && asked.size() == 2
+                  && dirtyAsk.contains(QStringLiteral("Open this project as it was saved on %1?").arg(when))
+                  && dirtyAsk.contains(QStringLiteral("It takes the place of what is open now. Nothing on disk changes "
+                                                      "until you save."))
+                  && dirtyAsk.contains(QStringLiteral("You have changes that are not saved. They are in no saved "
+                                                      "version and will be lost."))
+                  && dirtyAsk.contains(QStringLiteral("(Saving them first would replace the previous version you are "
+                                                      "asking for.)"))
+                  && window.isDirty() && unsaved != savedNow.version
+                  && inWindow(window.scenesForTest(), keysOf(window.scenesForTest()), unsaved).layers == unsaved.layers
+                  && stateOf(f.work) == diskBefore,
+              dirtyAsk);
+        // Restored: the previous version in the window, unsaved; the disk as it was.
+        answer = true;
+        const bool restoredNow = window.restorePreviousVersionForTest();
+        pump(500);
+        const Version shown = inWindow(window.scenesForTest(), keysOf(window.scenesForTest()), previousNow.version);
+        check(QStringLiteral("(ss9) RESTORED: the window holds the previous saved version, layer for layer - the "
+                             "unsaved stroke and the last save's are gone from it - as UNSAVED work of the same "
+                             "project (its file and its name kept); and NOTHING ON DISK HAS CHANGED: every file of "
+                             "the folder has the bytes and the time it had"),
+              restoredNow && shown.layers == previousNow.version.layers && shown.layers != savedNow.version.layers
+                  && window.isDirty() && window.projectPathForTest() == f.proj && stateOf(f.work) == diskBefore
+                  && onDisk(f.proj, f.proj).version == savedNow.version,
+              QStringLiteral("restored %1, unsaved %2, path %3, disk as it was %4").arg(restoredNow).arg(window.isDirty())
+                  .arg(QFileInfo(window.projectPathForTest()).fileName()).arg(stateOf(f.work) == diskBefore));
+        // Saved: it is the saved version, and the one that was saved until then the previous.
+        const bool savedRestored = save(f.proj);
+        const OnDisk afterSave = onDisk(f.proj, f.proj);
+        const OnDisk afterPrevious = onDisk(previousFile, f.proj);
+        check(QStringLiteral("(ss9) SAVED AFTER THE RESTORE: the restored picture is the saved version - written "
+                             "from the pictures already on disk, none again - and the version that was saved until "
+                             "then is the previous one, whole: the artist can change their mind once more"),
+              savedRestored && afterSave.whole() && afterSave.version.layers == previousNow.version.layers
+                  && afterPrevious.whole() && afterPrevious.version == savedNow.version
+                  && window.lastSaveWrittenForTest().isEmpty() && !window.isDirty(),
+              QStringLiteral("saved %1; %2; previous %3; pictures written %4").arg(savedRestored).arg(afterSave.state())
+                  .arg(afterPrevious.state()).arg(window.lastSaveWrittenForTest().size()));
+        const bool backAgain = window.restorePreviousVersionForTest();
+        pump(500);
+        const bool savedBack = save(f.proj);
+        check(QStringLiteral("(ss9) ...AND ONCE MORE: restored and saved again, the saved version is the one of "
+                             "before the first restore, and the previous one the picture restored then"),
+              backAgain && savedBack && onDisk(f.proj, f.proj).version.layers == savedNow.version.layers
+                  && onDisk(previousFile, f.proj).version.layers == previousNow.version.layers,
+              QStringLiteral("restored %1 saved %2").arg(backAgain).arg(savedBack));
+        window.setRestorePromptForTest({});
+
+        // --- (ss10) the warning's own box ----------------------------------------------------------
+        stroke(window, 110); // unsaved changes, so the box has its amber line
+        guard.timer.stop();
+        QString title, text, informative, defaultButton;
+        QStringList buttons;
+        bool icon = false;
+        QTimer::singleShot(500, [&] {
+            auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!box)
+                return;
+            title = box->windowTitle();
+            text = box->text();
+            informative = box->informativeText();
+            icon = box->icon() == QMessageBox::Warning;
+            if (!pictures.isEmpty())
+                box->grab().save(pictures + QStringLiteral("/restore_warning_unsaved.png"));
+            for (QAbstractButton *button : box->buttons())
+                buttons << button->text().remove(QLatin1Char('&'));
+            if (box->defaultButton()) {
+                defaultButton = box->defaultButton()->text().remove(QLatin1Char('&'));
+                box->defaultButton()->click(); // Enter
+            } else {
+                box->close();
+            }
+        });
+        const auto diskAtBox = stateOf(f.work);
+        const bool restoredByEnter = window.restorePreviousVersionForTest();
+        pump(300);
+        guard.timer.start();
+        buttons.sort();
+        check(QStringLiteral("(ss10) THE WARNING'S BOX, as the menu entry shows it: a warning titled \"Restore "
+                             "Previous Saved Version\" with the question, the unsaved-changes line, and two "
+                             "buttons - \"Restore Previous Version\" and \"Cancel\"; CANCEL IS THE DEFAULT BUTTON: "
+                             "Enter restores nothing, the unsaved stroke stays, the disk is as it was"),
+              title == QStringLiteral("Restore Previous Saved Version") && icon
+                  && text.startsWith(QStringLiteral("Open this project as it was saved on "))
+                  && informative.contains(QStringLiteral("You have changes that are not saved."))
+                  && buttons == QStringList({QStringLiteral("Cancel"), QStringLiteral("Restore Previous Version")})
+                  && defaultButton == QStringLiteral("Cancel") && !restoredByEnter && window.isDirty()
+                  && stateOf(f.work) == diskAtBox,
+              QStringLiteral("'%1' | '%2' | buttons [%3], default '%4'; restored %5").arg(title, text)
+                  .arg(buttons.join(QStringLiteral(", ")), defaultButton).arg(restoredByEnter));
+        window.undoActionForTest()->trigger(); // the stroke of (ss10) away again
+        pump(300);
+        window.markCleanForTest();
+    }
+
+    // --- (ss11) Preferences > Saving -------------------------------------------------------------------
+    {
+        QAction *prefs = nullptr;
+        for (QAction *action : window.findChildren<QAction *>())
+            if (action->text() == QLatin1String("Preferences..."))
+                prefs = action;
+        struct Page
+        {
+            QStringList categories;
+            bool found = false, keepChecked = false, deleteChecked = false;
+            QString notes;
+        };
+        // Opens Preferences, reads the Saving page, clicks `choose` (0: nothing, 1: keep, 2: delete), closes.
+        auto viaPreferences = [&](int choose) {
+            auto page = std::make_shared<Page>();
+            if (!prefs)
+                return *page;
+            guard.timer.stop();
+            QTimer::singleShot(500, [page, choose, pictures] {
+                QWidget *dialog = QApplication::activeModalWidget();
+                if (!dialog)
+                    return;
+                if (auto *list = dialog->findChild<QListWidget *>()) {
+                    for (int i = 0; i < list->count(); ++i)
+                        page->categories << list->item(i)->text();
+                    list->setCurrentRow(list->count() - 1);
+                }
+                if (!pictures.isEmpty() && choose == 2)
+                    dialog->grab().save(pictures + QStringLiteral("/preferences_saving.png"));
+                auto *keep = dialog->findChild<QRadioButton *>(QStringLiteral("prefsSavingKeep"));
+                auto *away = dialog->findChild<QRadioButton *>(QStringLiteral("prefsSavingDelete"));
+                if (keep && away) {
+                    page->found = keep->isVisible() && away->isVisible();
+                    page->keepChecked = keep->isChecked();
+                    page->deleteChecked = away->isChecked();
+                    for (QLabel *label : keep->parentWidget()->findChildren<QLabel *>())
+                        page->notes += label->text() + QStringLiteral(" | ");
+                    page->notes = keep->text() + QStringLiteral(" | ") + away->text() + QStringLiteral(" | ") + page->notes;
+                    if (choose == 1)
+                        keep->click();
+                    else if (choose == 2)
+                        away->click();
+                }
+                dialog->close();
+            });
+            prefs->trigger();
+            pump(300);
+            guard.timer.start();
+            return *page;
+        };
+        const auto diskBefore = stateOf(f.work);
+        const Page first = viaPreferences(2);
+        const bool afterDelete = window.keepPreviousVersionForTest();
+        const bool nothingAtTheClick = stateOf(f.work) == diskBefore && QFileInfo::exists(previousFile);
+        check(QStringLiteral("(ss11) PREFERENCES > SAVING: a fourth page, \"Saving\", after Camera, Playback and "
+                             "Recovery - \"After each save\", \"Keep the previous saved version\" (chosen, the "
+                             "default) with its note, \"Delete the previous pictures right away\" with its note; "
+                             "choosing the second sets the preference and changes nothing on disk at the click"),
+              first.categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Playback"),
+                                               QStringLiteral("Recovery"), QStringLiteral("Saving")})
+                  && first.found && first.keepChecked && !first.deleteChecked
+                  && first.notes.contains(QStringLiteral("After each save"))
+                  && first.notes.contains(QStringLiteral("Keep the previous saved version"))
+                  && first.notes.contains(QStringLiteral(
+                         "The project as it was before your last save stays beside it until the next save has "
+                         "completed. File > Restore Previous Saved Version... brings it back."))
+                  && first.notes.contains(QStringLiteral("Delete the previous pictures right away"))
+                  && first.notes.contains(QStringLiteral("Uses less disk space. There is then no previous version to "
+                                                         "go back to."))
+                  && !afterDelete && nothingAtTheClick,
+              QStringLiteral("[%1]; keep %2 delete %3; after the click keep is %4, disk as it was %5 | %6")
+                  .arg(first.categories.join(QStringLiteral(", "))).arg(first.keepChecked).arg(first.deleteChecked)
+                  .arg(afterDelete).arg(nothingAtTheClick).arg(first.notes.left(160)));
+        const Page second = viaPreferences(1);
+        check(QStringLiteral("(ss11) control: opened again the page shows the second choice - it reads the stored "
+                             "preference, not a default - and choosing the first sets it back"),
+              second.found && !second.keepChecked && second.deleteChecked && window.keepPreviousVersionForTest(),
+              QStringLiteral("keep %1 delete %2; now keep is %3").arg(second.keepChecked).arg(second.deleteChecked)
+                  .arg(window.keepPreviousVersionForTest()));
+    }
+
+    // --- (ss12) Clean Up Project Folder and the previous saved version ------------------------------------
+    {
+        const OnDisk previousBefore = onDisk(previousFile, f.proj);
+        const QString orphan = f.assets + QStringLiteral("/p_0123456789ab.png");
+        {
+            QImage image(8, 8, QImage::Format_ARGB32);
+            image.fill(Qt::red);
+            image.save(orphan, "PNG");
+        }
+        int onlyPrevious = 0; // the pictures only the previous version names
+        const OnDisk savedNow = onDisk(f.proj, f.proj);
+        for (const QString &name : previousBefore.names)
+            onlyPrevious += savedNow.names.contains(name) ? 0 : 1;
+        const int removed = window.cleanUpProjectFolderForTest(true);
+        const OnDisk previousAfter = onDisk(previousFile, f.proj);
+        check(QStringLiteral("(ss12) CLEAN UP PROJECT FOLDER LEAVES THE PREVIOUS SAVED VERSION'S PICTURES: with 2 "
+                             "pictures in the folder that only the previous version names and one planted file "
+                             "that nothing names, it removes exactly the planted one; the previous version still "
+                             "opens whole, the same picture"),
+              onlyPrevious == 2 && removed == 1 && !QFileInfo::exists(orphan) && previousAfter.whole()
+                  && previousAfter.version == previousBefore.version && onDisk(f.proj, f.proj).whole(),
+              QStringLiteral("only the previous names %1; removed %2; orphan there %3; previous %4").arg(onlyPrevious)
+                  .arg(removed).arg(QFileInfo::exists(orphan)).arg(previousAfter.state()));
+    }
+
+    // --- (ss13) a picture that cannot be written ------------------------------------------------------------
+    {
+        // The stroke's layer must go into a new file: a folder stands where that file is made.
+        const Panel *panel = window.scenesForTest().at(0)->panels.at(0);
+        const QString base = QStringLiteral("p_%1_l_%2.png")
+                                 .arg(ProjectIO::imageIdStem(panel->id),
+                                      ProjectIO::imageIdStem(panel->layers.at(panel->activeLayerIndex).id));
+        QString next;
+        for (int n = 1; next.isEmpty(); ++n)
+            if (!QFileInfo::exists(f.assets + QStringLiteral("/") + ProjectIO::imageNameVariant(base, n)))
+                next = ProjectIO::imageNameVariant(base, n);
+        const QString blocker = f.assets + QStringLiteral("/") + next + QStringLiteral(".part");
+        QDir().mkpath(blocker);
+        const OnDisk savedBefore = onDisk(f.proj, f.proj);
+        const OnDisk previousBefore = onDisk(previousFile, f.proj);
+        const QString projectBytes = shaOfFile(f.proj), previousBytes = shaOfFile(previousFile);
+        stroke(window, 120);
+        const int boxesBefore = guard.closed;
+        const bool savedBlocked = save(f.proj);
+        const bool said = guard.closed == boxesBefore + 1; // its "NOT saved" box, closed by the guard
+        const bool allOld = onDisk(f.proj, f.proj).whole() && onDisk(f.proj, f.proj).version == savedBefore.version
+            && onDisk(previousFile, f.proj).version == previousBefore.version && shaOfFile(f.proj) == projectBytes
+            && shaOfFile(previousFile) == previousBytes;
+        QDir(blocker).removeRecursively();
+        const bool savedFreed = save(f.proj);
+        const QStringList strays = straysOf(f.proj);
+        check(QStringLiteral("(ss13) A PICTURE THAT CANNOT BE WRITTEN FAILS THE SAVE AND CHANGES NOTHING: with a "
+                             "folder standing where the stroke's layer must be made, the save says it failed and "
+                             "the work stays unsaved; on disk the project file and the previous saved version "
+                             "have the bytes they had and both open as before. Freed, the next save completes and "
+                             "leaves no picture that no version names"),
+              QFileInfo(blocker).exists() == false && !savedBlocked && said && allOld && savedFreed && strays.isEmpty()
+                  && !window.isDirty(),
+              QStringLiteral("blocked save %1, said %2, all old %3; freed save %4; strays [%5]").arg(savedBlocked)
+                  .arg(said).arg(allOld).arg(savedFreed).arg(strays.join(QLatin1Char(' '))));
+    }
+
+    // --- (ss14) nothing replaced, nothing dropped -----------------------------------------------------------
+    {
+        // The project file gone behind the app's back, and the project saved again from the
+        // window: no project file was replaced, so the previous saved version that lies there
+        // is not replaced either - it is the last version known to open.
+        const QString previousBytes = shaOfFile(previousFile);
+        const OnDisk previousBefore = onDisk(previousFile, f.proj);
+        const bool removed = QFile::remove(f.proj);
+        stroke(window, 135);
+        const bool saved = save(f.proj);
+        const OnDisk previousAfter = onDisk(previousFile, f.proj);
+        const OnDisk savedAfter = onDisk(f.proj, f.proj);
+        // (The deleted project file's own pictures of the panel drawn on are in no version
+        // now, and go: removed, but none that either version names.)
+        bool removedUnnamed = true;
+        for (const QString &file : window.lastSaveRemovedForTest()) {
+            const QString name = QDir(f.work).relativeFilePath(file).toLower();
+            removedUnnamed = removedUnnamed && !previousAfter.names.contains(name) && !savedAfter.names.contains(name);
+        }
+        check(QStringLiteral("(ss14) A SAVE THAT REPLACES NO PROJECT FILE LEAVES THE PREVIOUS SAVED VERSION AS IT IS: "
+                             "with the project file deleted behind the app and the project saved again from the "
+                             "window, the kept version's file has the bytes it had and opens whole, the same "
+                             "picture; the project is saved whole; the pictures removed are ones neither names"),
+              removed && saved && shaOfFile(previousFile) == previousBytes && !previousBytes.isEmpty()
+                  && previousAfter.whole() && previousAfter.version == previousBefore.version
+                  && savedAfter.whole() && !window.lastSavePreviousKeptForTest() && removedUnnamed
+                  && straysOf(f.proj).isEmpty(),
+              QStringLiteral("saved %1; previous %2; removed %3 picture(s), none of them named %4").arg(saved)
+                  .arg(previousAfter.state()).arg(window.lastSaveRemovedForTest().size()).arg(removedUnnamed));
+    }
+
+    check(QStringLiteral("(ss) no box opened that a check did not expect"), guard.closed == 1,
+          QStringLiteral("%1: %2").arg(guard.closed).arg(guard.said.join(QStringLiteral(" || "))));
+    {
+        QSettings s = sankoSettings();
+        s.remove(QStringLiteral("saving/keepPrevious")); // as the family found it
+    }
+    ProjectIO::setOverwriteInPlaceForTest(false);
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -34494,7 +36021,12 @@ int main(int argc, char **argv)
         for (const QString &k : real.allKeys())
             realStoreBefore.insert(k, real.value(k));
     }
-    QDir(scratch).removeRecursively();
+    // THE SAFE SAVE'S SECOND PROCESS ((ss4), 2026-11-23): this program started by the pass
+    // itself, to be killed in the middle of a save. It works in the family's scratch as the
+    // family left it - so the scratch is not cleared - and runs nothing of the family.
+    const bool victim = qEnvironmentVariableIsSet("SANKO_SAFESAVE_VICTIM");
+    if (!victim)
+        QDir(scratch).removeRecursively();
     QDir().mkpath(scratch + QStringLiteral("/settings"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
@@ -34512,10 +36044,31 @@ int main(int argc, char **argv)
     NewProjectDialog::setDefaultLocationForTest(
         scratch + QStringLiteral("/new_project_default"));
 
+    if (victim)
+        return safesave::runVictim();
+
     const QString projects = scratch + QStringLiteral("/projects");
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("safesave")) {
+        // The safe save (saving step 1), with the passes whose checks it changed: the
+        // incremental save (sv), the save that cannot finish (i), the stable ids and
+        // Clean Up (n), the recovery copy (r), the audio's folder (aq) and the blocked
+        // write (cf).
+        runSafeSavePass(scratch);
+        runIncrementalSavePass(scratch);
+        runSaveFailurePass(scratch);
+        runStableIdsPass(scratch);
+        runRecoveryPass(scratch);
+        runAudioTravelsPass(scratch);
+        runBlockedWritePass(scratch);
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("panels")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("overlays")
@@ -34746,6 +36299,7 @@ int main(int argc, char **argv)
     runRecentsStorePass(scratch);
     runSaveFailurePass(scratch);
     runIncrementalSavePass(scratch);
+    runSafeSavePass(scratch); // saving step 1 (2026-11-23)
     runRecentThumbnailSourcePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runNewProjectPromptPass(a);

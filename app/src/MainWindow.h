@@ -91,6 +91,22 @@ public:
     QStringList lastSaveWrittenForTest() const { return m_lastSaveWritten; }
     int lastSaveSkippedForTest() const { return m_lastSaveSkipped; }
     QStringList lastSaveRenamedForTest() const { return m_lastSaveRenamed; }
+    // THE SAFE SAVE (saving step 1, 2026-11-23): the superseded pictures the last save
+    // removed after its switch, and whether what it replaced is now the previous saved
+    // version; Preferences > Saving's choice; File > Restore Previous Saved Version... -
+    // the entry, the path the entry takes (true: restored), and its warning answered by
+    // the gate: given the box's title, its text and its informative text, return true for
+    // "Restore Previous Version".
+    QStringList lastSaveRemovedForTest() const { return m_lastSaveRemoved; }
+    bool lastSavePreviousKeptForTest() const { return m_lastSavePreviousKept; }
+    bool keepPreviousVersionForTest() const { return keepPreviousVersion(); }
+    void setKeepPreviousVersionForTest(bool keep) { setKeepPreviousVersion(keep); }
+    QAction *restorePreviousActionForTest() const { return m_restorePreviousAct; }
+    bool restorePreviousVersionForTest() { return restorePreviousVersion(); }
+    void setRestorePromptForTest(std::function<bool(const QString &, const QString &, const QString &)> prompt)
+    {
+        m_restorePromptForTest = std::move(prompt);
+    }
     // Clean Up Project Folder (2026-11-04) driven by the gate: `confirm`
     // answers its question; the count of files removed, -1 when it refused
     // (no project, or unsaved changes).
@@ -476,7 +492,22 @@ private:
     // asRecoveryCopy: the file is a crash's recovery copy of m_recoveredFrom
     // - loaded as an UNSAVED document with no file of its own, not recorded
     // in the recents.
-    bool loadFromPath(const QString &path, bool asRecoveryCopy = false);
+    // asPreviousOf (the safe save, 2026-11-23): the file is the previous saved
+    // version of the project file named here (ProjectIO::previousVersionFile).
+    // It is loaded in that project's place - the project keeps its file and its
+    // name - as UNSAVED work: nothing on disk changes until a save.
+    bool loadFromPath(const QString &path, bool asRecoveryCopy = false,
+                      const QString &asPreviousOf = QString());
+    // File > Restore Previous Saved Version...: asks (the warning), then opens
+    // the previous saved version in the window. True when it did.
+    bool restorePreviousVersion();
+    // Preferences > Saving: keep the previous saved version (the default), or
+    // delete the previous pictures right away. The setting saving/keepPrevious.
+    bool keepPreviousVersion() const;
+    void setKeepPreviousVersion(bool keep);
+    // Enables File > Restore Previous Saved Version... when the open project has
+    // a whole previous saved version; else sets the tooltip that says why not.
+    void refreshRestorePreviousAction();
 
     QStackedWidget *m_stack = nullptr;
     QUndoStack *m_undoStack = nullptr; // ONE app-wide chronological history
@@ -499,6 +530,10 @@ private:
     QStringList m_lastSaveWritten;
     int m_lastSaveSkipped = 0;
     QStringList m_lastSaveRenamed; // images only renamed to their id names
+    QStringList m_lastSaveRemoved; // superseded pictures removed after the switch
+    bool m_lastSavePreviousKept = false;
+    QAction *m_restorePreviousAct = nullptr; // File > Restore Previous Saved Version...
+    std::function<bool(const QString &, const QString &, const QString &)> m_restorePromptForTest;
     QAction *m_cleanUpAct = nullptr; // File > Clean Up Project Folder...
     int m_lastSaveEncodeThreads = 0;
     // Auto-save and crash recovery (2026-11-04).

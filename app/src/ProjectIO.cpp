@@ -3,6 +3,7 @@
 #include "ProjectMedia.h"
 #include "camera/ShotCamera.h"
 
+#include <QBuffer>
 #include <QColor> // a scene's colour, read back (batch E)
 #include <QCoreApplication>
 #include <QDataStream>
@@ -11,9 +12,12 @@
 #include <QFileInfo>
 #include <QImageWriter>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonValue>
 #include <QMutex>
+#include <QMutexLocker>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
@@ -22,7 +26,24 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <string>
 #include <vector>
+
+// THE SAFE SAVE (saving step 1, 2026-11-23) pushes each file through to the disk and names it
+// in one step of the file system's own; Qt has no call for either, so Windows' are used.
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <io.h>
+#else
+#include <cstdio>
+#include <unistd.h>
+#endif
 
 namespace ProjectIO {
 
@@ -90,6 +111,21 @@ QString ImageLedger::fileHolding(const QByteArray &content, const QString &folde
             return it.key();
     }
     return QString();
+}
+
+QStringList ImageLedger::filesHolding(const QByteArray &content, const QString &folder) const
+{
+    QStringList files;
+    const QString prefix = QDir::cleanPath(QFileInfo(folder).absoluteFilePath()) + QLatin1Char('/');
+    for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
+        if (it->content != content || !it.key().startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        const QFileInfo now(it.key());
+        if (now.isFile() && now.size() == it->bytes && now.lastModified() == it->modified)
+            files.append(it.key());
+    }
+    files.sort(); // the same answer every run, whatever the table's order
+    return files;
 }
 
 // --- The image names (2026-11-04) ----------------------------------------------
@@ -168,8 +204,10 @@ QStringList projectImageNames(const QVector<Scene *> &scenes)
 
 bool isIdImageName(const QString &fileName)
 {
+    // "~<n>" before ".png": the same image written again by a later save (the safe save,
+    // 2026-11-23 - a save never writes over a file; see imageNameVariant).
     static const QRegularExpression rx(
-        QStringLiteral("^p_[0-9a-f]{12,32}(_l_[0-9a-f]{12,32})?\\.png$"),
+        QStringLiteral("^p_[0-9a-f]{12,32}(_l_[0-9a-f]{12,32})?(~[0-9]+)?\\.png$"),
         QRegularExpression::CaseInsensitiveOption);
     return rx.match(fileName).hasMatch();
 }
@@ -178,9 +216,32 @@ QString panelStemOfImageName(const QString &fileName)
 {
     if (!isIdImageName(fileName))
         return QString();
-    const QString body = fileName.mid(2, fileName.size() - 6); // between "p_" and ".png"
+    const QString plain = imageBaseName(fileName);
+    const QString body = plain.mid(2, plain.size() - 6); // between "p_" and ".png"
     const int l = body.indexOf(QStringLiteral("_l_"));
     return (l < 0 ? body : body.left(l)).toLower();
+}
+
+// --- The names of an image written again (the safe save, 2026-11-23) -----------------------
+// A save never writes over a file. An image that changed goes into a file of its own: its
+// name with "~2", "~3", ... before the extension - the lowest that is free. "x.png" is the
+// base name of them all.
+QString imageNameVariant(const QString &name, int n)
+{
+    if (n <= 1)
+        return name;
+    const int dot = name.lastIndexOf(QLatin1Char('.'));
+    const QString tail = QStringLiteral("~%1").arg(n);
+    return dot < 0 ? name + tail : name.left(dot) + tail + name.mid(dot);
+}
+
+QString imageBaseName(const QString &name)
+{
+    static const QRegularExpression rx(QStringLiteral("~[0-9]+(\\.[^./\\\\~]*)?$"));
+    const QRegularExpressionMatch m = rx.match(name);
+    if (!m.hasMatch())
+        return name;
+    return name.left(m.capturedStart()) + m.captured(1);
 }
 
 QByteArray layerContent(const Layer &layer)
@@ -228,6 +289,192 @@ QByteArray thumbnailContent(const QPixmap &pixmap)
     return id;
 }
 
+// --- THE SAFE SAVE'S STEPS (saving step 1, 2026-11-23) -------------------------------------
+// Every file a save makes is made the same way: written whole under "<name>.part", PUSHED
+// THROUGH TO THE DISK, and only then given its name - in one step of the file system's, itself
+// written through. Each of those is a step the writer reports here, in order. The checks
+// read that report (the order of the pushes), stop the writer after any step - from then on
+// it does nothing at all, as a process that died there does nothing, cleaning up included -
+// or hold it at a step for a second process to be killed in.
+struct SaveHooks
+{
+    QMutex mutex;
+    QVector<SaveStepRecord> *log = nullptr;
+    int steps = 0;
+    int stopAfter = -1;
+    int holdAt = -1;
+    std::function<void()> hold;
+    bool dead = false;
+    std::atomic<bool> skipPush{false};
+    std::atomic<bool> overwriteInPlace{false};
+};
+SaveHooks &saveHooks()
+{
+    static SaveHooks hooks;
+    return hooks;
+}
+
+// The writer has just done `step`. False: it is to do nothing more.
+bool stepDone(SaveStep step, const QString &file)
+{
+    SaveHooks &h = saveHooks();
+    std::function<void()> hold;
+    {
+        QMutexLocker lock(&h.mutex);
+        if (h.dead)
+            return false;
+        ++h.steps;
+        if (h.log)
+            h.log->append({step, QDir::cleanPath(file)});
+        if (h.steps == h.holdAt)
+            hold = h.hold;
+        if (h.stopAfter >= 0 && h.steps >= h.stopAfter)
+            h.dead = true;
+    }
+    if (hold)
+        hold(); // may never come back: the process is killed in it
+    QMutexLocker lock(&h.mutex);
+    return !h.dead;
+}
+
+bool writerStopped()
+{
+    SaveHooks &h = saveHooks();
+    QMutexLocker lock(&h.mutex);
+    return h.dead;
+}
+
+// What the file holds, pushed through Windows' cache to the disk.
+bool pushToDisk(QFile &file)
+{
+    if (!file.flush())
+        return false;
+    if (saveHooks().skipPush.load())
+        return true; // a check's control: the push left out
+#ifdef Q_OS_WIN
+    const intptr_t handle = _get_osfhandle(file.handle());
+    return handle != -1 && FlushFileBuffers(HANDLE(handle)) != 0;
+#else
+    return ::fsync(file.handle()) == 0;
+#endif
+}
+
+#ifdef Q_OS_WIN
+std::wstring nativePath(const QString &file)
+{
+    QString path = QDir::toNativeSeparators(QFileInfo(file).absoluteFilePath());
+    // Past Windows' classic length the path needs its long form.
+    if (path.size() >= 240 && path.size() > 2 && path.at(1) == QLatin1Char(':'))
+        path.prepend(QStringLiteral("\\\\?\\"));
+    return path.toStdWString();
+}
+#endif
+
+// `from` takes the name `to`, in one step, written through. With `over`, in place of the
+// file that has the name; without, only if nothing has it.
+bool giveName(const QString &from, const QString &to, bool over, QString *why)
+{
+#ifdef Q_OS_WIN
+    const std::wstring a = nativePath(from), b = nativePath(to);
+    if (MoveFileExW(a.c_str(), b.c_str(), (over ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH))
+        return true;
+    if (why)
+        *why = qt_error_string(int(GetLastError()));
+    return false;
+#else
+    if (!over && QFileInfo::exists(to)) {
+        if (why)
+            *why = QStringLiteral("a file of that name is there already");
+        return false;
+    }
+    if (std::rename(QFile::encodeName(from).constData(), QFile::encodeName(to).constData()) == 0)
+        return true;
+    if (why)
+        *why = qt_error_string();
+    return false;
+#endif
+}
+
+enum class Whole { Done, Failed, Stopped };
+
+// `bytes` as the file `to`, whole or not at all: its three steps, each reported.
+Whole writeWhole(const QString &to, const QByteArray &bytes, bool over, SaveStep written, SaveStep pushed,
+                 SaveStep named, QString *why)
+{
+    if (writerStopped())
+        return Whole::Stopped;
+    const QString part = to + QStringLiteral(".part");
+    QFile out(part);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (why)
+            *why = out.errorString();
+        return Whole::Failed;
+    }
+    if (out.write(bytes) != bytes.size()) {
+        if (why)
+            *why = out.errorString();
+        out.close();
+        QFile::remove(part);
+        return Whole::Failed;
+    }
+    if (!stepDone(written, part))
+        return Whole::Stopped;
+    if (!pushToDisk(out)) {
+        if (why)
+            *why = out.errorString();
+        out.close();
+        QFile::remove(part);
+        return Whole::Failed;
+    }
+    if (!saveHooks().skipPush.load() && !stepDone(pushed, part))
+        return Whole::Stopped;
+    out.close();
+    if (!giveName(part, to, over, why)) {
+        QFile::remove(part);
+        return Whole::Failed;
+    }
+    return stepDone(named, to) ? Whole::Done : Whole::Stopped;
+}
+
+// The image files a project file names, by what they are: "P:<panel id>" a panel's flatten,
+// "L:<panel id>:<layer id>" a layer, "C:<entry id>" a Consistency Board thumbnail - and all
+// the names, lower-cased, relative to the project file as written. A panel without an id
+// (a project from before 2026-11-04) is in `named` only.
+struct NamedImages
+{
+    QHash<QString, QString> byKey;
+    QSet<QString> named;
+};
+NamedImages namedImages(const QJsonObject &root)
+{
+    NamedImages out;
+    auto add = [&out](const QString &key, const QString &name) {
+        if (name.isEmpty())
+            return;
+        out.named.insert(name.toLower());
+        if (!key.isEmpty())
+            out.byKey.insert(key, name);
+    };
+    for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+            const QJsonObject p = pv.toObject();
+            const QString pid = p.value(QStringLiteral("id")).toString();
+            add(pid.isEmpty() ? QString() : QStringLiteral("P:") + pid, p.value(QStringLiteral("pixmapFile")).toString());
+            for (const QJsonValue &lv : p.value(QStringLiteral("layers")).toArray()) {
+                const QJsonObject l = lv.toObject();
+                const QString lid = l.value(QStringLiteral("id")).toString();
+                add(pid.isEmpty() || lid.isEmpty() ? QString() : QStringLiteral("L:%1:%2").arg(pid, lid),
+                    l.value(QStringLiteral("imageFile")).toString());
+            }
+        }
+    for (const QJsonValue &cv : root.value(QStringLiteral("consistencyBoard")).toArray()) {
+        const QJsonObject c = cv.toObject();
+        const QString cid = c.value(QStringLiteral("id")).toString();
+        add(cid.isEmpty() ? QString() : QStringLiteral("C:") + cid, c.value(QStringLiteral("thumbnailFile")).toString());
+    }
+    return out;
+}
+
 // Where the save's images reach the disk, so the one place that can fail.
 //
 // An image whose file already holds it (ImageLedger) is skipped. The rest
@@ -252,15 +499,27 @@ public:
     // set, the images to write go there instead of to the encoders.
     ImageSaver(const QString &folder, const QString &assets, ImageLedger *ledger,
                WriteResult *res, const QStringList &keep, ImagePlan *plan)
-        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res), m_plan(plan)
+        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res), m_plan(plan),
+          // THE SAFE SAVE (2026-11-23): a Save, which knows what its files hold. The recovery
+          // copy (a plan) and a caller without a ledger (the seam's fixtures) write as before.
+          m_safe(ledger && !plan && !saveHooks().overwriteInPlace.load())
     {
-        for (const QString &name : keep)
+        for (const QString &name : keep) {
             m_keep.insert(QDir::cleanPath(QFileInfo(folder + QStringLiteral("/") + name)
                                               .absoluteFilePath())
                               .toLower());
+            m_bases.insert(QFileInfo(name).fileName().toLower());
+        }
         // Enough to finish a full 4K save in about two seconds, few enough
         // that the encoders' working copies (one image each) stay bounded.
-        const int threads = qBound(1, QThread::idealThreadCount(), 8);
+        int threads = qBound(1, QThread::idealThreadCount(), 8);
+        {
+            // A check that stops or holds the writer at a step needs the steps in one order.
+            SaveHooks &h = saveHooks();
+            QMutexLocker lock(&h.mutex);
+            if (h.stopAfter >= 0 || h.holdAt >= 0)
+                threads = 1;
+        }
         m_pool.setMaxThreadCount(threads);
         m_slots.release(threads * 2);
     }
@@ -271,19 +530,24 @@ public:
     // A layer's file (version 3): only what is drawn when the tiles say what the
     // layer holds; the whole stage when they do not yet (the panel on the canvas,
     // edited, needs no fold on the way out). Says in `layerObj` where it lies.
-    void layer(const Layer &layer, const QPoint &frameAt, const QString &relName, QJsonObject *layerObj)
+    // Returns the name the layer's file has after the save (relative, as `baseName` is): with
+    // the safe save that is the file that already holds it, or a new one - never `baseName`
+    // itself when a file of that name is there (settle()).
+    QString layer(const Layer &layer, const QPoint &frameAt, const QString &baseName, QJsonObject *layerObj)
     {
         const QByteArray content = layerContent(layer);
+        const bool oldForm = g_writeVersion2ForTest.load();
+        bool have = false;
+        const QString relName = m_safe && !oldForm ? settle(baseName, content, &have) : baseName;
         const QString full = m_folder + QStringLiteral("/") + relName;
         const bool paper = layer.type == QLatin1String("background");
         layertiles::TilesPtr tiles = layer.atRest() || layer.tilesCurrent() ? layer.tiles : nullptr;
-        const bool oldForm = g_writeVersion2ForTest.load();
         QPoint origin;
         if (oldForm) {
             // The older form: never skipped, as a place cannot be said for it.
             origin = -frameAt;
             pushLayer(relName, layer.pixels(), nullptr, QRect(), content, origin);
-        } else if (skip(relName, content) || adopt(relName, content)) {
+        } else if (m_safe ? have : (skip(relName, content) || adopt(relName, content))) {
             origin = m_ledger->originOf(full);
         } else {
             // A full image not yet folded folds here, so a project saved, opened
@@ -319,13 +583,25 @@ public:
                     QStringLiteral("%1").arg(fill, 8, 16, QLatin1Char('0'));
             }
         }
+        return relName;
     }
 
-    void flatten(const Panel &panel, const QString &relName)
+    // Returns the name the flatten's file has after the save, as layer() does.
+    QString flatten(const Panel &panel, const QString &baseName)
     {
         const QByteArray content = flattenContent(panel);
+        if (m_safe) {
+            bool have = false;
+            const QString relName = settle(baseName, content, &have);
+            if (!have) {
+                m_res->composeThreadIds.append(QThread::currentThreadId());
+                push(relName, panel.flattenedPixmap().toImage(), content);
+            }
+            return relName;
+        }
+        const QString &relName = baseName;
         if (skip(relName, content) || adopt(relName, content))
-            return;
+            return relName;
         if (m_plan) {
             // The panel's layers as shared copies; runImagePlan composites
             // them where it runs.
@@ -336,23 +612,41 @@ public:
             job.content = content;
             job.flatten = std::move(snapshot);
             m_plan->jobs.append(std::move(job));
-            return;
+            return relName;
         }
         m_res->composeThreadIds.append(QThread::currentThreadId());
         push(relName, panel.flattenedPixmap().toImage(), content);
+        return relName;
     }
 
-    void thumbnail(const QPixmap &pixmap, const QString &relName)
+    // Returns the name the thumbnail's file has after the save, as layer() does.
+    QString thumbnail(const QPixmap &pixmap, const QString &baseName)
     {
         const QByteArray content = thumbnailContent(pixmap);
-        if (!skip(relName, content))
-            push(relName, pixmap.toImage(), content);
+        if (m_safe) {
+            m_bases.insert(QFileInfo(baseName).fileName().toLower());
+            bool have = false;
+            const QString relName = settle(baseName, content, &have);
+            if (!have)
+                push(relName, pixmap.toImage(), content);
+            return relName;
+        }
+        if (!skip(baseName, content))
+            push(baseName, pixmap.toImage(), content);
+        return baseName;
     }
 
     // Waits for every write, then reports them in the save's order.
     void finish()
     {
         m_pool.waitForDone();
+        if (m_stopped.load()) {
+            // A check stopped the writer: as after a death, nothing is tidied, nothing learnt.
+            m_res->ok = false;
+            m_res->stopped = true;
+            m_res->reason = QStringLiteral("The save was stopped by a check.");
+            return;
+        }
         std::sort(m_done.begin(), m_done.end(),
                   [](const Done &a, const Done &b) { return a.order < b.order; });
         QSet<Qt::HANDLE> threads;
@@ -402,6 +696,59 @@ private:
             return false;
         ++m_res->imagesSkipped;
         return true;
+    }
+
+    // THE SAFE SAVE (2026-11-23): THE FILE THIS IMAGE IS IN AFTER THE SAVE. A save writes over
+    // nothing: until the project file is switched, every file the saved project names must be
+    // exactly as it was, or a save cut short would leave the old project file naming new or
+    // half-written pictures.
+    //  - A file in this project's own images folder that already HOLDS the image, as the
+    //    ledger left it, is named as it is (`have`): the image's own file or an earlier one of
+    //    its own (an Undo back to what the previous saved version holds), else a file no
+    //    image of this save has a claim to - a project saved by position keeps its files and
+    //    their names; nothing is renamed any more (a rename before the switch would take a
+    //    file from under the old project file). Never the file of another image of this
+    //    save: a duplicated panel's layers hold its source's pixels, and the source keeps
+    //    its file.
+    //  - Otherwise the image is written into a file of its own: its base name when nothing
+    //    has it, else the lowest free "~n" of it (imageNameVariant).
+    QString settle(const QString &baseName, const QByteArray &content, bool *have)
+    {
+        const int slash = baseName.lastIndexOf(QLatin1Char('/'));
+        const QString dir = baseName.left(slash + 1); // "<project>_assets/"
+        const QString base = baseName.mid(slash + 1).toLower();
+        const QString here = QDir::cleanPath(QFileInfo(m_folder + QStringLiteral("/") + dir).absoluteFilePath());
+        QString own, other;
+        for (const QString &file : m_ledger->filesHolding(content, m_assets)) {
+            const QFileInfo info(file);
+            if (m_claimed.contains(file.toLower())
+                || QDir::cleanPath(info.absolutePath()).compare(here, Qt::CaseInsensitive) != 0)
+                continue;
+            const QString itsBase = imageBaseName(info.fileName()).toLower();
+            if (itsBase == base) {
+                if (own.isEmpty())
+                    own = file;
+            } else if (!m_bases.contains(itsBase) && other.isEmpty()) {
+                other = file;
+            }
+        }
+        const QString found = own.isEmpty() ? other : own;
+        if (!found.isEmpty()) {
+            m_claimed.insert(found.toLower());
+            ++m_res->imagesSkipped;
+            *have = true;
+            return dir + QFileInfo(found).fileName();
+        }
+        *have = false;
+        for (int n = 1;; ++n) {
+            const QString candidate = imageNameVariant(baseName, n);
+            const QString full =
+                QDir::cleanPath(QFileInfo(m_folder + QStringLiteral("/") + candidate).absoluteFilePath());
+            if (m_claimed.contains(full.toLower()) || QFileInfo::exists(full))
+                continue;
+            m_claimed.insert(full.toLower());
+            return candidate;
+        }
     }
 
     // THE RENAME (2026-11-04): the image's pixels are already on disk under
@@ -465,12 +812,47 @@ private:
         m_slots.acquire(); // bounds the images waiting to be encoded
         m_pool.start([this, order, full, image, tiles, rect, content, origin] {
             Done d{order, full, content, false, QThread::currentThreadId(), origin};
-            if (!m_failed.load()) {
+            if (!m_failed.load() && m_safe) {
+                // THE SAFE SAVE (2026-11-23): the same PNG bytes QImage::save makes, encoded
+                // in memory, then the file made whole, pushed to the disk and named - `full`
+                // is a name nothing has (settle()), so no file of the saved project is touched.
+                const QImage picture = tiles ? layertiles::unfold(*tiles, rect) : image;
+                QByteArray png;
+                QString says;
+                bool encoded = false;
+                if (!picture.isNull()) {
+                    QBuffer buffer(&png);
+                    buffer.open(QIODevice::WriteOnly);
+                    QImageWriter writer(&buffer, "PNG");
+                    encoded = writer.write(picture);
+                    if (!encoded)
+                        says = writer.errorString();
+                }
+                Whole made = Whole::Failed;
+                if (encoded)
+                    made = writeWhole(full, png, false, SaveStep::ImageWritten, SaveStep::ImagePushed,
+                                      SaveStep::ImageNamed, &says);
+                d.ok = made == Whole::Done;
+                if (made == Whole::Stopped)
+                    m_stopped.store(true);
+                if (!d.ok) {
+                    m_failed.store(true);
+                    d.why = picture.isNull()
+                        ? QStringLiteral("the picture to write was empty")
+                        : QStringLiteral("%1 x %2 px; %3").arg(picture.width()).arg(picture.height()).arg(says);
+                }
+                QMutexLocker lock(&m_mutex);
+                m_done.append(d);
+            } else if (!m_failed.load()) {
                 // QImage::save's own writer, so the same bytes; kept here so a
                 // failure can say why (a hand test of 2026-11-08 could not, 6c).
                 const QImage picture = tiles ? layertiles::unfold(*tiles, rect) : image;
                 QImageWriter writer(full, "PNG");
                 d.ok = !picture.isNull() && writer.write(picture);
+                if (d.ok && !stepDone(SaveStep::ImageOverwritten, full)) {
+                    d.ok = false; // (today's writer under a check's stop: the red run)
+                    m_stopped.store(true);
+                }
                 if (!d.ok) {
                     m_failed.store(true);
                     // The writer's words hold the file's when it could not open it;
@@ -498,9 +880,13 @@ private:
     ImageLedger *const m_ledger;
     WriteResult *const m_res;
     ImagePlan *const m_plan; // the recovery copy's: nothing encoded here
+    const bool m_safe;       // the safe save (2026-11-23): see settle()
     QSet<QString> m_keep;    // lower-cased absolute paths
+    QSet<QString> m_bases;   // the base file names of this save's images, lower-cased
+    QSet<QString> m_claimed; // the files this save's images are in, lower-cased absolute paths
     int m_next = 0;
     std::atomic<bool> m_failed{false};
+    std::atomic<bool> m_stopped{false}; // a check stopped the writer (stepDone)
     QSemaphore m_slots;
     QMutex m_mutex;
     QVector<Done> m_done;
@@ -527,10 +913,18 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel)
                 j->composeThread = QThread::currentThreadId();
             }
             const QString part = j->file + QStringLiteral(".part");
-            bool ok = !image.isNull() && image.save(part, "PNG");
-            if (ok) {
-                QFile::remove(j->file);
-                ok = QFile::rename(part, j->file);
+            // (The safe save, 2026-11-23) the copy's image too is pushed through to the disk
+            // before it is named, and takes its name in one step, in place of the copy's older
+            // file: it was removed first, and for that moment the copy named a file not there.
+            bool ok = false;
+            if (!image.isNull()) {
+                QFile out(part);
+                if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    QImageWriter writer(&out, "PNG");
+                    ok = writer.write(image) && pushToDisk(out);
+                    out.close();
+                }
+                ok = ok && giveName(part, j->file, true, nullptr);
             }
             if (!ok) {
                 QFile::remove(part);
@@ -696,8 +1090,9 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             // Flattened composite — kept for forward-compat (older builds and any
             // external tool reading pixmapFile still see the merged drawing).
             // flattenedPixmap() is panel-sized, so this PNG matches the layers.
-            const QString pngName = rel + panelNames.flatten;
-            saver.flatten(*panel, pngName);
+            // (The safe save, 2026-11-23: the file it IS in after the save - its base name the
+            // first time, a "~n" of it once it has changed since a save.)
+            const QString pngName = saver.flatten(*panel, rel + panelNames.flatten);
 
             // Layer stack: one PNG per layer + a JSON descriptor array.
             QJsonArray layersArray;
@@ -724,11 +1119,11 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                     layerObj[QStringLiteral("parallax")] = layer.parallax;
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
-                    const QString layerPng = rel + panelNames.layers.value(layer.id);
-                    saver.layer(layer,
-                                panel->ownMargin ? panel->frameAt()
-                                                 : QPoint(projectMargin.left(), projectMargin.top()),
-                                layerPng, &layerObj);
+                    const QString layerPng =
+                        saver.layer(layer,
+                                    panel->ownMargin ? panel->frameAt()
+                                                     : QPoint(projectMargin.left(), projectMargin.top()),
+                                    rel + panelNames.layers.value(layer.id), &layerObj);
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
                 layersArray.append(layerObj);
@@ -810,9 +1205,8 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             QString safeName = entry.name;
             safeName.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9]+")),
                              QStringLiteral("_"));
-            thumbFile = rel + QStringLiteral("consistency_%1_%2.png")
-                                  .arg(safeName, entry.id);
-            saver.thumbnail(entry.thumbnail, thumbFile);
+            thumbFile = saver.thumbnail(entry.thumbnail,
+                                        rel + QStringLiteral("consistency_%1_%2.png").arg(safeName, entry.id));
         }
         entryObj[QStringLiteral("thumbnailFile")] = thumbFile;
         consistencyArray.append(entryObj);
@@ -860,6 +1254,354 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     // caller is clear to write the manifest.
     res.root = root;
     return res;
+}
+
+// --- THE PROJECT FILE IS THE ONE SWITCH (saving step 1, 2026-11-23; ProjectIO.h) -----------
+
+QString previousVersionFile(const QString &projectFilePath)
+{
+    return QFileInfo(projectFilePath).absolutePath() + QStringLiteral("/") + assetSubdirFor(projectFilePath)
+        + QStringLiteral("/_previous_saved_version.json");
+}
+
+PreviousVersion readPreviousVersion(const QString &projectFilePath)
+{
+    PreviousVersion out;
+    QFile f(previousVersionFile(projectFilePath));
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!doc.isObject())
+        return out;
+    out.root = doc.object();
+    out.savedAt = QDateTime::fromString(
+        out.root.value(QStringLiteral("previousVersion")).toObject().value(QStringLiteral("savedAt")).toString(),
+        Qt::ISODateWithMs);
+    out.root.remove(QStringLiteral("previousVersion")); // the project file as it was
+    const QString folder = QFileInfo(projectFilePath).absolutePath();
+    const NamedImages images = namedImages(out.root);
+    for (const QString &name : images.named)
+        out.missingFiles += QFileInfo(folder + QStringLiteral("/") + name).isFile() ? 0 : 1;
+    out.exists = true;
+    return out;
+}
+
+bool savedImageNames(const QString &projectFilePath, QSet<QString> *names)
+{
+    const QString ownPrefix = assetSubdirFor(projectFilePath).toLower() + QLatin1Char('/');
+    auto take = [&](const QJsonObject &root) {
+        for (const QString &name : namedImages(root).named) // lower-cased already
+            if (name.startsWith(ownPrefix))
+                names->insert(name.mid(ownPrefix.size()));
+    };
+    QFile f(projectFilePath);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!doc.isObject())
+        return false;
+    take(doc.object());
+    const PreviousVersion previous = readPreviousVersion(projectFilePath);
+    if (previous.exists)
+        take(previous.root);
+    return true;
+}
+
+bool projectFileRefused(const QString &projectFilePath, QString *systemSays)
+{
+    const QFileInfo info(projectFilePath);
+    if (!info.isFile())
+        return false; // none yet, or something else in its place: the switch's to meet
+    if (!info.isWritable()) {
+        if (systemSays)
+            *systemSays = QStringLiteral("The file is read-only.");
+        return true;
+    }
+#ifdef Q_OS_WIN
+    // Opened for writing as it stands - nothing written, so its bytes and its time stay -
+    // and shared, so a file another program merely has open is not taken for a refusal.
+    const std::wstring native = nativePath(projectFilePath);
+    const HANDLE h = CreateFileW(native.c_str(), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_ACCESS_DENIED)
+            return false;
+        if (systemSays)
+            *systemSays = qt_error_string(int(error));
+        return true;
+    }
+    CloseHandle(h);
+#endif
+    return false;
+}
+
+SwitchResult switchProjectFile(const QString &projectFilePath, const QJsonObject &root, const SaveOptions &options)
+{
+    SwitchResult res;
+    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (saveHooks().overwriteInPlace.load()) {
+        // The writer before 2026-11-23, for the checks' red run: QSaveFile, nothing else.
+        QSaveFile file(projectFilePath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            res.failure = SwitchFailure::CannotOpen;
+            res.systemSays = file.errorString();
+            return res;
+        }
+        if (file.write(json) != json.size()) {
+            file.cancelWriting();
+            res.failure = SwitchFailure::ShortWrite;
+            return res;
+        }
+        if (!file.commit()) {
+            res.failure = SwitchFailure::CannotComplete;
+            res.systemSays = file.errorString();
+            return res;
+        }
+        res.ok = true;
+        res.stopped = !stepDone(SaveStep::ProjectFileSwitched, projectFilePath);
+        return res;
+    }
+    if (writerStopped()) {
+        res.stopped = true;
+        return res;
+    }
+
+    // What is being replaced: the version this save makes the previous one.
+    QByteArray oldBytes;
+    QDateTime oldSavedAt;
+    bool had = false;
+    {
+        QFile f(projectFilePath);
+        if (f.open(QIODevice::ReadOnly)) {
+            oldBytes = f.readAll();
+            oldSavedAt = QFileInfo(projectFilePath).lastModified();
+            had = true;
+        }
+    }
+    // A save that changes nothing replaces nothing - or the previous saved version would
+    // become a second copy of this one.
+    if (had && oldBytes == json) {
+        res.ok = true;
+        res.unchanged = true;
+        return res;
+    }
+    // A project file that may not be written is refused before anything is made, as it
+    // always was (QSaveFile's own rule).
+    if (QFileInfo::exists(projectFilePath) && !QFileInfo(projectFilePath).isWritable()) {
+        res.failure = SwitchFailure::CannotOpen;
+        res.systemSays = QStringLiteral("Existing file %1 is not writable").arg(projectFilePath);
+        return res;
+    }
+
+    // 1. THE PROJECT FILE: whole beside itself, pushed through, then in the old one's place.
+    const QString part = projectFilePath + QStringLiteral(".part");
+    {
+        QFile out(part);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            res.failure = SwitchFailure::CannotOpen;
+            res.systemSays = out.errorString();
+            return res;
+        }
+        if (out.write(json) != json.size()) {
+            res.systemSays = out.errorString();
+            out.close();
+            QFile::remove(part);
+            res.failure = SwitchFailure::ShortWrite;
+            return res;
+        }
+        if (!stepDone(SaveStep::ProjectFileWritten, part)) {
+            res.stopped = true;
+            return res;
+        }
+        if (!pushToDisk(out)) {
+            res.systemSays = out.errorString();
+            out.close();
+            QFile::remove(part);
+            res.failure = SwitchFailure::CannotComplete;
+            return res;
+        }
+        if (!saveHooks().skipPush.load() && !stepDone(SaveStep::ProjectFilePushed, part)) {
+            res.stopped = true;
+            return res;
+        }
+    }
+    QString why;
+    if (!giveName(part, projectFilePath, true, &why)) {
+        QFile::remove(part);
+        res.failure = SwitchFailure::CannotComplete;
+        res.systemSays = why;
+        return res;
+    }
+    res.ok = true; // THE SAVE HAS COMPLETED. Nothing below can unsave it.
+    if (!stepDone(SaveStep::ProjectFileSwitched, projectFilePath)) {
+        res.stopped = true;
+        return res;
+    }
+
+    // 2. THE PREVIOUS SAVED VERSION - replaced only now, after the save has completed.
+    const QString folder = QFileInfo(projectFilePath).absolutePath();
+    const QString assets = assetSubdirFor(projectFilePath);
+    const QString previousFile = previousVersionFile(projectFilePath);
+    QVector<NamedImages> droppingOut; // the versions nothing will name after this
+    NamedImages older;                // the previous saved version as this save found it
+    bool hasOlder = false;
+    {
+        QFile f(previousFile);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+            if (doc.isObject()) {
+                older = namedImages(doc.object());
+                hasOlder = true;
+            }
+        }
+    }
+    const QJsonDocument oldDoc = had ? QJsonDocument::fromJson(oldBytes) : QJsonDocument();
+    const bool replacedOne = had && oldDoc.isObject(); // a project file that opens was replaced
+    NamedImages previous; // what the kept previous version names
+    if (options.keepPrevious && replacedOne) {
+        QJsonObject previousRoot = oldDoc.object();
+        QJsonObject header;
+        header[QStringLiteral("savedAt")] = oldSavedAt.toString(Qt::ISODateWithMs);
+        header[QStringLiteral("replacedAt")] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+        previousRoot[QStringLiteral("previousVersion")] = header;
+        const Whole made = writeWhole(previousFile, QJsonDocument(previousRoot).toJson(QJsonDocument::Indented), true,
+                                      SaveStep::PreviousWritten, SaveStep::PreviousPushed, SaveStep::PreviousNamed,
+                                      &why);
+        if (made == Whole::Stopped) {
+            res.stopped = true;
+            return res;
+        }
+        if (made != Whole::Done)
+            return res; // the one before it stays, whole: none of its pictures may go
+        res.previousKept = true;
+        previous = namedImages(oldDoc.object());
+        if (hasOlder)
+            droppingOut.append(older);
+    } else if (options.keepPrevious) {
+        // NOTHING THAT OPENS WAS REPLACED - a first save, a Save As to a new place, a project
+        // file that was not one: a previous saved version that lies there stays what it is,
+        // with its pictures. (It is the last version known to open.)
+        if (hasOlder)
+            previous = older;
+    } else {
+        // "Delete the previous pictures right away": what was replaced drops out too.
+        if (QFileInfo::exists(previousFile)) {
+            if (!QFile::remove(previousFile))
+                return res; // it still names its pictures: they stay
+            if (!stepDone(SaveStep::PreviousRemoved, previousFile)) {
+                res.stopped = true;
+                return res;
+            }
+        }
+        if (hasOlder)
+            droppingOut.append(older);
+        if (replacedOne)
+            droppingOut.append(namedImages(oldDoc.object()));
+    }
+
+    // 3. THE SUPERSEDED PICTURES, last. Only in this project's own images folder; only a
+    // file that neither the new version nor the kept previous one names.
+    const NamedImages now = namedImages(root);
+    const QString ownPrefix = assets.toLower() + QLatin1Char('/');
+    auto unnamed = [&](const QString &lower) {
+        return lower.startsWith(ownPrefix) && !now.named.contains(lower) && !previous.named.contains(lower);
+    };
+    QStringList doomed;
+    // (a) what a version dropping out named for an image the new version has in another
+    // file. An image that is gone - a deleted panel's, a removed layer's - keeps its files:
+    // those are Clean Up Project Folder's, on the artist's word.
+    for (const NamedImages &old : droppingOut)
+        for (auto it = old.byKey.cbegin(); it != old.byKey.cend(); ++it) {
+            const QString lower = it.value().toLower();
+            const auto here = now.byKey.constFind(it.key());
+            if (here != now.byKey.cend() && here.value().toLower() != lower && unnamed(lower)
+                && !doomed.contains(it.value(), Qt::CaseInsensitive))
+                doomed.append(it.value());
+        }
+    // (b) what an interrupted save left of an image the new version has: another "~n" of
+    // its file's name that nothing names.
+    QSet<QString> bases;
+    for (auto it = now.byKey.cbegin(); it != now.byKey.cend(); ++it)
+        if (it.value().toLower().startsWith(ownPrefix))
+            bases.insert(imageBaseName(it.value().mid(ownPrefix.size())).toLower());
+    for (const QFileInfo &fi : QDir(folder + QStringLiteral("/") + assets).entryInfoList(QDir::Files, QDir::Name)) {
+        const QString name = fi.fileName();
+        const QString relative = assets + QLatin1Char('/') + name;
+        // ("<name>.part": a file a save died in the middle of.)
+        const QString whole = name.endsWith(QStringLiteral(".part"), Qt::CaseInsensitive) ? name.chopped(5) : name;
+        if (bases.contains(imageBaseName(whole).toLower()) && unnamed(relative.toLower())
+            && !doomed.contains(relative, Qt::CaseInsensitive))
+            doomed.append(relative);
+    }
+    doomed.sort();
+    for (const QString &name : doomed) {
+        const QString file = folder + QStringLiteral("/") + name;
+        if (!QFile::remove(file))
+            continue; // open in another program, say: it stays, a later save tries again
+        res.removedFiles.append(file);
+        if (!stepDone(SaveStep::PictureRemoved, file)) {
+            res.stopped = true;
+            return res;
+        }
+    }
+    return res;
+}
+
+QString saveStepName(SaveStep step)
+{
+    switch (step) {
+    case SaveStep::ImageWritten: return QStringLiteral("image written");
+    case SaveStep::ImagePushed: return QStringLiteral("image pushed");
+    case SaveStep::ImageNamed: return QStringLiteral("image named");
+    case SaveStep::ImageOverwritten: return QStringLiteral("image overwritten");
+    case SaveStep::ProjectFileWritten: return QStringLiteral("project file written");
+    case SaveStep::ProjectFilePushed: return QStringLiteral("project file pushed");
+    case SaveStep::ProjectFileSwitched: return QStringLiteral("project file switched");
+    case SaveStep::PreviousWritten: return QStringLiteral("previous written");
+    case SaveStep::PreviousPushed: return QStringLiteral("previous pushed");
+    case SaveStep::PreviousNamed: return QStringLiteral("previous named");
+    case SaveStep::PreviousRemoved: return QStringLiteral("previous removed");
+    case SaveStep::PictureRemoved: return QStringLiteral("picture removed");
+    }
+    return QStringLiteral("?");
+}
+
+void setSaveLogForTest(QVector<SaveStepRecord> *log)
+{
+    SaveHooks &h = saveHooks();
+    QMutexLocker lock(&h.mutex);
+    h.log = log;
+}
+
+void setSaveStopAfterForTest(int steps)
+{
+    SaveHooks &h = saveHooks();
+    QMutexLocker lock(&h.mutex);
+    h.stopAfter = steps;
+    h.steps = 0;
+    h.dead = false;
+}
+
+void setSaveHoldAtForTest(int step, std::function<void()> hold)
+{
+    SaveHooks &h = saveHooks();
+    QMutexLocker lock(&h.mutex);
+    h.holdAt = step;
+    h.hold = std::move(hold);
+    h.steps = 0;
+    h.dead = false;
+}
+
+void setSaveSkipPushForTest(bool skip)
+{
+    saveHooks().skipPush.store(skip);
+}
+
+void setOverwriteInPlaceForTest(bool on)
+{
+    saveHooks().overwriteInPlace.store(on);
 }
 
 namespace {

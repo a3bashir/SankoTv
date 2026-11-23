@@ -70,6 +70,9 @@ public:
     // still as it was left: the old name of an image that is only being
     // renamed (the id names, 2026-11-04). Empty when none.
     QString fileHolding(const QByteArray &content, const QString &folder) const;
+    // Every such file, sorted by name (the safe save, 2026-11-23: an image may be in its
+    // own file or in an earlier one of its own).
+    QStringList filesHolding(const QByteArray &content, const QString &folder) const;
 
 private:
     struct Entry
@@ -225,6 +228,9 @@ struct [[nodiscard]] WriteResult
     // The audio copy was CANCELLED by the artist (Save As with a large
     // track): ok is false, and there is nothing to warn about.
     bool cancelled = false;
+    // A check stopped the writer at one of its steps (setSaveStopAfterForTest): ok is false
+    // and nothing was tidied - the disk is as a process that died there would leave it.
+    bool stopped = false;
     // Where the project's own audio track is once this save is on disk
     // (absolute; empty for no track or a linked one). After a Save As it is
     // the NEW project's copy, which the caller should now play.
@@ -344,6 +350,125 @@ QStringList projectImageNames(const QVector<Scene *> &scenes);
 // it), and the panel stem it names.
 bool isIdImageName(const QString &fileName);
 QString panelStemOfImageName(const QString &fileName);
+
+// THE SAFE SAVE (saving step 1, 2026-11-23; the report of that day, approved by the user).
+//
+// Until then a Save wrote a changed image STRAIGHT OVER ITS OWN FILE, and the project file
+// after all the images. A save cut short - a crash, a power cut - could leave the project
+// file naming a picture cut in half (the layer opens blank, and its saved state before was
+// that same file), or the old project file with some new pictures (a layer's place is said
+// in the project file, so a new picture under the old place opens shifted). Only the project
+// file was pushed through to the disk.
+//
+// Now:
+//  - A SAVE WRITES OVER NOTHING. An image that changed goes into a new file - its name with
+//    "~2", "~3", ... before ".png" (imageNameVariant; "x.png" is their base name,
+//    imageBaseName) - written whole under "<name>.part", pushed through to the disk, then
+//    named. An image that did not change stays in the file it is in, under the name it has:
+//    nothing is renamed either (a project saved by position before 2026-11-04 keeps those
+//    names until an image changes).
+//  - THE PROJECT FILE IS THE ONE SWITCH (switchProjectFile): written whole beside itself,
+//    pushed through, and put in the old one's place in one step. Before that step the disk
+//    holds the whole old save, after it the whole new one; there is no state between.
+//  - THE PREVIOUS SAVED VERSION is what the switch replaced: its project file is kept as
+//    previousVersionFile() and its pictures stay where they are (one it shares with the new
+//    version is one file). It is replaced only after the next save has completed. With
+//    SaveOptions::keepPrevious off it is removed instead, right after the switch.
+//  - ONLY THEN are pictures removed, and only superseded ones: a file of this project's own
+//    images folder that the version dropping out named for an image the new version has in
+//    another file, and that neither the new version nor the kept previous one names. The
+//    files of a panel or a layer that is gone stay, as before, for Clean Up Project Folder.
+//
+// The recovery copy keeps its names (it writes over its own files, in its own folder); its
+// images are now pushed through too and take their names in one step (runImagePlan).
+QString imageNameVariant(const QString &name, int n); // ("x.png", 3) -> "x~3.png"; n <= 1: name
+QString imageBaseName(const QString &name);           // "x~3.png" -> "x.png"
+
+// Where the previous saved version's project file is kept: in the project's images folder,
+// not a ".sankotv" (its names are relative to the PROJECT file's folder, so opened from
+// where it lies it would find none of its pictures).
+QString previousVersionFile(const QString &projectFilePath);
+
+struct SaveOptions
+{
+    // Preferences > Saving: keep the previous saved version (the default), or delete the
+    // previous pictures right away.
+    bool keepPrevious = true;
+};
+
+enum class SwitchFailure { None, CannotOpen, ShortWrite, CannotComplete };
+
+struct [[nodiscard]] SwitchResult
+{
+    bool ok = false;               // the new project file is in place: the save has completed
+    SwitchFailure failure = SwitchFailure::None;
+    QString systemSays;            // what the file system said, when it failed
+    bool unchanged = false;        // the project file said exactly this already: nothing replaced
+    bool previousKept = false;     // what was replaced is now the previous saved version
+    QStringList removedFiles;      // superseded pictures removed after the switch (absolute)
+    bool stopped = false;          // a check stopped the writer (setSaveStopAfterForTest)
+};
+
+// STEP 2 OF A SAVE, after projectToJson has said every image is on disk: the project file,
+// the previous saved version, the superseded pictures - in that order (see above). On a
+// failure (ok false) the project file on disk is the one that was there.
+SwitchResult switchProjectFile(const QString &projectFilePath, const QJsonObject &root,
+                               const SaveOptions &options = SaveOptions());
+
+// THE PROJECT FILE FIRST. It is the one file a save still replaces, so a save asks this
+// before it writes a picture: true when a project file is there and may not be replaced -
+// read-only by its own attribute, or its opening for writing refused (as Norton 360 refused
+// SankoTV every overwrite in Documents on 2026-11-08 while it let new files be made).
+// Nothing is written by asking; `systemSays` is what the system said.
+bool projectFileRefused(const QString &projectFilePath, QString *systemSays = nullptr);
+
+// The previous saved version of a project, if one is kept: its project file's contents
+// (as projectFromJson reads them, with the PROJECT file's folder), when that version was
+// saved, and how many of the files it names are not there (0 for a whole one).
+struct PreviousVersion
+{
+    bool exists = false;
+    QJsonObject root;
+    QDateTime savedAt;
+    int missingFiles = 0;
+};
+PreviousVersion readPreviousVersion(const QString &projectFilePath);
+
+// The files of the project's own images folder that the project AS SAVED names - its project
+// file on disk and, when one is kept, its previous saved version: the file names alone,
+// lower-cased. What Clean Up Project Folder must leave (a picture written again by a later
+// save is under a "~n" name the scenes alone cannot tell). False when the project file
+// cannot be read: then nothing is known, and nothing may be removed on its word.
+bool savedImageNames(const QString &projectFilePath, QSet<QString> *names);
+
+// THE WRITER'S STEPS, for the checks: every file it makes is written (W), pushed through to
+// the disk (P) and named (N), and it reports each.
+enum class SaveStep {
+    ImageWritten, ImagePushed, ImageNamed,
+    ImageOverwritten, // the writer before 2026-11-23 (setOverwriteInPlaceForTest; a caller without a ledger)
+    ProjectFileWritten, ProjectFilePushed, ProjectFileSwitched,
+    PreviousWritten, PreviousPushed, PreviousNamed, PreviousRemoved,
+    PictureRemoved,
+};
+struct SaveStepRecord
+{
+    SaveStep step;
+    QString file;
+};
+QString saveStepName(SaveStep step);
+// The log the writer's steps are appended to (null: none).
+void setSaveLogForTest(QVector<SaveStepRecord> *log);
+// The writer does `steps` steps and then nothing more - no cleaning up, as a process that
+// died there (-1: off). Counting starts again from this call.
+void setSaveStopAfterForTest(int steps);
+// The writer calls `hold` when it has done `step` steps (-1: off); it may never return.
+void setSaveHoldAtForTest(int step, std::function<void()> hold);
+// The pushes to the disk are left out, and not reported: the control of the check that
+// reads their order.
+void setSaveSkipPushForTest(bool skip);
+// The writer as it was before 2026-11-23: an image over its own file, the project file by
+// QSaveFile, no previous version, nothing removed. For the checks' red run.
+void setOverwriteInPlaceForTest(bool on);
 
 // Rebuild the model from a parsed root + its folder. Applies every
 // migration (legacy single-PNG panels, legacy shared layers, background

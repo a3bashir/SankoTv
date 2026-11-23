@@ -1,5 +1,281 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-23 (evening): SAVING STEP 1 COMMITTED ON THE USER'S WORD AFTER HAND TEST S1 (THIS COMMIT) - THE SAFE SAVE (NOTHING WRITTEN OVER, THE PROJECT FILE THE ONE SWITCH), THE PREVIOUS SAVED VERSION KEPT, PREFERENCES > SAVING, FILE > RESTORE PREVIOUS SAVED VERSION... WITH ITS WARNING; NEW CHECKS (ss1)-(ss14) WITH CONTROLS AND A RED RUN AGAINST TODAY'S WRITER; 19 OLD CHECKS CHANGED (OLD AND NEW TEXTS BELOW); GATE S1 NOT GREEN (3 OF 1788, READ, ONE FIXED), GATE S1b IN SERIAL MODE GREEN - EVERY FAMILY, BOTH BUILDS; HAND TEST S1: BOTH RECORDINGS RAN THE GATE'S BUILD ON THE COPY, NOTHING FAILED, STEPS 4 AND 6 AND THE SECOND RESTORE OF STEP 5 WERE NOT DONE AS WRITTEN (BELOW); STEP 2 (THE SAVE IN THE BACKGROUND, WITH A SHORT RETRY) IS APPROVED AND COMES NEXT, STEP 3 NOT APPROVED YET
+The user's request is quoted whole in the section below ("late afternoon"). Its first paragraph (batch H) is done:
+a0977b3ef, pushed. This section is the rest: saving step 1. Five files changed, nothing else:
+app/src/ProjectIO.cpp / .h, app/src/MainWindow.cpp / .h, app/tests/ProjectLifecycleTest.cpp
+(app/build/_probe/split/sha_S1b_gate.txt, the state gate S1b proved and this commit holds). No new dependency:
+Windows' own FlushFileBuffers and MoveFileExW.
+
+WHAT A SAVE DOES NOW (ProjectIO.h, "THE SAFE SAVE"; no threads yet - it runs where it ran):
+ 1. THE PROJECT FILE FIRST. A project file that may not be replaced - read-only, or its opening for writing refused
+    (ProjectIO::projectFileRefused; Norton 360 refused SankoTV every overwrite in Documents on 2026-11-08) - stops the
+    save before a picture is written.
+ 2. EVERY PICTURE THAT CHANGED GOES INTO A NEW FILE. Written whole as "<name>.part", pushed through to the disk
+    (FlushFileBuffers), then named (MoveFileExW, written through). The name: the picture's id name when nothing has
+    it, else the lowest free "~2", "~3", ... before ".png" (ProjectIO::imageNameVariant / imageBaseName). A save
+    writes over no file and renames none. A picture that did not change keeps its file and its name.
+ 3. THE PROJECT FILE IS THE ONE SWITCH (ProjectIO::switchProjectFile): written whole as "<file>.part", pushed
+    through, put in the old one's place in one step. Before that step the disk holds the whole old save, after it
+    the whole new one. A save whose project file would be byte for byte the one on disk replaces nothing.
+ 4. THE PREVIOUS SAVED VERSION, only after the switch: the project file that was replaced is kept as
+    "<name>_assets/_previous_saved_version.json" (with when it was saved), written whole, pushed, named. Its
+    pictures stay where they are; a picture both versions have is one file. With "Delete the previous pictures
+    right away" the kept file is removed instead.
+ 5. THE SUPERSEDED PICTURES, last: a file of the project's own images folder that neither the new version nor the
+    kept previous one names, and that is an older file of a picture the project still has (or a leftover of a save
+    that died). The files of a deleted panel or layer stay, as before, for Clean Up Project Folder.
+The recovery copy keeps its own folder and its plain names; its pictures are now pushed to the disk too and take
+their names in one step (it removed the old file first, then renamed).
+
+WHAT THE ARTIST SEES:
+ - File > Restore Previous Saved Version..., under Save Project As... (Figma S-1 675:755). Greyed when there is no
+   whole previous version, with a tooltip saying why (the File menu now shows tooltips set on purpose; no other
+   entry of it has one). It asks first - the warning of S-1, word for word, Cancel the default button - then opens
+   the previous version in the window as UNSAVED work of the same project. Nothing on disk changes until a save;
+   saved, it is the saved version and the one saved until then becomes the previous one.
+ - Edit > Preferences > Saving (a fourth page): "After each save" - "Keep the previous saved version" (default) /
+   "Delete the previous pictures right away", with the notes of S-1. The setting saving/keepPrevious. It takes
+   effect at the next completed save, never at the click.
+ - Clean Up Project Folder reads what is in use from the saved project file and the kept previous version (a "~n"
+   name cannot be told from the panels alone), so it leaves the previous version's pictures. It refuses when the
+   project file cannot be read.
+ - A project saved by position (before 2026-11-04) is no longer renamed to id names at its first save: a rename
+   before the switch would take a file from under the project file on disk. Each picture moves to its id name when
+   it changes; the position-named file goes once no saved version names it.
+Pictures of the built entry, box and page, as the widgets draw themselves (not the screen):
+Documents\SankoTV-Design\saving-step1-2026-11-23\ (file_menu_entry_greyed.png, restore_warning_unsaved.png,
+preferences_saving.png). They match S-1.
+
+THE NEW CHECKS - the "safesave" slice (SANKO_LIFECYCLE_ONLY=safesave: the new pass with the six passes whose checks
+it changed; about 3.3 minutes). In the family the pass runs after (sv). 28 checks:
+ (ss1) control: the fixture - saved three times by the window - holds a saved version and a previous one, each whole.
+ (ss2) THE ORDER OF THE PUSHES, read from the writer's own log of an ordinary save (ProjectIO::setSaveLogForTest):
+       each picture written, pushed, named, all before the project file is begun; the project file written,
+       pushed, switched; the previous version only after the switch; removals last. Control: the same save with the
+       pushes left out (setSaveSkipPushForTest) is caught ("named without being pushed through to the disk").
+ (ss3) THE WRITER STOPPED AFTER EACH OF ITS 14 STEPS (setSaveStopAfterForTest: it does n steps and then nothing, as
+       a dead process), with the previous version kept and again with "delete right away": each time the project
+       is re-opened from disk by the loader the window uses - whole, the old save before the switch (step 9), the
+       new one from it on, never a mix; the previous version whole at every stop. Control: the same stops against
+       the writer before this step (setOverwriteInPlaceForTest) find 2 bad stops of 3 ("neither the old save nor
+       the new one"; "the new save already, before the switch").
+ (ss4) A SECOND PROCESS KILLED IN THE MIDDLE OF A SAVE, five times (this test program started by the pass with
+       SANKO_SAFESAVE_VICTIM; it says "AT STEP" at steps 2, 3, 8, 9, 10 and is ended there with QProcess::kill):
+       the project re-opens whole, old before the switch and new from it on; the previous version whole; and the
+       next save in the window completes and leaves no ".part" and no picture that no version names. Its control:
+       each child had said its step, was running, and left on disk what a save in progress leaves.
+ (ss5) A SAVE WRITES OVER NOTHING (bytes and times of every file of the folder before and after), with the old
+       writer's control. (ss6) the previous version is what the save replaced, with its time. (ss7) a save that
+       changes nothing replaces nothing. (ss8) "delete right away" and its control. (ss9) the entry's place; the
+       warning's words with and without unsaved changes; Cancel; Restore (the disk unchanged); the save after it;
+       once more. (ss10) the warning's own box: Cancel is the default button. (ss11) Preferences > Saving and its
+       control. (ss12) Clean Up leaves the previous version's pictures. (ss13) a picture that cannot be written
+       fails the save and changes nothing. (ss14) a save that replaces no project file leaves the kept version.
+THE RED RUN, against today's writer: the pass has one line, "const bool oldWriterInPlace = false;", which puts the
+writer of before this step in the main checks' place (the fixture, the stops, the killed child, (ss5)'s save). Set
+to "true; // RED RUN" at 16:00: 10 checks FAILED - (ss1), (ss2) ("a picture was written over its own file"), both
+(ss3) ("stopped after step 1 of 3 (image overwritten): it is neither the old save nor the new one || stopped after
+step 2 of 3 (image overwritten): it is the new save already, before the switch"), the three (ss4) (killed at step 2
+the project is neither), (ss5) (2 files hold other bytes), (ss6), (ss7). Output:
+app/build/_probe/split/s1_redrun/out.txt (copy: Documents\SankoTV-Design\saving-step1-2026-11-23\
+red_run_against_todays_writer.txt). The marker was removed and grep finds no "RED RUN" in the five files; the slice
+was green again after it (206 / 206 at 16:05 and again at 16:13 - the quick check, with the "stagemode" slice for
+(sm10), 126 / 126; the (r1) control was added after that: 207 / 207 at 17:18, after gate S1's fix, in
+app/build/_probe/split/s1_slice6/out.txt).
+
+THE OLD CHECKS THAT CHANGED. The first run of the old family against the new writer (Release, 15:17-15:32,
+app/build/_probe/split/s1_first/lifecycle.txt): 1732 of 1756 passed, 24 failed; SizeLock 170 and Camera 336 were
+green. Each of the 24 was read before it was touched; every one failed because it expected a file to be written
+over, renamed, or absent. None was relaxed: each keeps what it proved and says the new truth. OLD and NEW:
+ 1. (sv.2) OLD "(sv.2) a stroke on one layer rewrites exactly that layer's image and its panel's flatten" (the two
+    id names, computed). NEW "(sv.2) a stroke on one layer writes exactly that layer's image and its panel's
+    flatten - each into a new file of its own name ("~n" before ".png"), over nothing: the two files they were in
+    are still there, untouched". Its control OLD "(sv.2) CONTROL: the rewritten file really holds the stroke now"
+    NEW "(sv.2) CONTROL: the new file really holds the stroke now".
+ 2. (sv.3) OLD "(sv.3) save, Undo, save again: the layer and its flatten are rewritten" NEW "(sv.3) save, Undo,
+    save again: the layer and its flatten are written again - into new files once more, the stroke's two files
+    untouched". OLD "(sv.3) ...and the file holds the pre-stroke pixels again" NEW "(sv.3) ...and the file the
+    project names now holds the pre-stroke pixels again".
+ 3. (sv.5) OLD "(sv.5) a PNG another program wrote over is rewritten with the layer" NEW "(sv.5) a PNG another
+    program wrote over is not taken for the layer: the layer is written again, into a new file the project names
+    from now on, and the other program's file is left as it is".
+ 4. (i.2), four checks: texts unchanged; the FIXTURE changed. OLD: a directory where the layer's own file was (the
+    save wrote over that file), control "(i) control: one image path is now a directory". NEW: a directory where
+    the layer's new file is made ("<next free ~n name>.part"), control "(i) control: the place one image's new
+    file is made at is now a directory". (i.3) OLD "(i.3) ...and QSaveFile left no temp file behind" NEW "(i.3)
+    ...and the writer left no temp file behind".
+ 5. (aq), five checks: texts unchanged; their INSTRUMENT changed. media() listed everything in an images folder
+    that is not a ".png"; it now leaves out one name, the kept previous version's file. New control "(aq) control
+    (2026-11-23): the list of what an images folder holds besides pictures leaves out the kept previous saved
+    version's file and nothing else - a ".part" beside it, a picture's ".part", a leftover of another name and a
+    folder are all listed".
+ 6. (cf) OLD "(cf) AN OVERWRITE REFUSED WHILE NEW FILES ARE ALLOWED (Norton 360, 2026-11-08) gets the neutral words
+    - "Windows or your antivirus blocked SankoTV from saving to Documents ..." - and the Save As, which saves
+    elsewhere" (write denied on the project's first IMAGE). NEW "(cf) AN OVERWRITE REFUSED WHILE NEW FILES ARE
+    ALLOWED (Norton 360, 2026-11-08) - the project file's, the one file a save still replaces - gets the neutral
+    words - "Windows or your antivirus blocked SankoTV from saving to Documents ..." - and the Save As, which
+    saves elsewhere; the refused save wrote no picture beside the project file it could not replace, and that
+    file holds the bytes it held" (write denied on the PROJECT FILE). With it a new check: "(cf) A PICTURE'S FILE
+    REFUSED WHILE NEW FILES ARE ALLOWED (as Norton 360 refused it on 2026-11-08) STOPS NO SAVE ANY MORE: the
+    changed picture goes into a new file, the save completes with nothing said and the project stays where it is;
+    the refused file holds the bytes it held". Its control "(cf) control: the same refusal outside a protected
+    folder keeps the save's own message, with what the system said, and offers no Save As": text unchanged; OLD it
+    read "The image could not be written" and " px; ", NEW "This project was NOT saved.", "Could not write to:"
+    and the system's words in brackets (the project file denied there too).
+ 7. (sm10) "A WRITE REFUSED SAYS WHY": text unchanged; OLD fixture: panel 2's flatten file made read-only; NEW: a
+    folder where the flatten's new file is made. Its control OLD "(sm10) control: the file writable again, it
+    saves" NEW "(sm10) control: the place free again, it saves".
+ 8. (n2) OLD "(n2) THE FIRST SAVE RENAMES: 9 files moved to their id names with the same bytes (none re-encoded: 9
+    renamed, 0 written), the position names gone, the manifest naming the new ones; (n5) every panel got an id on
+    load, saved now" NEW "(n2) THE FIRST SAVE OF A PROJECT SAVED BY POSITION RENAMES AND WRITES NOTHING: its 9
+    files stay where they are under their position names, each with the bytes and the time it had, and the
+    manifest names them still; (n5) every panel got an id on load, saved now". Control OLD "(n2) control: the next
+    save renames and writes nothing; (n7) the panel's picture is the one it was before the rename" NEW "(n2)
+    control: the next save renames and writes nothing either; (n7) the panel's picture is the one it was". OLD
+    "(n7) ...and reopening the migrated project gives the same picture" NEW "(n7) ...and reopening the project,
+    saved with its ids now, gives the same picture". New check: "(n2) A PICTURE OF IT THAT CHANGES GOES INTO A FILE
+    UNDER ITS ID NAME: ..." (2 id-named, 7 position-named; all 9 old files on disk; then the 2 nothing names gone).
+ 9. (n4) OLD "(n4) SAVE AS copies every image under the same id names into the new project's folder" NEW "(n4) SAVE
+    AS copies every image into the new project's folder under its id name - the plain one: the pictures the
+    project itself holds in "~n" files (written again by a later save) are under their plain names in the copy".
+10. (n6) OLD "(n6) CLEAN UP PROJECT FOLDER: with the deleted panel still undoable it removes only the 3 orphan files
+    of (n1)'s clone and keeps the deleted panel's 3; once the history is cleared it removes exactly those 3; the
+    legacy-named file is left alone both times" NEW "(n6) CLEAN UP PROJECT FOLDER: with the deleted panel still
+    undoable it removes only the 3 orphan files of (n1)'s clone and keeps the deleted panel's 3; with the history
+    cleared it keeps them still (nothing removed), as the previous saved version - the project as saved with the
+    panel - names them; once a later save has made the project without the panel the previous version, it removes
+    exactly those 3; the legacy-named file is left alone every time". Control OLD "(n6) control: with unsaved
+    changes Clean Up refuses (-1); answered No it removes nothing" NEW "(n6) control: with unsaved changes Clean Up
+    refuses (-1); answered No it removes nothing - the file it asked about is still there, and a Yes then removes
+    exactly that one" (a planted file: a second deleted panel's files are the previous version's now).
+11. (r1) OLD "(r1) ...and the copy's manifest was the Save's, but for the header and the image folder's name" NEW
+    "(r1) ...and the copy's manifest was the Save's, but for the header, the image folder's name and the "~n" in
+    the names of the 2 pictures the Save put into new files". New control "(r1) control (2026-11-23): the same
+    comparison does not take the Save's manifest with one layer's file under another name for the copy's". (r4),
+    two controls: texts unchanged; the layer's file is read from the project file (it was computed from the ids).
+A helper for all of them: savedImageFile(project, panel, layer) - the file the saved project has an image in.
+Three of my own new checks were wrong at first and were corrected after reading the code, not the code: (ss8)'s
+control (a QAction with no tooltip answers with its own name), the two (cf) checks (they read a file while the
+test's own deny still refused readers), (ss14) (it expected no picture removed; the two removed were the deleted
+project file's own, which no version names).
+
+MEASURED, on the scratch copy only (C:\SankoTV-TestCopies\MEASURE COPY - Mansour song, save timing\; the original's
+24 files hash the same before and after: f65683f3f08e...28ff9). 3840 x 2160, 7 panels, 22 pictures; 3 runs each:
+   first Ctrl+S after opening   238-245 ms  (was 242-256)     nothing changed        1 ms  (was 3)
+   one stroke on one panel      145-149 ms  (was 141-143)     a stroke on every panel 302-315 ms (was about 300)
+   Save As to another folder    314-337 ms  (was 315)
+The pushes to the disk and the switch cost 2 to 5 ms a save on this disk. Results and the harness:
+Documents\SankoTV-Design\save-timing-2026-11-23\ (results_step1_safe_save.txt, savetime_step1.cpp).
+The song is a project saved by position (file version 1): its 7 old flatten files stay in the folder after the
+first save, as they did before this step (the flattens are written under id names; nothing ever removed the old).
+
+GATE S1 (normal mode, 16:16-17:11, 3292 s; app/build/_probe/split/fullgate_S1.log, sha_S1_gate.txt): NOT GREEN.
+Eight families green in both builds; Lifecycle 1785 of 1788 in each, three failures, read before anything was
+changed:
+ a) BOTH BUILDS: "(mg9) control: without the margin (and no keys) no outline [4]" (0 expected; its main check read
+    346 where the run before this pass existed read 344). Cause: MINE, in the test. Every fixture's random art
+    comes from one sequence (randIn / g_seed); the new pass, put in the middle of the family, made three fixtures
+    and moved the sequence on, so every later fixture had other art - and that one's happened to hold 4 pixels of
+    the colour (mg9) counts. Fixed in safesave::build: the sequence is put back where each fixture found it
+    (g_seed saved and restored round writeProject), so the family's later fixtures are the art they always were.
+ b) RELEASE ONLY: "(ss3) control ..." and "(ss) no box opened that a check did not expect [2]". The control's
+    readings were the right ones (3 steps, 2 bad stops); what failed was its fixture's building with the writer of
+    before this step - one of its saves answered false and showed a box, which the guard closed without keeping
+    its words. In Debug, and in every slice run before and since, the same building passed. NOT EXPLAINED. Added:
+    the guard keeps the title and words of every box it closes (ModalGuard::said), the fixture says what each of
+    its steps did (Fixture::note), and both are in the checks' details - if it happens again it will be read.
+ c) DEBUG ONLY: both "(po5)" checks of the click that only puts a menu away ("menu up 0": the View menu was not
+    open when the check looked). Nothing of this step touches it (the File menu got tooltips and an aboutToShow;
+    the View menu nothing); it passed in Release an hour before, and in every gate before this one. NOT
+    EXPLAINED; a menu that will not stay up is what a click or a focus change elsewhere on the machine does.
+By the user's rule of 2026-10-31 (a check that fails in one run only is rerun in serial mode before it is taken
+for real, and noted here), the whole gate was run again in serial mode with fix (a) and the diagnostics of (b):
+GATE S1b, below. Only ProjectLifecycleTest.cpp differs between the two gates (sha_S1b_gate.txt).
+
+GATE S1b (serial mode, 17:18-18:21, 3769 s; app/build/_probe/split/fullgate_S1b.log and fullgate_S1b\,
+sha_S1b_gate.txt): GREEN. EVERY FAMILY, BOTH BUILDS, 0 failures - the same counts in Release and in Debug:
+   BrushLibrary 187   PaintPixelLock 13   CanvasBrushLock 3   QuickShapeGeometryLock 19   DevRecorder 46
+   CanvasEdgeLock 74   CanvasSizeLock 170   ProjectLifecycle 1788   Camera 336
+The three of gate S1, read in this gate's output in both builds:
+ a) "(mg9) control: without the margin (and no keys) no outline [0]" - the fix holds; the fixtures after the new
+    pass are the art they were.
+ b) "(ss3) control" passed with "its fixture: opened 1, saved 1 1 1, copied 1" and "(ss) no box opened that a check
+    did not expect" counted 1 box, the one (ss13) expects (its words are in the detail now). What made one save of
+    that fixture's building answer false once, in Release, in gate S1, is still NOT EXPLAINED: it happened in
+    one of the four gate runs and in no slice run. If it happens again the detail names the step and the box.
+ c) the four "(po5)" checks passed in both builds ("menu up 1"). The Debug failure of gate S1 did not come back in
+    serial mode; NOT EXPLAINED beyond that, and no check was changed for it.
+After the gate: the five files hash as sha_S1b_gate.txt says, "RED RUN" is in none of them (0 in app/src and
+app/tests outside the _backups folders), git status names those five and this file, nothing is staged.
+
+THE BUILD FOR HAND TEST S1: C:\SankoTV\app\build\Release\SankoTV.exe, built Nov 23 2026 17:20:45, git
+a0977b3ef+dirty (read from the exe; it is the gate's own Release build), sha256 1344e0246fcf...407e1df1. The 20
+exes of the gate: app/build/_probe/split/sha_S1b_exes.txt. (The stamp 16:18:10 named earlier was the build before
+the gate's; it is gone.)
+THE COPY: "TEST COPY - small pirate, safe save S1" in C:\SankoTV-TestCopies (made 16:19, 93 files, every picture
+the project names there; not opened since - the gate does not go near that folder).
+THE LIST: Documents\SankoTV-Design\handtest_S1_safe_save.md (9 steps, no Shapes tool).
+
+HAND TEST S1 (the user, 18:25-18:36: "Hand test S1 done: all steps looked right. ... If every session ran the
+right build and nothing failed, commit and push saving step 1 with its HANDOFF notes, matching its hash list, git
+status clean."). The two Dev Recorder sessions made after 17:20, read oldest first:
+   20261123-182546 (18:25:46-18:31:36, 349.6 s, no summary.txt: ended by Task Manager) and
+   20261123-183215 (18:32:15-18:36:03, 227.8 s, ended by closing the window).
+Both system.txt: built Nov 23 2026 17:20:45, git a0977b3ef+dirty. The title bar names "TEST COPY - small pirate,
+safe save S1" in both (and "... safe save S2" after the Save As of step 8). Per step of the list:
+ 1. PASS. File menu at 18:26:36: the entry right under Save Project As..., greyed; tooltip "There is no previous
+    saved version yet: one is kept from the next save that changes the project."
+ 2. PASS. A black stroke, Ctrl+S 18:27:22; a red stroke, Ctrl+S 18:27:29; the entry live in the menu after.
+ 3. PASS. A green stroke, unsaved. The box: "Open this project as it was saved on 23 November at 18:27?", the
+    line about the disk, the amber line and the grey one, Cancel outlined. Closed once by a click on Cancel
+    (18:29:12) and once by Enter (18:29:33, closedBy Cancel); the three strokes still there after each.
+ 4. NOT TESTED AS WRITTEN. The list wanted Restore clicked with the third stroke unsaved (one stroke left). In
+    the recording Ctrl+S came first (18:29:50): the third stroke was saved and the previous version became the
+    second save. The restore then made (box without the amber line, "Restore Previous Version" clicked 18:30:22)
+    brought back the black and the red stroke, the title bar with its "*" and the same name - right for what was
+    done. A restore that throws unsaved changes away was not clicked through by hand; the checks do it.
+ 5. PARTLY. Ctrl+S after the restore (18:30:26): done. The box without the amber line: seen (in the restore
+    above). The second restore ("change your mind once more"): NOT TESTED.
+ 6. NOT TESTED AS WRITTEN. A stroke at 18:31:16 and no Ctrl+S after it; Task Manager's End task at 18:31:35 found
+    it unsaved (the app's own "Save changes to ...?" box came up, title bar with "*"). The app as started again
+    (the next recording, from 18:32:15) has the copy open whole at the last save - the black and the red stroke -
+    without that stroke, which was in no save and in no recovery copy (the last one was made at 18:29:30, and a
+    save removes it). Its launch is before the recording begins: whether it asked anything is not in it. The app
+    ended right after a save was not tried by hand; the checks end a second process at five moments in a save.
+ 7. PASS. Preferences > Saving: "After each save", Keep chosen as found; Delete chosen 18:32:54; a stroke, Ctrl+S
+    18:33:37; the entry greyed, tooltip "No previous saved version is kept: Preferences > Saving is set to delete
+    the previous pictures right away."; Keep chosen again 18:33:53.
+ 8. PASS. A stroke, Ctrl+S 18:34:19. Clean Up: "13 image files (1226 KB) in the project folder are no longer used
+    by this project." - Yes - "Removed 13 files."; the entry live in the menu after it. Those 13 are the files
+    the copy had from the start that nothing named: the source project has the same 13 (1225 KB), and all 13 are
+    gone from the copy. Save As (18:35:21) as "TEST COPY - small pirate, safe save S2" - beside the first copy, in
+    its folder, not in a new one as the list said: the title bar names it, the entry greyed with the "no previous
+    saved version yet" tooltip; after a Ctrl+S (18:35:53) the entry is live.
+ 9. PASS. Closed at 18:36:02 with nothing unsaved; it asked nothing.
+ON DISK AFTER IT (read only, scratchpad s1_disk.py): each of the two projects names 80 files and its previous
+saved version 80 (78 the same file); every one is there, no file that neither names, no ".part", no recovery
+folder left. Seen in the names: the flatten of each of the 8 panels nobody drew on is in a "~3" file - the first
+save after a project is opened or restored writes every panel's flatten again (it did before this step, over
+the file; now into a new one, the old one kept until the next save). Not a fault; a flatten whose bytes are the
+file's could be left alone one day.
+
+KNOWN, AND LEFT AS IT IS:
+ - Killed between the switch and the naming of the previous version (steps 9-11), the project is the new save and
+   the previous version is still the older one - whole, one save further back than expected. The next save tidies.
+ - A project file copied by hand (not by Save As) names the original's pictures. It was never independent; now it
+   also loses the pictures the original supersedes.
+ - Whether Norton refuses the replacing of the project file as it refused the overwrite of a picture cannot be
+   known here. If it does, the save stops at step 1 with the neutral words and Save As, before any picture.
+ - ImageSaver::adopt (the rename) is reached only by the writer of before this step, kept for the red run.
+
+NEXT: step 2 (the save in the background: "Saving..." in the Script Editor's indicator and at the right of the
+workspace's bottom bar, one save at a time, close / open / Save As wait behind "Finishing the save...") - APPROVED
+by the user on 2026-11-23 at about 18:37 together with a short retry at the switch (the save waits and tries
+again for up to about 2 seconds when another program holds the project file for a moment); not committed until
+its own hand test. Step 3 (Save As, the recorder's event) needs its own approval. Nothing of either is built in
+this commit.
+
 ## STATUS 2026-11-23 (late afternoon): BATCH H (SYMMETRY) COMMITTED ON THE USER'S WORD (THIS COMMIT), H-1 MARKED BUILT; S-1 APPROVED WITH FOUR ANSWERS; SAVING STEP 1 - THE SAFE SAVE, THE PREVIOUS VERSION KEPT, PREFERENCES > SAVING, FILE > RESTORE PREVIOUS SAVED VERSION - TO BE BUILT NEXT, NOT COMMITTED UNTIL ITS HAND TEST
 THE USER (2026-11-23, about 14:55): "Batch H: commit it. I looked at the icon off and on in the app and it was right; I
 forgot to start the recorder. Commit and push batch H with its HANDOFF notes, matching sha_H4_gate.txt, git status

@@ -88,6 +88,8 @@ this fence."
 #include <QDesktopServices>
 #include <QElapsedTimer>
 #include <QFuture>
+#include <QLocale>
+#include <QRadioButton>
 #include <QSpinBox>
 #include <QThread>
 #include <QThreadPool>
@@ -599,6 +601,18 @@ void MainWindow::setupMenuBar()
     m_saveAsAct->setShortcut(QKeySequence::SaveAs);
     connect(m_saveAsAct, &QAction::triggered, this, &MainWindow::onSaveProjectAs);
 
+    // RESTORE PREVIOUS SAVED VERSION (the safe save, 2026-11-23; Figma S-1 675:755,
+    // approved that day): under Save Project As.... The version the last save replaced is
+    // kept (Preferences > Saving); this opens it in the window, after a warning, and
+    // changes nothing on disk until a save. Greyed when there is none - its tooltip then
+    // says why (a QMenu shows only tooltips set on purpose) - and looked at again each
+    // time the menu opens.
+    m_restorePreviousAct = fileMenu->addAction(QStringLiteral("Restore Previous Saved Version..."));
+    m_restorePreviousAct->setObjectName(QStringLiteral("fileRestorePrevious"));
+    connect(m_restorePreviousAct, &QAction::triggered, this, [this] { restorePreviousVersion(); });
+    fileMenu->setToolTipsVisible(true);
+    connect(fileMenu, &QMenu::aboutToShow, this, [this] { refreshRestorePreviousAction(); });
+
     fileMenu->addSeparator();
     // Project Settings lives under File, NOT under Edit > Preferences:
     // Preferences are application-wide; these belong to the open project.
@@ -943,6 +957,63 @@ void MainWindow::onPreferences()
     recoveryButtons->addWidget(closeRecovery);
     recoveryLayout->addLayout(recoveryButtons);
     pages->addWidget(recoveryPage);
+
+    // --- Saving page (the safe save, 2026-11-23; Figma S-1 675:755) ------------
+    // What becomes of the version a save replaces: kept as the previous saved
+    // version (the default), or its pictures deleted right away. A preference of
+    // the app, like the other pages; it takes effect at the next save, once that
+    // save has completed - never at the click.
+    QWidget *savingPage = new QWidget;
+    QVBoxLayout *savingLayout = new QVBoxLayout(savingPage);
+    savingLayout->setContentsMargins(16, 16, 16, 12);
+    savingLayout->setSpacing(6);
+    QLabel *savingHead = new QLabel(QStringLiteral("After each save"));
+    savingHead->setStyleSheet(QStringLiteral("QLabel { color: #e6e6e6; font-size: 11px; font-weight: 600; }"));
+    savingLayout->addWidget(savingHead);
+    // (The choice's dot in the accent colour, as S-1 shows it.)
+    const QString radioStyle = SankoTheme::themed(
+        "QRadioButton { color: #cccccc; font-size: 11px; spacing: 8px; }"
+        "QRadioButton::indicator { width: 11px; height: 11px; border-radius: 6px;"
+        " border: 1px solid #6a6a70; background: transparent; }"
+        "QRadioButton::indicator:checked { border: 1px solid %ACCENT%;"
+        " background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,"
+        " stop:0 %ACCENT%, stop:0.5 %ACCENT%, stop:0.6 transparent, stop:1 transparent); }");
+    const QString noteStyle =
+        QStringLiteral("QLabel { color: #8a8a90; font-size: 11px; margin-left: 20px; }");
+    QRadioButton *keepPrevious = new QRadioButton(QStringLiteral("Keep the previous saved version"));
+    keepPrevious->setObjectName(QStringLiteral("prefsSavingKeep"));
+    keepPrevious->setStyleSheet(radioStyle);
+    savingLayout->addWidget(keepPrevious);
+    QLabel *keepNote = new QLabel(QStringLiteral(
+        "The project as it was before your last save stays beside it until the next save has "
+        "completed. File > Restore Previous Saved Version... brings it back."));
+    keepNote->setWordWrap(true);
+    keepNote->setStyleSheet(noteStyle);
+    savingLayout->addWidget(keepNote);
+    savingLayout->addSpacing(8);
+    QRadioButton *deletePrevious = new QRadioButton(QStringLiteral("Delete the previous pictures right away"));
+    deletePrevious->setObjectName(QStringLiteral("prefsSavingDelete"));
+    deletePrevious->setStyleSheet(radioStyle);
+    savingLayout->addWidget(deletePrevious);
+    QLabel *deleteNote = new QLabel(QStringLiteral(
+        "Uses less disk space. There is then no previous version to go back to."));
+    deleteNote->setWordWrap(true);
+    deleteNote->setStyleSheet(noteStyle);
+    savingLayout->addWidget(deleteNote);
+    (keepPreviousVersion() ? keepPrevious : deletePrevious)->setChecked(true);
+    connect(keepPrevious, &QRadioButton::toggled, this, [this](bool keep) {
+        setKeepPreviousVersion(keep);
+        refreshRestorePreviousAction(); // its tooltip names the choice
+    });
+    savingLayout->addStretch(1);
+    QHBoxLayout *savingButtons = new QHBoxLayout;
+    savingButtons->addStretch(1);
+    QPushButton *closeSaving = new QPushButton(QStringLiteral("Close"));
+    connect(closeSaving, &QPushButton::clicked, &dialog, &QDialog::accept);
+    savingButtons->addWidget(closeSaving);
+    savingLayout->addLayout(savingButtons);
+    categories->addItem(QStringLiteral("Saving"));
+    pages->addWidget(savingPage);
 
     dialog.exec();
 }
@@ -1357,6 +1428,10 @@ int MainWindow::discardRecoveryCopyForTest(bool confirm)
 // undo history still holds, since Undo can bring it back. Refused with a
 // reason while the project is unsaved (the folder must match the model) or
 // has no file yet.
+// (The safe save, 2026-11-23) "As saved" is read from the project file itself and
+// from the kept previous saved version: a picture written again by a later save is
+// under a "~n" name the scenes alone cannot tell, and the previous version's pictures
+// are in use - File > Restore Previous Saved Version... opens them.
 int MainWindow::cleanUpProjectFolder(std::function<bool(int, qint64)> confirm, QString *why)
 {
     if (m_currentProjectPath.isEmpty()) {
@@ -1373,8 +1448,12 @@ int MainWindow::cleanUpProjectFolder(std::function<bool(int, qint64)> confirm, Q
     const QString folder = QFileInfo(m_currentProjectPath).absolutePath();
     const QString assets = folder + QStringLiteral("/") + ProjectIO::assetSubdirFor(m_currentProjectPath);
     QSet<QString> used;
-    for (const QString &name : ProjectIO::projectImageNames(m_scenes))
-        used.insert(name.toLower());
+    if (!ProjectIO::savedImageNames(m_currentProjectPath, &used)) {
+        if (why)
+            *why = QStringLiteral("The project file could not be read, so the folder cannot be "
+                                  "compared with what the project uses. Nothing was removed.");
+        return -1;
+    }
     QSet<QString> kept;
     if (m_storyboard)
         for (const QString &id : m_storyboard->panelIdsHeldByHistory())
@@ -1467,8 +1546,106 @@ void MainWindow::updateSaveActions()
     if (m_discardRecoveryAct)
         m_discardRecoveryAct->setEnabled(!recoveryBasePath().isEmpty()
                                          && ProjectRecovery::hasCopy(recoveryBasePath()));
+    refreshRestorePreviousAction();
     updateAudioActions();
     updateExportActions();
+}
+
+// --- The previous saved version (the safe save, 2026-11-23) ---------------------------------
+
+bool MainWindow::keepPreviousVersion() const
+{
+    return sankoSettings().value(QStringLiteral("saving/keepPrevious"), true).toBool();
+}
+
+void MainWindow::setKeepPreviousVersion(bool keep)
+{
+    sankoSettings().setValue(QStringLiteral("saving/keepPrevious"), keep);
+}
+
+// File > Restore Previous Saved Version...: enabled when the open project has a previous
+// saved version and every picture it names is there; else its tooltip says why not.
+void MainWindow::refreshRestorePreviousAction()
+{
+    if (!m_restorePreviousAct)
+        return;
+    QString why;
+    bool can = false;
+    if (m_currentProjectPath.isEmpty()) {
+        why = QStringLiteral("There is no previous saved version: this project has not been saved yet.");
+    } else {
+        const ProjectIO::PreviousVersion previous = ProjectIO::readPreviousVersion(m_currentProjectPath);
+        if (!previous.exists) {
+            why = keepPreviousVersion()
+                ? QStringLiteral("There is no previous saved version yet: one is kept from the next save "
+                                 "that changes the project.")
+                : QStringLiteral("No previous saved version is kept: Preferences > Saving is set to "
+                                 "delete the previous pictures right away.");
+        } else if (previous.missingFiles > 0) {
+            why = QStringLiteral("The previous saved version is not whole: %1 of its picture files %2 missing.")
+                      .arg(previous.missingFiles)
+                      .arg(previous.missingFiles == 1 ? QStringLiteral("is") : QStringLiteral("are"));
+        } else {
+            can = true;
+        }
+    }
+    m_restorePreviousAct->setEnabled(can);
+    m_restorePreviousAct->setToolTip(can ? QString() : why);
+}
+
+// THE WARNING AND THE RESTORE (Figma S-1 675:755, the wording approved 2026-11-23, Cancel
+// the default). The previous saved version is opened in the window in the project's place;
+// the project keeps its file and its name, and is unsaved: nothing on disk changes until a
+// save. Saved then, it becomes the saved version and the one that was saved until then the
+// previous one - so the artist can change their mind once more.
+bool MainWindow::restorePreviousVersion()
+{
+    if (m_currentProjectPath.isEmpty())
+        return false;
+    const QString project = m_currentProjectPath;
+    const ProjectIO::PreviousVersion previous = ProjectIO::readPreviousVersion(project);
+    if (!previous.exists || previous.missingFiles > 0) {
+        refreshRestorePreviousAction();
+        return false;
+    }
+    const QLocale english(QLocale::English, QLocale::UnitedKingdom);
+    const QString when = !previous.savedAt.isValid()
+        ? QStringLiteral("an earlier save")
+        : previous.savedAt.date().year() == QDate::currentDate().year()
+            ? english.toString(previous.savedAt, QStringLiteral("d MMMM 'at' HH:mm"))
+            : english.toString(previous.savedAt, QStringLiteral("d MMMM yyyy 'at' HH:mm"));
+    const QString title = QStringLiteral("Restore Previous Saved Version");
+    const QString text = previous.savedAt.isValid()
+        ? QStringLiteral("Open this project as it was saved on %1?").arg(when)
+        : QStringLiteral("Open this project as it was at %1?").arg(when);
+    const QString takes = QStringLiteral("It takes the place of what is open now. Nothing on disk changes "
+                                         "until you save.");
+    const QString lost = QStringLiteral("You have changes that are not saved. They are in no saved version "
+                                        "and will be lost.");
+    const QString first = QStringLiteral("(Saving them first would replace the previous version you are "
+                                         "asking for.)");
+    bool go = false;
+    if (m_restorePromptForTest) {
+        go = m_restorePromptForTest(title, text,
+                                    m_dirty ? takes + QStringLiteral("\n\n") + lost + QStringLiteral("\n") + first
+                                            : takes);
+    } else {
+        QMessageBox box(QMessageBox::Warning, title, text, QMessageBox::NoButton, this);
+        box.setInformativeText(
+            m_dirty ? QStringLiteral("%1<br><br><span style=\"color:#e0a860;\"><b>%2</b></span><br>"
+                                     "<span style=\"color:#9a9aa2;\">%3</span>")
+                          .arg(takes, lost, first)
+                    : takes);
+        QPushButton *restore = box.addButton(QStringLiteral("Restore Previous Version"), QMessageBox::AcceptRole);
+        QPushButton *cancel = box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(cancel);
+        box.setEscapeButton(cancel);
+        box.exec();
+        go = box.clickedButton() == restore;
+    }
+    if (!go)
+        return false;
+    return loadFromPath(ProjectIO::previousVersionFile(project), false, project);
 }
 
 // Import Audio needs a film to put the track under (scenes) and the
@@ -3230,6 +3407,27 @@ bool MainWindow::saveToPath(const QString &path)
     m_storyboard->commitQuickShape(); // temporary vectors are not serialized
     m_storyboard->ensureBrushPixelsForSave();
 
+    // THE PROJECT FILE FIRST (the safe save, 2026-11-23). It is the one file a save still
+    // replaces - every picture that changed goes into a new file. A project file that may
+    // not be replaced - read-only, or refused to SankoTV as Norton 360 refused it every
+    // overwrite in Documents on 2026-11-08 while it let new files be made - stops the save
+    // here, before a picture is written beside a project file that could never name it.
+    {
+        m_lastSaveRemoved.clear(); // what this save does, not the one before it
+        m_lastSavePreviousKept = false;
+        QString systemSays;
+        if (ProjectIO::projectFileRefused(path, &systemSays)) {
+            m_lastSaveWritten.clear();
+            m_lastSaveSkipped = 0;
+            m_lastSaveRenamed.clear();
+            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                               "Could not write to:\n%1\n\n(%2)\n\n"
+                                               "Your work is still open and "
+                                               "still unsaved.").arg(path, systemSays));
+            return false;
+        }
+    }
+
     // The serialization core lives in ProjectIO (extracted with the
     // resolution epic so the seam can drive it without this window); this
     // shell owns the page prep above, the dialogs, and the recents.
@@ -3279,6 +3477,8 @@ bool MainWindow::saveToPath(const QString &path)
         m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
     if (!written.ok && written.cancelled)
         return false; // the artist pressed Cancel: nothing to tell them
+    if (!written.ok && written.stopped)
+        return false; // a check stopped the writer at one of its steps: nobody to tell
     if (!written.ok) {
         saySaveFailed(written.failedFile.isEmpty() ? path : written.failedFile,
                       QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
@@ -3290,40 +3490,49 @@ bool MainWindow::saveToPath(const QString &path)
         return false; // no token is made: the dirty flag stays set
     }
 
-    // STEP 2 — the manifest, ATOMICALLY. QSaveFile writes an adjacent temp
-    // file and renames it into place on commit(), so a failure part-way
-    // through leaves the previous project file untouched instead of a
-    // truncated one. A plain QFile opened WriteOnly truncates the moment it
-    // opens: a disk that fills during the write used to leave an
-    // unparseable manifest where a good one had been, and say nothing.
-    const QByteArray json = QJsonDocument(written.root).toJson(QJsonDocument::Indented);
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
-                                           "Could not write to:\n%1\n\n"
-                                           "Your work is still open and "
-                                           "still unsaved.").arg(path));
+    // STEP 2 — THE PROJECT FILE IS THE ONE SWITCH (the safe save, 2026-11-23; ProjectIO.h).
+    // Every image of this save is on disk by now under a name nothing else had, whole and
+    // pushed through to the disk; no file of the saved project has been touched. The new
+    // project file is written beside the old one, pushed through, and put in its place in
+    // one step: before that step the disk holds the whole old save, after it the whole new
+    // one. What it replaced is then kept as the previous saved version (Preferences >
+    // Saving; File > Restore Previous Saved Version...) - replaced only now, after the save
+    // has completed - and only after that are the pictures nothing names any more removed.
+    // (It was QSaveFile here: the same temp file and one-step replace for the project file,
+    // but the images before it were written over their own files.)
+    ProjectIO::SaveOptions options;
+    options.keepPrevious = keepPreviousVersion();
+    const ProjectIO::SwitchResult switched = ProjectIO::switchProjectFile(path, written.root, options);
+    if (!switched.ok) {
+        if (switched.stopped)
+            return false; // a check stopped the writer: nobody to tell
+        if (switched.failure == ProjectIO::SwitchFailure::CannotOpen) {
+            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                               "Could not write to:\n%1\n\n"
+                                               "Your work is still open and "
+                                               "still unsaved.").arg(path));
+        } else if (switched.failure == ProjectIO::SwitchFailure::ShortWrite) {
+            // A SHORT WRITE IS A FAILED WRITE: the new file is dropped, the old one is
+            // where it was.
+            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                               "Only part of the project file "
+                                               "could be written to:\n%1\n\n"
+                                               "The disk may be full. The "
+                                               "previous version has not been "
+                                               "changed.").arg(path));
+        } else {
+            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                               "The project file could not be "
+                                               "completed at:\n%1\n\n%2")
+                                    .arg(path, switched.systemSays));
+        }
         return false;
     }
-    // A SHORT WRITE IS A FAILED WRITE. write() returning fewer bytes than it
-    // was given was previously discarded, and the save reported success.
-    if (file.write(json) != json.size()) {
-        file.cancelWriting(); // the previous file survives untouched
-        saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
-                                           "Only part of the project file "
-                                           "could be written to:\n%1\n\n"
-                                           "The disk may be full. The "
-                                           "previous version has not been "
-                                           "changed.").arg(path));
-        return false;
-    }
-    if (!file.commit()) {
-        saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
-                                           "The project file could not be "
-                                           "completed at:\n%1\n\n%2")
-                                .arg(path, file.errorString()));
-        return false;
-    }
+    // A picture the save removed is in no file any more.
+    for (const QString &gone : switched.removedFiles)
+        m_imageLedger->forget(gone);
+    m_lastSaveRemoved = switched.removedFiles;
+    m_lastSavePreviousKept = switched.previousKept;
 
     // Reached only when every image and the manifest are on disk. This is
     // the one place a SaveCompleted can be made.
@@ -3366,9 +3575,15 @@ void MainWindow::markSavedTo(const QString &path, SaveCompleted)
     armRecoveryTimer();
 }
 
-bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
+bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy, const QString &asPreviousOf)
 {
     m_storyboard->commitQuickShape(); // resolve before panels are replaced
+    // THE PREVIOUS SAVED VERSION (the safe save, 2026-11-23): `path` is then the kept
+    // project file of the version before the last save, and `project` the project it is a
+    // version of. Its pictures are named from the project's folder, and it is loaded in the
+    // project's place: the project's file, name, lock and place in the recents all stay.
+    const bool asPrevious = !asPreviousOf.isEmpty();
+    const QString project = asPrevious ? asPreviousOf : path;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         QMessageBox::warning(this, QStringLiteral("Open Project"),
@@ -3387,7 +3602,7 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     }
 
     const QJsonObject root = doc.object();
-    const QString folder = QFileInfo(path).absolutePath();
+    const QString folder = QFileInfo(project).absolutePath();
 
     // A NEWER FILE (2026-11-06, batch 6a). This build reads up to
     // ProjectIO::kFileVersionNewest (5 since batch F1: a locked scene); a later
@@ -3413,7 +3628,7 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     // file, and the crash it came from keeps its lock until it is resolved.
     finishRecoveryCopy(true);
     if (!m_currentProjectPath.isEmpty()
-        && m_currentProjectPath.compare(path, Qt::CaseInsensitive) != 0)
+        && m_currentProjectPath.compare(project, Qt::CaseInsensitive) != 0)
         ProjectRecovery::removeLock(m_currentProjectPath);
 
     freeScenes();
@@ -3421,6 +3636,8 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     // The model rebuild + every migration + the pixels-win reconciliation
     // live in ProjectIO (extracted with the resolution epic); this shell
     // owns dialogs, member assignment, and page updates.
+    // (`path` is the file whose time the flatten trust test reads: a previous version's
+    // kept project file was written after every picture it names.)
     ProjectIO::LoadedProject loaded = ProjectIO::projectFromJson(root, folder, path);
     // The files just read hold exactly these images: the next save skips
     // every one that is still unchanged.
@@ -3428,7 +3645,7 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
 
     m_projectName = loaded.projectName;
     if (m_projectName.isEmpty())
-        m_projectName = QFileInfo(path).completeBaseName();
+        m_projectName = QFileInfo(project).completeBaseName();
     m_projectFps = loaded.fps;
     m_scenes = loaded.scenes; // ownership transfers to MainWindow
     m_consistencyEntries = loaded.consistency;
@@ -3442,14 +3659,14 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     // OWNS arrives resolved against this project's folder (so a moved or
     // copied folder plays); an old project's absolute path arrives as it
     // was stored, LINKED, and stays that way until the artist converts it.
-    m_animatic->setProjectFile(path);
+    m_animatic->setProjectFile(project);
     m_animatic->setAudioPath(loaded.audioPath, loaded.audioLinked);
     // The tracks' lock / visibility / mute, silently (a load is not an
     // edit); the Edit menu's audio entries follow the AUDIO lock.
     m_animatic->setTracks(loaded.tracks);
     updateAudioActions();
 
-    m_currentProjectPath = path;
+    m_currentProjectPath = project;
     updateSaveActions();
     updateTitle();
 
@@ -3490,7 +3707,7 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
     pushStageMargin();
     m_animatic->setFps(m_projectFps);
-    if (!asRecoveryCopy)
+    if (!asRecoveryCopy && !asPrevious)
         RecentProjects::record(path);
 
     // Skip the Script Editor: go straight to the Storyboard.
@@ -3527,6 +3744,13 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
         if (m_animatic->audioLinked()
             && ProjectMedia::isInAssets(m_animatic->audioPath(), m_recoveredFrom))
             m_animatic->setAudioPath(m_animatic->audioPath(), false);
+        markDirty();
+        updateSaveActions();
+    } else if (asPrevious) {
+        // THE PREVIOUS SAVED VERSION, OPEN AND UNSAVED: the project's file on disk is still
+        // the version saved last, so what is in the window differs from it until a save.
+        m_recoveredFrom.clear();
+        ProjectRecovery::writeLock(project, m_sessionId, buildStamp());
         markDirty();
         updateSaveActions();
     } else {
