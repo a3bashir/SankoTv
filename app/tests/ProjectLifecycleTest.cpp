@@ -90,6 +90,7 @@
 #include <QHelpEvent>
 #include <QWindow>
 #include <qpa/qwindowsysteminterface.h>
+#include <qpa/qwindowsysteminterface_p.h> // RealPointerDeaf: the window system's own event hook
 #include <QPointingDevice>
 #include <QTabletEvent>
 #include <QToolTip>
@@ -258,6 +259,65 @@ void pump(int ms)
     while (t.elapsed() < ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
 }
+
+// DEAF TO THE MACHINE'S OWN POINTER (2026-11-23, after gate H3; the rule: a check may not depend
+// on the real pointer). A check that waits on a tooltip could: Qt's tip takes itself away 0.3 s
+// after ANY Leave event in the application, and a window that opens or closes under a pointer at
+// rest - a popover, the tip itself - makes Windows tell the app of an Enter and a Leave for it.
+// (cx10) failed for that in Release and Debug alike with the pointer left in the middle of the test
+// screen, and the committed build failed the same.
+// While one of these lives, what the WINDOW SYSTEM says of a pointer that presses nothing - an
+// Enter, a Leave, a move without a button, a pen's hover and its proximity - is dropped before Qt
+// makes any event of it, so no widget and no event filter hears it, whatever was installed when.
+// What a check sends itself with sendEvent is not the window system's and passes; so do presses,
+// keys and everything else. A check that injects such events THROUGH the window system
+// (QWindowSystemInterface) is deaf to those too while this lives - that is how (cx10)'s control
+// and its red run speak for the machine's pointer without touching it.
+class RealPointerDeaf : public QWindowSystemEventHandler
+{
+public:
+    RealPointerDeaf() : m_before(QWindowSystemInterfacePrivate::eventHandler)
+    {
+        QWindowSystemInterfacePrivate::eventHandler = this;
+    }
+    ~RealPointerDeaf() override { QWindowSystemInterfacePrivate::eventHandler = m_before; }
+    void setDeaf(bool on) { m_deaf = on; }
+    int unheard() const { return m_unheard; }
+
+    bool sendEvent(QWindowSystemInterfacePrivate::WindowSystemEvent *event) override
+    {
+        if (m_deaf && isPointerAtRest(event)) {
+            ++m_unheard;
+            event->eventAccepted = false;
+            return false;
+        }
+        return m_before ? m_before->sendEvent(event) : QWindowSystemEventHandler::sendEvent(event);
+    }
+
+private:
+    static bool isPointerAtRest(QWindowSystemInterfacePrivate::WindowSystemEvent *event)
+    {
+        switch (event->type) {
+        case QWindowSystemInterfacePrivate::Enter:
+        case QWindowSystemInterfacePrivate::Leave:
+        case QWindowSystemInterfacePrivate::TabletEnterProximity:
+        case QWindowSystemInterfacePrivate::TabletLeaveProximity:
+            return true;
+        case QWindowSystemInterfacePrivate::Mouse: {
+            const auto *mouse = static_cast<QWindowSystemInterfacePrivate::MouseEvent *>(event);
+            return mouse->buttons == Qt::NoButton
+                && (mouse->buttonType == QEvent::MouseMove || mouse->buttonType == QEvent::NonClientAreaMouseMove);
+        }
+        case QWindowSystemInterfacePrivate::Tablet:
+            return static_cast<QWindowSystemInterfacePrivate::TabletEvent *>(event)->buttons == Qt::NoButton;
+        default:
+            return false;
+        }
+    }
+    QWindowSystemEventHandler *const m_before;
+    bool m_deaf = true;
+    int m_unheard = 0;
+};
 
 
 void sendMouse(QWidget *w, QEvent::Type type, const QPointF &local,
@@ -19181,6 +19241,10 @@ void runGrowAnyZoomPass(const QString &scratch)
 
     // --- (cx10) the Quick Move's note outlives the popover's close and the menu's -------
     {
+        // THE WHOLE OF (cx10) IS DEAF TO THE MACHINE'S OWN POINTER (2026-11-23; RealPointerDeaf
+        // above): in gate H3 its first check read "up 0" in both builds while the pointer lay at
+        // rest in the middle of the test screen.
+        RealPointerDeaf deaf;
         const QPoint notePt = r.surface->mapToGlobal(r.timeline->clipRectForTest(1).center());
         const bool pointOnSurface = QApplication::widgetAt(notePt) == r.surface;
         r.storyboard->setNotePointForTest(notePt);
@@ -19196,6 +19260,16 @@ void runGrowAnyZoomPass(const QString &scratch)
             QEnterEvent enter(local, local, QPointF(notePt));
             QCoreApplication::sendEvent(r.surface, &enter);
         };
+        // What the machine's own pointer, at rest under a window that closes, makes Windows say
+        // while the note is up: a Leave and an Enter for the app's window - through the window
+        // system, as the real ones come, not from the check's own hand as the events above.
+        auto pointerSpeaks = [&] {
+            QWindow *window = r.window.windowHandle();
+            const QPointF local(r.window.mapFromGlobal(notePt));
+            QWindowSystemInterface::handleLeaveEvent<QWindowSystemInterface::SynchronousDelivery>(window);
+            QWindowSystemInterface::handleEnterEvent<QWindowSystemInterface::SynchronousDelivery>(
+                window, local, QPointF(notePt));
+        };
         clickThumb(r, 0);
         pump(60);
         r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ToSceneEnd);
@@ -19204,7 +19278,8 @@ void runGrowAnyZoomPass(const QString &scratch)
         QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
         auto *tile = pop ? pop->findChild<QToolButton *>(QStringLiteral("camQuickPanRight")) : nullptr;
         const QString expected = QStringLiteral("The move leaves the art of Panel 2: Grow to fit is on the clip.");
-        bool popShown = false, waitedForEnter = false, upAfter = false;
+        bool popShown = false, waitedForEnter = false, upAtOnce = false, upAfter = false;
+        int unheard = -1;
         QString note;
         if (quickBtn && pop && tile) {
             QToolTip::hideText();
@@ -19217,17 +19292,59 @@ void runGrowAnyZoomPass(const QString &scratch)
             note = r.storyboard->lastNoteForTest();
             waitedForEnter = !QToolTip::isVisible();
             deliverCloseEvents({tile, pop});
-            pump(500);
+            pump(60); // the Enter's dispatch is over: the note is up
+            upAtOnce = QToolTip::isVisible() && QToolTip::text() == expected;
+            const int unheardBefore = deaf.unheard();
+            pointerSpeaks(); // not heard
+            unheard = deaf.unheard() - unheardBefore;
+            pump(440); // 0.5 s after the close's events
             upAfter = QToolTip::isVisible() && QToolTip::text() == expected;
         }
         check(QStringLiteral("(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK: it waits for the pointer's Enter "
-                             "and is still up 0.5 s after the close's Leave events"),
-              pointOnSurface && popShown && !pop->isVisible() && note == expected && waitedForEnter && upAfter,
-              QStringLiteral("on surface %1; popover shown %2; note '%3'; waited %4; up %5 '%6'").arg(pointOnSurface)
-                  .arg(popShown).arg(note).arg(waitedForEnter).arg(upAfter)
-                  .arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+                             "and is still up 0.5 s after the close's Leave events - and the machine's own pointer is "
+                             "not heard (2026-11-23): a Leave and an Enter sent through the window system while the "
+                             "note is up, as a pointer at rest under the closing popover makes them, reach nothing"),
+              pointOnSurface && popShown && !pop->isVisible() && note == expected && waitedForEnter && upAtOnce
+                  && unheard == 2 && upAfter,
+              QStringLiteral("on surface %1; popover shown %2; note '%3'; waited %4; up at once %5; the window "
+                             "system's two events unheard %6; up %7 '%8'")
+                  .arg(pointOnSurface).arg(popShown).arg(note).arg(waitedForEnter).arg(upAtOnce).arg(unheard)
+                  .arg(upAfter).arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
         r.window.undoActionForTest()->trigger();
         pump(60);
+        // CONTROL (2026-11-23): the same click HEARD, as every run was before the change. The
+        // same two events reach the app and the note goes - what gate H3 read.
+        bool heardShown = false, heardUpAtOnce = false, heardUpAfter = true;
+        int heardUnheard = -1;
+        if (quickBtn && pop && tile) {
+            QToolTip::hideText();
+            pump(400);
+            r.surface->setAttribute(Qt::WA_UnderMouse, false);
+            r.storyboard->clearNoteForTest();
+            quickBtn->click();
+            pump(60);
+            heardShown = pop->isVisible();
+            tile->click();
+            deliverCloseEvents({tile, pop});
+            pump(60);
+            heardUpAtOnce = QToolTip::isVisible() && QToolTip::text() == expected;
+            const int unheardBefore = deaf.unheard();
+            deaf.setDeaf(false);
+            pointerSpeaks(); // heard
+            deaf.setDeaf(true);
+            heardUnheard = deaf.unheard() - unheardBefore;
+            pump(500);
+            heardUpAfter = QToolTip::isVisible();
+            r.window.undoActionForTest()->trigger();
+            pump(60);
+        }
+        check(QStringLiteral("(cx10) control (2026-11-23): the same click heard as before, the check not deaf - the note "
+                             "comes up, the same Leave and Enter from the window system reach the app, and the note is "
+                             "gone 0.5 s later: gate H3's reading (\"up 0\") with the machine's pointer at rest in the "
+                             "middle of the test screen"),
+              heardShown && heardUpAtOnce && heardUnheard == 0 && !heardUpAfter,
+              QStringLiteral("popover shown %1; up at once %2; events unheard %3; up 0.5 s later %4")
+                  .arg(heardShown).arg(heardUpAtOnce).arg(heardUnheard).arg(heardUpAfter));
         // The old order: shown at once, then the close's events - it goes.
         QToolTip::hideText();
         pump(400);
