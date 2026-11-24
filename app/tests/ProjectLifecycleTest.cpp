@@ -35086,24 +35086,48 @@ Fixture build(MainWindow &window, const QString &root, const QString &name, bool
     f.pristine = root + QStringLiteral("/pristine/") + name;
     f.pristineProj = f.pristine + QStringLiteral("/") + name + QStringLiteral(".sankotv");
     ProjectIO::setOverwriteInPlaceForTest(oldWriter);
+    // A FIXTURE'S SAVE REFUSED FOR A MOMENT IS TRIED AGAIN (2026-11-24). Gates S1 and S3 (Release):
+    // the writer of before 2026-11-23 - which has no retry, by design - was refused the project
+    // file's name once ("The project file could not be completed at: ...Old.sankotv / Access is
+    // denied": another program holding the file just written), and the control's fixture was
+    // not built. The fixture is not what the checks are about: a refused save of it is caught
+    // (no box) and tried again, up to 5 times, and every refusal is named in the note.
+    QStringList refused;
+    window.setBlockedPromptForTest([&refused](const QString &, const QString &text) {
+        refused << text.simplified().left(160);
+        return false;
+    });
+    auto saveFixture = [&](Log *log) {
+        for (int attempt = 1; attempt <= 5; ++attempt) {
+            if (log)
+                log->clear(); // the log is of the save that completes
+            ProjectIO::setSaveLogForTest(log);
+            const bool ok = window.saveProjectForTest(f.proj);
+            ProjectIO::setSaveLogForTest(nullptr);
+            pump(200);
+            if (ok)
+                return true;
+            pump(300);
+        }
+        return false;
+    };
     const bool opened = window.loadProjectForTest(f.proj);
     pump(500);
-    const bool first = window.saveProjectForTest(f.proj);
-    pump(200);
+    const bool first = saveFixture(nullptr);
     stroke(window, 0);
-    const bool second = window.saveProjectForTest(f.proj);
-    pump(200);
+    const bool second = saveFixture(nullptr);
     stroke(window, 30);
-    ProjectIO::setSaveLogForTest(lastSave);
-    const bool third = window.saveProjectForTest(f.proj);
-    ProjectIO::setSaveLogForTest(nullptr);
-    pump(200);
+    const bool third = saveFixture(lastSave);
+    window.setBlockedPromptForTest({});
     ProjectIO::setOverwriteInPlaceForTest(false);
     window.markCleanForTest();
     const bool copied = travel::copyFolder(f.work, f.pristine);
     f.ok = opened && first && second && third && copied;
     f.note = QStringLiteral("opened %1, saved %2 %3 %4, copied %5").arg(opened).arg(first).arg(second).arg(third)
                  .arg(copied);
+    if (!refused.isEmpty())
+        f.note += QStringLiteral("; refused and tried again %1 time(s): %2").arg(refused.size())
+                      .arg(refused.join(QStringLiteral(" || ")));
     return f;
 }
 

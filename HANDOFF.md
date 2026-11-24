@@ -1,5 +1,83 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-24 (evening): THE SAFE SAVE'S FIXTURE TRIES A REFUSED SAVE AGAIN - COMMITTED ALONE (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST S3; TEST FILE ONLY; GATED ALONE IN BOTH BUILDS
+THE USER (2026-11-24, about 15:2x, after hand test S3): "... If nothing else failed, commit and push the safe save's
+test-project retry and saving step 3 now, each on its own with its HANDOFF notes and matching its own hash list. If
+the Rename fix touches files they share, gate each alone in a scratch worktree first. Commit Rename Brush only after
+my re-test passes. ..."
+HAND TEST S3 (one Dev Recorder session, 20261124-150607; the "Nov 24 2026 12:00:32" build, 8802c7f90+dirty, on "TEST
+COPY - small pirate, Save As and Rename S3"): Save As, steps 6-9, PASS; Rename Brush step 1 FAIL (the Library went
+from the screen while a name was typed - Rename's own change, fixed since and not committed); steps 2-5 not tested.
+Nothing else failed. The Rename fix touches the test file this commit shares, so this commit was gated ALONE.
+THIS COMMIT: app/tests/ProjectLifecycleTest.cpp, its one hunk in safesave::build (below), and this note; nothing else.
+WHY. Gate S3 (Release, 2026-11-24 10:11-11:07) failed (ss3)'s control and (ss)'s box count, as gate S1 (Release) had:
+the fixture builder safesave::build saves its project three times through the window, and for the (ss3) control it
+does so with the writer of before 2026-11-23 (setOverwriteInPlaceForTest), which has no retry, by design. Its second
+save was refused: "Save Project: This project was NOT saved. The project file could not be completed at:
+.../safesave/old/work/Old/Old.sankotv Access is denied." (another program holding the file just written - the same
+moment the short retry of step 2 is for). The fixture read "saved 1 0 1", the control's stops then found nothing to
+tell apart, and the refusal's box was the second box of (ss)'s count (the first, expected, is (ss13)'s). Nothing the
+checks are about was wrong: the fixture was not built.
+THE CHANGE - an instrument, the checks' texts and conditions unchanged. OLD (safesave::build):
+    const bool opened = window.loadProjectForTest(f.proj);
+    pump(500);
+    const bool first = window.saveProjectForTest(f.proj);
+    pump(200);
+    stroke(window, 0);
+    const bool second = window.saveProjectForTest(f.proj);
+    pump(200);
+    stroke(window, 30);
+    ProjectIO::setSaveLogForTest(lastSave);
+    const bool third = window.saveProjectForTest(f.proj);
+    ProjectIO::setSaveLogForTest(nullptr);
+    pump(200);
+NEW:
+    QStringList refused;
+    window.setBlockedPromptForTest([&refused](const QString &, const QString &text) {
+        refused << text.simplified().left(160);
+        return false;
+    });
+    auto saveFixture = [&](Log *log) {
+        for (int attempt = 1; attempt <= 5; ++attempt) {
+            if (log)
+                log->clear(); // the log is of the save that completes
+            ProjectIO::setSaveLogForTest(log);
+            const bool ok = window.saveProjectForTest(f.proj);
+            ProjectIO::setSaveLogForTest(nullptr);
+            pump(200);
+            if (ok)
+                return true;
+            pump(300);
+        }
+        return false;
+    };
+    const bool opened = window.loadProjectForTest(f.proj);
+    pump(500);
+    const bool first = saveFixture(nullptr);
+    stroke(window, 0);
+    const bool second = saveFixture(nullptr);
+    stroke(window, 30);
+    const bool third = saveFixture(lastSave);
+    window.setBlockedPromptForTest({});
+ and the note adds "; refused and tried again N time(s): <each refusal's text>" when there was one. A refused save
+ of the fixture is caught (no box), tried again up to 5 times, and named in every check line that prints the
+ fixture's note. The pass set no blocked-save hook of its own before (grep), so clearing it after changes nothing.
+POSITIVE CONTROL (a one-off edit, "// CONTROL RUN"): the old-writer fixtures' project file made read-only before
+their first save, and the hook giving its write back at the refusal. The "safesave" slice: 242 / 242, and (ss3)'s
+control line read "refused and tried again 1 time(s): This project was NOT saved. Could not write to:
+.../safesave/old/work/Old/Old.sankotv (The file is read-only.)" - the retry catches a refusal and the fixture is
+built. Documents\SankoTV-Design\saving-step3-2026-11-24\fixture_retry_positive_control.txt. Lines removed, grep
+"CONTROL RUN" 0, "RED RUN" 0.
+GATED ALONE: 8802c7f90 + this hunk, nothing else, in a scratch worktree (C:\SankoTV_split; snapshot tree
+4e6d554f5726f51639e29f69632448426a5bba8f), the gate script's copy with A= the worktree. GATE FX (16:34-17:30): every
+family green but (sy2) in both builds - the worktree's own: git's autocrlf had checked out 133 unchanged files with
+CRLF where the main tree has LF, icons/symmetry.svg among them, whose hash (sy2) reads (c6b2dc1f... for 912558ff...).
+The main tree's bytes copied in for those 133 (each first proved to differ by CRs only; the index tree unchanged).
+GATE FX2 (17:31-18:27): GREEN - EVERY FAMILY IN BOTH BUILDS: QuickShapeGeometryLock 19, DevRecorderTest 46,
+CanvasEdgeLock 74, CanvasSizeLock 170, BrushLibraryTest 187, PaintPixelLock 13, CanvasBrushLock 3, ProjectLifecycle
+1808, CameraTest 336; exe "Nov 24 2026 17:33:42". Hash list: app/build/_probe/split/sha_FX_commit.txt (the test
+file's sha256 and git blob 85c17d55...).
+
 ## STATUS 2026-11-23 (night) / 2026-11-24 (morning): SAVING STEP 2 COMMITTED ON THE USER'S WORD AFTER HAND TEST S2 (THIS COMMIT) - THE SAVE IN THE BACKGROUND (CTRL+S TAKES A SNAPSHOT AND RETURNS; A WORKER WRITES), "SAVING..." IN BOTH PLACES, "FINISHING THE SAVE...", THE SHORT RETRY; NEW CHECKS (sb1)-(sb10) WITH CONTROLS AND A RED RUN; 2 OLD CHECKS CHANGED (OLD AND NEW BELOW); GATE S2 GREEN IN BOTH BUILDS
 HAND TEST S2 (the user, 2026-11-24, 09:08: "Hand test S2 done: all steps looked right; the pen never stopped around
 a save. ... If it ran the right build and nothing failed: 1. Commit and push saving step 2 with its HANDOFF notes,
