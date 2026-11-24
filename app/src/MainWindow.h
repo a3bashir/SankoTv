@@ -138,6 +138,10 @@ public:
     qint64 lastSaveUiMsForTest() const { return m_lastSaveUiMs; }
     bool saveFailureWaitingForTest() const { return m_saveFailureWaiting; }
     bool saveAgainForTest() const { return m_saveAgain; }
+    // (Saving step 3, 2026-11-24) For the checks' red run only: File > Save Project As...
+    // as it was - saved and waited for - and the Dev Recorder as it was, noting no save.
+    void setSaveAsWaitsForTest(bool on) { m_saveAsWaitsForTest = on; }
+    void setSaveNotesOffForTest(bool off) { m_saveNotesOffForTest = off; }
     // The real slot the Project Settings dialog's applied() signal reaches.
     void applyProjectSettingsForTest(const QString &name, int fps)
     {
@@ -490,7 +494,16 @@ private:
     // not in that save: the project then stays unsaved when it ends (m_editSerial).
     // True: a save is now in flight. False: it failed at once (and said so) or was
     // cancelled, and nothing is in flight.
-    bool beginSave(const QString &path);
+    // (Saving step 3) `saveAs`: the project takes the file's name with it if it completes,
+    // `previousName` back if it does not.
+    bool beginSave(const QString &path, bool saveAs = false, const QString &previousName = QString());
+    // SAVE AS (saving step 3, 2026-11-24): the dialog's path, and the save to it - in the
+    // background, or saved and waited for (`wait`: the unsaved-changes prompt's Save).
+    QString askSaveAsPath();
+    bool startSaveAs(const QString &path, bool wait);
+    // THE DEV RECORDER NOTES EACH SAVE (saving step 3): "saveStarted" when one begins,
+    // "saveEnded" when it has ended - with whether it succeeded - paired by `serial`.
+    void noteSave(const char *type, const QVariantMap &data);
     // Its result, on the UI thread: the ledger learns what landed, the project is
     // marked saved - or left unsaved, with the failure's message. `tellNow`: the
     // message at once (save and wait); else it waits for a stroke in flight to end,
@@ -642,6 +655,8 @@ private:
     bool m_saveHoldForTest = false;
     bool m_saveOnUiThreadForTest = false;
     bool m_lastSaveChangedSince = false;
+    bool m_saveAsWaitsForTest = false;
+    bool m_saveNotesOffForTest = false;
     int m_lastSaveTries = 0;
     bool m_lastSaveHeld = false;
     qint64 m_lastSaveUiMs = 0;

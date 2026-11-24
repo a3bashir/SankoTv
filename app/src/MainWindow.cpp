@@ -134,6 +134,8 @@ struct SaveRun
 {
     quint64 serial = 0;
     QString path;                    // the project file it writes
+    bool saveAs = false;             // (saving step 3) a Save As: the name it takes, the one it had
+    QString previousName;
     quint64 editSerial = 0;          // the window's count of edits at the snapshot
     bool onUiThread = false;         // the checks' control: the writer of before this step
     bool cancelledRecovery = false;  // a recovery copy in flight was told to stop for it
@@ -3259,8 +3261,14 @@ bool MainWindow::onDashboardForTest() const
 bool MainWindow::saveForPrompt()
 {
     if (m_currentProjectPath.isEmpty()) {
-        onSaveProjectAs(); // modal; may be cancelled, leaving no path
-        return !m_currentProjectPath.isEmpty() && !isDirty();
+        // (Saving step 3) Save As here SAVES AND WAITS: the question needs the answer.
+        if (m_scenes.isEmpty())
+            return false;
+        waitForSave();
+        const QString path = askSaveAsPath(); // modal; may be cancelled, leaving no path
+        if (path.isEmpty())
+            return false;
+        return startSaveAs(path, true) && !m_currentProjectPath.isEmpty() && !isDirty();
     }
     return saveToPath(m_currentProjectPath) && !isDirty();
 }
@@ -3496,9 +3504,40 @@ void MainWindow::onSaveProjectAs()
     if (m_scenes.isEmpty())
         return;
     // (Saving step 2) Save As waits for a running save, behind "Finishing the save...",
-    // and never cancels it. (Save As itself still saves and waits; step 3.)
+    // and never cancels it.
     waitForSave();
+    const QString path = askSaveAsPath();
+    if (path.isEmpty())
+        return;
+    // SAVE AS IN THE BACKGROUND (saving step 3, 2026-11-24): the same snapshot as Ctrl+S's -
+    // its audio copy, with its progress window, among it - and the worker writes the new
+    // project; the window goes back to the artist at once. (The checks' red run: as it was,
+    // saved and waited for.)
+    startSaveAs(path, m_saveAsWaitsForTest);
+}
 
+// SAVE AS: the project takes the new file's name for the save - the name is written into it -
+// and keeps it only if the save completes (finishSaveRun puts the old one back otherwise).
+// `wait`: saved and waited for, the result returned (the unsaved-changes prompt's Save).
+bool MainWindow::startSaveAs(const QString &path, bool wait)
+{
+    if (m_saveRun)
+        finishSaveNow();
+    const QString previousName = m_projectName;
+    m_projectName = QFileInfo(path).completeBaseName();
+    if (!beginSave(path, true, previousName)) {
+        m_projectName = previousName; // a Save As that failed at once, or was cancelled
+        return false;
+    }
+    if (wait || (m_saveRun && m_saveRun->onUiThread))
+        return finishSaveNow();
+    return true;
+}
+
+// The Save As file dialog (or the checks' picker), and the recovered work's question: the
+// path to save as, or empty for none.
+QString MainWindow::askSaveAsPath()
+{
     // A recovered document's Save As defaults to the project it came from
     // (2026-11-04). For it the file dialog's own "already exists" question is
     // turned off: SankoTV asks below instead, once, after the final name is
@@ -3515,7 +3554,7 @@ void MainWindow::onSaveProjectAs()
                                        recovered ? QFileDialog::DontConfirmOverwrite
                                                  : QFileDialog::Options());
     if (path.isEmpty())
-        return;
+        return QString();
     if (!path.endsWith(QStringLiteral(".sankotv"), Qt::CaseInsensitive))
         path += QStringLiteral(".sankotv");
     // THE RECOVERED WORK REPLACES NOTHING UNASKED (2026-11-05, the approved
@@ -3524,7 +3563,7 @@ void MainWindow::onSaveProjectAs()
     // question checks the name as typed, before ".sankotv" is added, and the
     // gate's Save As seam never shows that dialog at all.
     if (recovered && QFileInfo::exists(path) && !confirmReplaceForRecovered(path))
-        return;
+        return QString();
 
     // There used to be a guard here warning that saving into a folder which
     // already held a project would make the two share their artwork files.
@@ -3538,13 +3577,9 @@ void MainWindow::onSaveProjectAs()
     // very thing that RESCUES it out of the shared pool.
     // The name has to be set BEFORE the save, because it is what gets
     // written — but a Save As that FAILS must not leave the open project
-    // renamed after the file it did not manage to create.
-    const QString previousName = m_projectName;
-    m_projectName = QFileInfo(path).completeBaseName();
-    if (saveToPath(path))
-        updateTitle();
-    else
-        m_projectName = previousName;
+    // renamed after the file it did not manage to create (startSaveAs, and
+    // finishSaveRun for a Save As that fails in the background).
+    return path;
 }
 
 // --- A write Windows blocked (Controlled Folder Access, 2026-10-31) --------
@@ -3650,13 +3685,41 @@ void MainWindow::tellSaveFailure()
     saySaveFailed(target, text);
 }
 
-bool MainWindow::beginSave(const QString &path)
+// THE DEV RECORDER NOTES EACH SAVE (saving step 3, 2026-11-24; the user's word: "when it started
+// and ended, and whether it succeeded"). A recording's events carry their own time.
+void MainWindow::noteSave(const char *type, const QVariantMap &data)
+{
+#ifdef SANKOTV_DEV_RECORDER
+    if (m_saveNotesOffForTest)
+        return;
+    if (auto *rec = devrec::Recorder::instance(); rec && rec->isRecording())
+        rec->logEvent(QString::fromLatin1(type), data);
+#else
+    Q_UNUSED(type);
+    Q_UNUSED(data);
+#endif
+}
+
+bool MainWindow::beginSave(const QString &path, bool saveAs, const QString &previousName)
 {
     m_storyboard->commitQuickShape(); // temporary vectors are not serialized
     m_storyboard->ensureBrushPixelsForSave();
     auto run = std::make_unique<SaveRun>();
     run->clock.start();
     run->path = path;
+    run->saveAs = saveAs;
+    run->previousName = previousName;
+    run->serial = ++m_saveSerial; // from here: the two notes of this save are paired by it
+    const QString kind = saveAs ? QStringLiteral("Save As") : QStringLiteral("Save");
+    noteSave("saveStarted", {{QStringLiteral("serial"), run->serial}, {QStringLiteral("kind"), kind}});
+    // A save that ended before it was in flight: noted so, with why.
+    auto endedAtOnce = [this, &run, &kind](const QString &outcome) {
+        noteSave("saveEnded", {{QStringLiteral("serial"), run->serial},
+                               {QStringLiteral("kind"), kind},
+                               {QStringLiteral("ok"), false},
+                               {QStringLiteral("outcome"), outcome},
+                               {QStringLiteral("ms"), qint64(run->clock.elapsed())}});
+    };
     run->editSerial = m_editSerial; // what is changed after this is not in the save
     run->onUiThread = m_saveOnUiThreadForTest;
     run->options.keepPrevious = keepPreviousVersion();
@@ -3686,6 +3749,7 @@ bool MainWindow::beginSave(const QString &path)
             m_saveNote = SaveNote::Failed; // "NOT saved", in both places
             updateSavedIndicator();
             updateWorkspaceStatus();
+            endedAtOnce(QStringLiteral("not saved: the project file may not be replaced"));
             saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
                                                "Could not write to:\n%1\n\n(%2)\n\n"
                                                "Your work is still open and "
@@ -3746,13 +3810,18 @@ bool MainWindow::beginSave(const QString &path)
             m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
         for (Qt::HANDLE t : written.encodeThreadIds)
             m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
-        if (written.cancelled)
+        if (written.cancelled) {
+            endedAtOnce(QStringLiteral("cancelled"));
             return false; // the artist pressed Cancel: nothing to tell them
-        if (written.stopped)
+        }
+        if (written.stopped) {
+            endedAtOnce(QStringLiteral("stopped by a check"));
             return false; // a check stopped the writer at one of its steps: nobody to tell
+        }
         m_saveNote = SaveNote::Failed;
         updateSavedIndicator();
         updateWorkspaceStatus();
+        endedAtOnce(QStringLiteral("not saved"));
         saySaveFailed(written.failedFile.isEmpty() ? path : written.failedFile,
                       QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
                                      "Your work is still open and still unsaved. The "
@@ -3766,7 +3835,6 @@ bool MainWindow::beginSave(const QString &path)
     // IN FLIGHT FROM HERE. The worker gets the plan and the text; this thread goes back
     // to the artist. "Saving..." shows in both places until finishSaveRun.
     run->root = written.root;
-    run->serial = ++m_saveSerial;
     run->hold.store(m_saveHoldForTest);
     // A recovery copy in flight is of work this save is about to make the saved file:
     // it is told to stop (not waited for here), so the save's end does not wait for it.
@@ -3906,8 +3974,23 @@ bool MainWindow::finishSaveRun(quint64 serial, bool tellNow)
                            .arg(path, switched.systemSays);
         }
     }
+    // The save's end, as the Dev Recorder notes it (saving step 3).
+    auto noteEnd = [&](bool ok, const QString &outcome) {
+        noteSave("saveEnded", {{QStringLiteral("serial"), run->serial},
+                               {QStringLiteral("kind"), run->saveAs ? QStringLiteral("Save As") : QStringLiteral("Save")},
+                               {QStringLiteral("ok"), ok},
+                               {QStringLiteral("outcome"), outcome},
+                               {QStringLiteral("ms"), qint64(run->clock.elapsed())},
+                               {QStringLiteral("uiMs"), run->uiMs},
+                               {QStringLiteral("images"), int(m_lastSaveWritten.size())},
+                               {QStringLiteral("tries"), run->switched.tries}});
+    };
     if (stopped || !failText.isEmpty()) {
         // NOT SAVED. The dirty flag stays set; no token is made.
+        // (Saving step 3) A Save As that failed: the project keeps the name it had.
+        if (run->saveAs && m_projectName == QFileInfo(path).completeBaseName())
+            m_projectName = run->previousName;
+        noteEnd(false, stopped ? QStringLiteral("stopped by a check") : QStringLiteral("not saved"));
         m_saveNote = stopped ? SaveNote::None : SaveNote::Failed;
         m_saveAgain = false; // a Ctrl+S remembered during it is not run on top of a failure
         updateSavedIndicator();
@@ -3944,6 +4027,7 @@ bool MainWindow::finishSaveRun(quint64 serial, bool tellNow)
     m_saveNote = changedSince ? SaveNote::None : SaveNote::Saved;
     m_lastSavedAt = QDateTime::currentDateTime();
     markSavedTo(path, SaveCompleted{}, changedSince);
+    noteEnd(true, changedSince ? QStringLiteral("saved; changed since") : QStringLiteral("saved"));
     // The project's own audio track is now the copy in THIS project's
     // folder. After an ordinary save that is where it already was and
     // nothing happens; after a Save As it is the new project's copy, and

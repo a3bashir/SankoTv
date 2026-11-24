@@ -1,6 +1,70 @@
 # SankoTV — Session Handoff Brief
 
-## 2026-11-24 (evening): THE SAFE SAVE'S FIXTURE TRIES A REFUSED SAVE AGAIN - COMMITTED ALONE (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST S3; TEST FILE ONLY; GATED ALONE IN BOTH BUILDS
+## 2026-11-24 (evening): SAVING STEP 3 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST S3 - SAVE AS IN THE BACKGROUND, THE DEV RECORDER'S NOTE OF EACH SAVE; NEW CHECKS (sa1)-(sa6) WITH CONTROLS AND A RED RUN; 6 OLD CHECKS' INSTRUMENT CHANGED; GATED ON THE FIXTURE COMMIT ALONE, GREEN IN BOTH BUILDS
+THE USER (2026-11-24, about 15:2x): "... If nothing else failed, commit and push the safe save's test-project retry
+and saving step 3 now, each on its own with its HANDOFF notes and matching its own hash list. If the Rename fix
+touches files they share, gate each alone in a scratch worktree first. Commit Rename Brush only after my re-test
+passes. ..." The fixture retry is the commit before this one (68cee2f13). Rename Brush is not in this commit.
+HAND TEST S3 - THE SAVE AS STEPS (session 20261124-150607; the "Nov 24 2026 12:00:32" build, 8802c7f90+dirty, title
+"TEST COPY - small pirate, Save As and Rename S3"):
+ 6. PASS - Save As 15:14:26-15:14:31 into "...S4": "Saved 15:14", the title "...S4"; 558 ms, 49 ms on the UI thread.
+ 7. PASS - Save As into "...S5" (15:15:38): the pen went down 0.13 s after the save began and stayed down through it
+    (228 pen moves, the longest pause 31 ms); "Saving..." then "Saved 15:15"; the title "...S4*" during, "...S5" after.
+ 8. PASS - the Ctrl+S after it saved into "...S5" (its file last written 15:15:55.8, with the last Ctrl+S; "...S4"
+    last at 15:15:28.8, before that Save As; the copy's own "...S3" untouched).
+ 9. PASS - the window's X, "Save changes to "...S5"?", Discard. All 80 saves of the session succeeded.
+THIS COMMIT: app/src/MainWindow.cpp / .h; app/tests/ProjectLifecycleTest.cpp - runSaveAsBackgroundPass (new), its
+place in the family (after (sb)) and in the "safesave" and "bgsave" slices, and the waits in (cf) x2 and (r4) x4; this
+note. Hash list app/build/_probe/split/sha_S3_commit.txt (sha256 and git blobs; source snapshot tree e29a307a...).
+WHAT CHANGED (MainWindow.cpp / .h):
+ - File > Save Project As... (onSaveProjectAs): the dialog (askSaveAsPath: the file dialog or the checks' picker,
+   and the recovered work's question), then startSaveAs: the project takes the new file's name for the save, and
+   beginSave(path, saveAs) takes the same snapshot as Ctrl+S - its audio copy, with its progress window, among it -
+   and returns. The worker writes the new project; the project takes its new place when the save completes
+   (markSavedTo), and finishSaveRun puts the old name back if it fails. "Finishing the save...", one save at a time,
+   the remembered Ctrl+S (it saves into the new project) and the short retry hold as for Ctrl+S.
+ - The unsaved-changes prompt's Save of a project with no file still saves and waits (startSaveAs(path, true)): the
+   question needs the answer. So do the checks' saveProjectForTest and saveToPath.
+ - THE DEV RECORDER NOTES EACH SAVE (noteSave): "saveStarted" {serial, kind: Save / Save As} when beginSave starts,
+   "saveEnded" {serial, kind, ok, outcome: saved / saved; changed since / not saved / not saved: the project file
+   may not be replaced / cancelled / stopped by a check, ms from the key press, uiMs, images, tries} when it ends -
+   at once (a refusal, a cancel) or in finishSaveRun. The recording's own time is on each event.
+ - (Seen meanwhile, harmless: a save that is WAITED for may run its worker task on the waiting thread - Qt's
+   QFuture::waitForFinished takes a task that has not started yet. The window waits then anyway.)
+THE CHECKS (runSaveAsBackgroundPass, after (sb) in the family and in the "safesave" and "bgsave" slices; 10):
+ (sa1) Save As with its worker held returns with the save in flight, the UI thread free, "Saving..." in both
+      places, no new file yet and the window still on its project; let go, the new project opens whole with the
+      window's picture, the window on it under its name, saved; 14 steps, none on the UI thread; the old file the
+      same. Control: Save As as it was (setSaveAsWaitsForTest) - not in flight, done.
+ (sa2) a stroke and a Ctrl+S during a held Save As: the stroke is not in what the Save As wrote; the window on the
+      new project, unsaved; the Ctrl+S remembered saves the stroke into the new project (2 switches); old file the
+      same. (sa3) Close Project waits behind "Finishing the save...", the new project is written, then it closes
+      asking nothing. (sa4) a Save As that fails in the background (a folder where the new project's first picture
+      is made): the project keeps its file and name, unsaved, "NOT saved" in both places, the message, no new file.
+ (sa5) the short retry: Save As onto a project file a second process holds, let go during the retry: tries 2, on
+      the worker, completed. (sa6) a recording: a Ctrl+S, a Save As and a Save As that fails - three
+      saveStarted / saveEnded pairs, each end after its start, "Save ok (saved), Save As ok (saved), Save As failed
+      (not saved)". Control: the reading sees the recording's own sessionStart. (sa) no box a check did not expect.
+RED RUN (runSaveAsBackgroundPass: const bool beforeStep3 = true, "// RED RUN" - Save As saved and waited for, no
+notes): 6 FAILED - (sa1), (sa2), (sa3), (sa4) (not in flight), (sa5) (the retry on the waiting thread), (sa6) (no
+pairs); controls passed. Documents\SankoTV-Design\saving-step3-2026-11-24\red_run_against_save_as_before_step3.txt.
+Marker removed, grep 0.
+OLD CHECKS: texts and conditions unchanged; their INSTRUMENT changed - each waits for the save to end
+(window.waitForSaveForTest()) after triggering a Save As, where it read the files after a fixed pump: both (cf)
+blocked-save checks (the offer's Save As), and (r4)'s four (the recovered work's Save through Save As, Replace,
+the new name, an ordinary Save As). Without the wait they would rest on the save's speed - a clock. OLD (each):
+    <the Save As trigger>;
+    pump(...);
+ NEW: the same, then
+    window.waitForSaveForTest(); // (saving step 3, 2026-11-24) ...
+QUICK CHECK: the "safesave" slice 242 / 242; "bgsave" 29 / 29.
+GATES: with the Rename change beside it in the main tree, gate S3c (15:37-16:34) GREEN in both builds (Lifecycle
+1830). ALONE - this commit's sources on 68cee2f13 in the scratch worktree (C:\SankoTV_split; the main tree's bytes for
+every unchanged file), GATE S3W (18:28-19:24): GREEN - EVERY FAMILY IN BOTH BUILDS: QuickShapeGeometryLock 19,
+DevRecorderTest 46, CanvasEdgeLock 74, CanvasSizeLock 170, BrushLibraryTest 187, PaintPixelLock 13, CanvasBrushLock 3,
+ProjectLifecycle 1818, CameraTest 336; exe "Nov 24 2026 18:30:40", 68cee2f13+dirty.
+
+## 2026-11-24 (evening): THE SAFE SAVE'S FIXTURE TRIES A REFUSED SAVE AGAIN - COMMITTED ALONE (68cee2f13, THE COMMIT BEFORE THE ONE ABOVE) ON THE USER'S WORD AFTER HAND TEST S3; TEST FILE ONLY; GATED ALONE IN BOTH BUILDS
 THE USER (2026-11-24, about 15:2x, after hand test S3): "... If nothing else failed, commit and push the safe save's
 test-project retry and saving step 3 now, each on its own with its HANDOFF notes and matching its own hash list. If
 the Rename fix touches files they share, gate each alone in a scratch worktree first. Commit Rename Brush only after
@@ -9,7 +73,7 @@ HAND TEST S3 (one Dev Recorder session, 20261124-150607; the "Nov 24 2026 12:00:
 COPY - small pirate, Save As and Rename S3"): Save As, steps 6-9, PASS; Rename Brush step 1 FAIL (the Library went
 from the screen while a name was typed - Rename's own change, fixed since and not committed); steps 2-5 not tested.
 Nothing else failed. The Rename fix touches the test file this commit shares, so this commit was gated ALONE.
-THIS COMMIT: app/tests/ProjectLifecycleTest.cpp, its one hunk in safesave::build (below), and this note; nothing else.
+THAT COMMIT: app/tests/ProjectLifecycleTest.cpp, its one hunk in safesave::build (below), and this note; nothing else.
 WHY. Gate S3 (Release, 2026-11-24 10:11-11:07) failed (ss3)'s control and (ss)'s box count, as gate S1 (Release) had:
 the fixture builder safesave::build saves its project three times through the window, and for the (ss3) control it
 does so with the writer of before 2026-11-23 (setOverwriteInPlaceForTest), which has no retry, by design. Its second
