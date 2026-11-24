@@ -11069,15 +11069,31 @@ bool StoryboardPage::actionInProgress() const
     return false;
 }
 
-void StoryboardPage::setRecoveryStatus(const QString &text)
+void StoryboardPage::setRecoveryStatus(const QString &text, bool lit, bool failed)
 {
-    if (m_recoveryStatus)
+    m_recoveryStatusWords = text;
+    if (!m_recoveryStatus)
+        return;
+    if (text.isEmpty() || (!lit && !failed)) {
+        // The dimmed words alone, as they always were: "Recovery copy saved 19:42",
+        // "Saved 14:32".
+        m_recoveryStatus->setTextFormat(Qt::PlainText);
         m_recoveryStatus->setText(text);
+        return;
+    }
+    // THE SAVE'S WORD (saving step 2, 2026-11-23; Figma S-1): a dot before it - the
+    // accent's for "Saving...", red with red words for "NOT saved".
+    const QString dot = failed ? QStringLiteral("#e86464") : SankoTheme::themed("%ACCENT%");
+    const QString words = failed ? QStringLiteral("#e86464") : QStringLiteral("#999999");
+    m_recoveryStatus->setTextFormat(Qt::RichText);
+    m_recoveryStatus->setText(
+        QString::fromUtf8("<span style=\"color:%1;\">\xE2\x97\x8F</span>&nbsp;&nbsp;<span style=\"color:%2;\">%3</span>")
+            .arg(dot, words, text.toHtmlEscaped()));
 }
 
 QString StoryboardPage::recoveryStatusForTest() const
 {
-    return m_recoveryStatus ? m_recoveryStatus->text() : QString();
+    return m_recoveryStatusWords;
 }
 
 // --- Data / selection -----------------------------------------------------

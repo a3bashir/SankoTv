@@ -371,7 +371,10 @@ public:
     bool actionInProgress() const;
     // "Recovery copy saved 19:42", dimmed at the right of the bottom bar;
     // empty clears it.
-    void setRecoveryStatus(const QString &text);
+    // (Saving step 2, 2026-11-23; Figma S-1) The same place says the save's word:
+    // `lit` - a dot in the accent colour before it ("Saving..."); `failed` - the dot
+    // and the words in red ("NOT saved"). recoveryStatusForTest: the words alone.
+    void setRecoveryStatus(const QString &text, bool lit = false, bool failed = false);
     QString recoveryStatusForTest() const;
     // DEPTH (Phase 2B): the Depth popover for layer `index` of the current
     // panel, as its badge or Depth... opens it (the paper and a folder's
@@ -901,6 +904,7 @@ private:
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;
     QLabel *m_recoveryStatus = nullptr; // the recovery copy's word (2026-11-04)
+    QString m_recoveryStatusWords;      // what it says, without the dot's markup
     // Floating Size CTL toolbar (Figma 209:42): size + opacity sliders and
     // Flip, snapping to the left/right canvas edge. (Brush Options is gone;
     // its pressure toggles were removed deliberately, and hardness is

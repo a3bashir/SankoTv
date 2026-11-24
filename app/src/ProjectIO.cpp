@@ -307,6 +307,10 @@ struct SaveHooks
     bool dead = false;
     std::atomic<bool> skipPush{false};
     std::atomic<bool> overwriteInPlace{false};
+    // The short retry (saving step 2): the checks' hook in place of the pause, and the
+    // writer of before it (one try).
+    std::function<void(const QString &, int)> retryHook;
+    std::atomic<bool> retryOff{false};
 };
 SaveHooks &saveHooks()
 {
@@ -370,18 +374,66 @@ std::wstring nativePath(const QString &file)
 }
 #endif
 
+// THE SHORT RETRY (saving step 2, 2026-11-23; ProjectIO.h). `file` could not be named or
+// read at the try that made `triesMade`, because another program holds it: true when the
+// writer is to try again - after the pause, or after the checks' hook in its place.
+bool tryAgain(const QString &file, int triesMade)
+{
+    SaveHooks &h = saveHooks();
+    if (h.retryOff.load() || triesMade >= kNameTries)
+        return false;
+    std::function<void(const QString &, int)> hook;
+    {
+        QMutexLocker lock(&h.mutex);
+        if (h.dead)
+            return false; // a check stopped the writer: it does nothing more
+        hook = h.retryHook;
+    }
+    if (hook)
+        hook(QDir::cleanPath(file), triesMade);
+    else
+        QThread::msleep(kNamePauseMs);
+    return true;
+}
+
 // `from` takes the name `to`, in one step, written through. With `over`, in place of the
-// file that has the name; without, only if nothing has it.
-bool giveName(const QString &from, const QString &to, bool over, QString *why)
+// file that has the name; without, only if nothing has it. A refusal that is another
+// program holding one of the two for a moment is tried again (tryAgain): `tries` is how
+// often it was tried, `held` whether it failed as held to the end.
+bool giveName(const QString &from, const QString &to, bool over, QString *why, int *tries = nullptr,
+              bool *held = nullptr)
 {
 #ifdef Q_OS_WIN
     const std::wstring a = nativePath(from), b = nativePath(to);
-    if (MoveFileExW(a.c_str(), b.c_str(), (over ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH))
-        return true;
+    int made = 0;
+    DWORD error = 0;
+    bool holding = false;
+    for (;;) {
+        ++made;
+        if (MoveFileExW(a.c_str(), b.c_str(), (over ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH)) {
+            if (tries)
+                *tries = made;
+            return true;
+        }
+        error = GetLastError();
+        // What Windows says when another program has the file open: of the file being
+        // replaced, "access is denied"; of the one being moved, a sharing violation. (A
+        // folder where the file is to be is "access is denied" too, and stays so: not held.)
+        holding = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+            || error == ERROR_USER_MAPPED_FILE || (error == ERROR_ACCESS_DENIED && !QFileInfo(to).isDir());
+        if (!holding || !tryAgain(to, made))
+            break;
+    }
+    if (tries)
+        *tries = made;
+    if (held)
+        *held = holding;
     if (why)
-        *why = qt_error_string(int(GetLastError()));
+        *why = qt_error_string(int(error));
     return false;
 #else
+    if (tries)
+        *tries = 1;
     if (!over && QFileInfo::exists(to)) {
         if (why)
             *why = QStringLiteral("a file of that name is there already");
@@ -498,11 +550,13 @@ public:
     // `folder` - the files adopt() must leave where they are; `plan`: when
     // set, the images to write go there instead of to the encoders.
     ImageSaver(const QString &folder, const QString &assets, ImageLedger *ledger,
-               WriteResult *res, const QStringList &keep, ImagePlan *plan)
+               WriteResult *res, const QStringList &keep, ImagePlan *plan, bool planIsSave)
         : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res), m_plan(plan),
-          // THE SAFE SAVE (2026-11-23): a Save, which knows what its files hold. The recovery
-          // copy (a plan) and a caller without a ledger (the seam's fixtures) write as before.
-          m_safe(ledger && !plan && !saveHooks().overwriteInPlace.load())
+          // THE SAFE SAVE (2026-11-23): a Save, which knows what its files hold - written
+          // here, or (saving step 2) as a plan of its own for runSavePlan. The recovery copy
+          // (a plan that is not a Save's) and a caller without a ledger (the seam's
+          // fixtures) write as before.
+          m_safe(ledger && (!plan || planIsSave) && !saveHooks().overwriteInPlace.load())
     {
         for (const QString &name : keep) {
             m_keep.insert(QDir::cleanPath(QFileInfo(folder + QStringLiteral("/") + name)
@@ -526,6 +580,15 @@ public:
     ~ImageSaver() { m_pool.waitForDone(); }
 
     bool failed() const { return m_failed.load(); }
+
+    // Where the layer about to be given to layer() stands in the project file's arrays
+    // (saving step 2: a layer reduced where the plan runs has its place written there).
+    void at(int scene, int panel, int layer)
+    {
+        m_scene = scene;
+        m_panel = panel;
+        m_layer = layer;
+    }
 
     // A layer's file (version 3): only what is drawn when the tiles say what the
     // layer holds; the whole stage when they do not yet (the panel on the canvas,
@@ -557,6 +620,29 @@ public:
             // the stage.
             const bool mustFold = layer.tiles
                 && layertiles::hasHidden(*layer.tiles, QRect(-frameAt, layer.pixelSize()));
+            // THE SAVE IN THE BACKGROUND (saving step 2): a Save's plan takes the full image
+            // as a shared copy and it is reduced to its drawn part where the plan runs
+            // (ImageJob::fold) - the same file a Save always wrote, none of it made here.
+            // Where the layer then lies, and a Background's fill, runSavePlan writes into
+            // the project file's text; what is said here stands only until then.
+            if (m_plan && m_safe && !tiles && layertiles::foldable(layer.image)) {
+                ImageJob job;
+                job.file = full;
+                job.content = content;
+                job.image = layer.image;
+                job.tiles = layer.tiles;
+                job.fold = true;
+                job.frameAt = frameAt;
+                job.paper = paper;
+                job.scene = m_scene;
+                job.panel = m_panel;
+                job.layer = m_layer;
+                m_plan->jobs.append(std::move(job));
+                (*layerObj)[QStringLiteral("origin")] = QJsonArray{-frameAt.x(), -frameAt.y()};
+                (*layerObj)[QStringLiteral("size")] =
+                    QJsonArray{layer.pixelSize().width(), layer.pixelSize().height()};
+                return relName;
+            }
             if (!tiles && layertiles::foldable(layer.image) && (!m_plan || mustFold))
                 tiles = layertiles::fold(layer.image, frameAt,
                                          paper ? layertiles::paperFill(layer.image, layer.tiles) : 0u,
@@ -593,7 +679,17 @@ public:
         if (m_safe) {
             bool have = false;
             const QString relName = settle(baseName, content, &have);
-            if (!have) {
+            if (!have && m_plan) {
+                // (Saving step 2) the panel's layers as shared copies; runSavePlan
+                // composites them where it runs.
+                auto snapshot = std::make_shared<Panel>();
+                snapshot->layers = panel.layers;
+                ImageJob job;
+                job.file = m_folder + QStringLiteral("/") + relName;
+                job.content = content;
+                job.flatten = std::move(snapshot);
+                m_plan->jobs.append(std::move(job));
+            } else if (!have) {
                 m_res->composeThreadIds.append(QThread::currentThreadId());
                 push(relName, panel.flattenedPixmap().toImage(), content);
             }
@@ -884,6 +980,7 @@ private:
     QSet<QString> m_keep;    // lower-cased absolute paths
     QSet<QString> m_bases;   // the base file names of this save's images, lower-cased
     QSet<QString> m_claimed; // the files this save's images are in, lower-cased absolute paths
+    int m_scene = -1, m_panel = -1, m_layer = -1; // see at()
     int m_next = 0;
     std::atomic<bool> m_failed{false};
     std::atomic<bool> m_stopped{false}; // a check stopped the writer (stepDone)
@@ -941,6 +1038,166 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel)
         if (!job.ok)
             return false;
     return true;
+}
+
+namespace {
+// The flatten as a Save has always written it. It was panel.flattenedPixmap().toImage(): a
+// QPixmap made from a picture with no pixel less than opaque holds it WITHOUT an alpha
+// channel, and so did the file. A QPixmap belongs to the UI thread; this is the same
+// picture made without one.
+QImage asPixmapHolds(const QImage &image)
+{
+    if (image.format() != QImage::Format_ARGB32_Premultiplied)
+        return image;
+    for (int y = 0; y < image.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x)
+            if (qAlpha(line[x]) != 255)
+                return image;
+    }
+    return image.convertToFormat(QImage::Format_RGB32);
+}
+
+// One layer's place and (a Background's) fill, written into the project file's text.
+void sayLayerPlace(QJsonObject *root, const ImageJob &job)
+{
+    QJsonArray scenes = root->value(QStringLiteral("scenes")).toArray();
+    if (job.scene < 0 || job.scene >= scenes.size())
+        return;
+    QJsonObject scene = scenes.at(job.scene).toObject();
+    QJsonArray panels = scene.value(QStringLiteral("panels")).toArray();
+    if (job.panel < 0 || job.panel >= panels.size())
+        return;
+    QJsonObject panel = panels.at(job.panel).toObject();
+    QJsonArray layers = panel.value(QStringLiteral("layers")).toArray();
+    if (job.layer < 0 || job.layer >= layers.size())
+        return;
+    QJsonObject layer = layers.at(job.layer).toObject();
+    layer[QStringLiteral("origin")] = QJsonArray{job.origin.x(), job.origin.y()};
+    if (job.paper)
+        layer[QStringLiteral("fill")] = QStringLiteral("%1").arg(job.fill, 8, 16, QLatin1Char('0'));
+    layers[job.layer] = layer;
+    panel[QStringLiteral("layers")] = layers;
+    panels[job.panel] = panel;
+    scene[QStringLiteral("panels")] = panels;
+    scenes[job.scene] = scene;
+    (*root)[QStringLiteral("scenes")] = scenes;
+}
+} // namespace
+
+PlanResult runSavePlan(ImagePlan &plan, QJsonObject *root)
+{
+    PlanResult res;
+    // As many at once as a Save encoded; each task makes at most one picture (a flatten
+    // composited, a layer reduced), so the working images stay bounded by the thread count.
+    int threads = qBound(1, QThread::idealThreadCount(), 8);
+    {
+        // A check that stops or holds the writer at a step needs the steps in one order.
+        SaveHooks &h = saveHooks();
+        QMutexLocker lock(&h.mutex);
+        if (h.stopAfter >= 0 || h.holdAt >= 0)
+            threads = 1;
+    }
+    QThreadPool pool;
+    pool.setMaxThreadCount(threads);
+    std::atomic<bool> failed{false};
+    for (ImageJob &job : plan.jobs) {
+        ImageJob *j = &job; // the vector is not touched while the pool runs
+        pool.start([j, &failed] {
+            if (failed.load())
+                return; // already failed; do not pile more writes on
+            j->tried = true;
+            QImage picture;
+            if (j->flatten) {
+                picture = asPixmapHolds(j->flatten->flattenedImage());
+                j->composeThread = QThread::currentThreadId();
+            } else if (j->fold) {
+                // Only what is drawn, as ImageSaver::layer makes it for a Save on its own
+                // thread: nothing drawn is one pixel of the fill, for a file to name.
+                const layertiles::TilesPtr tiles = layertiles::fold(
+                    j->image, j->frameAt, j->paper ? layertiles::paperFill(j->image, j->tiles) : 0u, j->tiles);
+                const QRect rect = tiles->drawn.isEmpty() ? QRect(0, 0, 1, 1) : tiles->drawn;
+                j->origin = rect.topLeft();
+                j->fill = tiles->fill;
+                picture = layertiles::unfold(*tiles, rect);
+                j->foldThread = QThread::currentThreadId();
+            } else {
+                picture = j->tiles ? layertiles::unfold(*j->tiles, j->rect) : j->image;
+            }
+            // The same PNG bytes QImage::save makes, encoded in memory, then the file made
+            // whole, pushed to the disk and named - `file` is a name nothing has.
+            QByteArray png;
+            QString says;
+            bool encoded = false;
+            if (!picture.isNull()) {
+                QBuffer buffer(&png);
+                buffer.open(QIODevice::WriteOnly);
+                QImageWriter writer(&buffer, "PNG");
+                encoded = writer.write(picture);
+                if (!encoded)
+                    says = writer.errorString();
+            }
+            Whole made = Whole::Failed;
+            if (encoded)
+                made = writeWhole(j->file, png, false, SaveStep::ImageWritten, SaveStep::ImagePushed,
+                                  SaveStep::ImageNamed, &says);
+            j->encodeThread = QThread::currentThreadId();
+            j->ok = made == Whole::Done;
+            j->stopped = made == Whole::Stopped;
+            if (!j->ok) {
+                failed.store(true);
+                j->why = picture.isNull()
+                    ? QStringLiteral("the picture to write was empty")
+                    : QStringLiteral("%1 x %2 px; %3").arg(picture.width()).arg(picture.height()).arg(says);
+            }
+        });
+    }
+    pool.waitForDone(); // the results are read after this, on this thread
+    res.ok = true;
+    QSet<Qt::HANDLE> encoders;
+    for (const ImageJob &job : plan.jobs) {
+        if (job.stopped) {
+            // A check stopped the writer: as after a death, nothing is tidied, nothing learnt.
+            res.ok = false;
+            res.stopped = true;
+            res.reason = QStringLiteral("The save was stopped by a check.");
+            return res;
+        }
+    }
+    for (const ImageJob &job : plan.jobs) {
+        if (job.foldThread)
+            res.foldThreadIds.append(job.foldThread);
+        if (job.composeThread)
+            res.composeThreadIds.append(job.composeThread);
+        if (job.ok) {
+            ++res.imagesWritten;
+            res.writtenFiles.append(job.file);
+            res.encodeThreadIds.append(job.encodeThread);
+            encoders.insert(job.encodeThread);
+        } else if (job.tried && res.ok) {
+            // The EARLIEST image in the save's order that failed, as the Save reported it.
+            res.ok = false;
+            res.failedFile = job.file;
+            res.reason = QStringLiteral(
+                "The image could not be written. The disk may be full, "
+                "the file may be open in another program, or the folder "
+                "may be read-only.");
+            // What the system said, for the report and the recording.
+            if (!job.why.isEmpty())
+                res.reason += QStringLiteral("\n\n(%1)").arg(job.why);
+        }
+    }
+    res.encodeThreads = int(encoders.size());
+    if (res.ok && failed.load()) {
+        // (Not reachable: a job that failed is tried and not ok. Never a manifest on a doubt.)
+        res.ok = false;
+        res.reason = QStringLiteral("An image could not be written.");
+    }
+    if (res.ok && root)
+        for (const ImageJob &job : plan.jobs)
+            if (job.fold)
+                sayLayerPlace(root, job);
+    return res;
 }
 
 QJsonObject perspectiveMoved(const QJsonObject &perspective, double dx, double dy)
@@ -1045,7 +1302,11 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         for (const QString &layerName : n.layers)
             keep << rel + layerName;
     }
-    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep, data.plan);
+    // (The writer of before 2026-11-23, for the checks' red run and control, takes no plan
+    // of a Save's: it writes each image over its own file here, as it did.)
+    ImagePlan *const plan =
+        data.planIsSave && saveHooks().overwriteInPlace.load() ? nullptr : data.plan;
+    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep, plan, data.planIsSave);
     int named = 0;
 
     // The project's margin on each side (Phase 2A): where the frame starts
@@ -1119,6 +1380,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                     layerObj[QStringLiteral("parallax")] = layer.parallax;
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
+                    saver.at(int(scenesArray.size()), int(panelsArray.size()), int(layersArray.size()));
                     const QString layerPng =
                         saver.layer(layer,
                                     panel->ownMargin ? panel->frameAt()
@@ -1368,17 +1630,22 @@ SwitchResult switchProjectFile(const QString &projectFilePath, const QJsonObject
         return res;
     }
 
-    // What is being replaced: the version this save makes the previous one.
+    // What is being replaced: the version this save makes the previous one. (The short
+    // retry, saving step 2: a project file that is there and cannot be read just now -
+    // another program holds it - is tried again like a name, tryAgain.)
     QByteArray oldBytes;
     QDateTime oldSavedAt;
     bool had = false;
-    {
+    for (int made = 1;; ++made) {
         QFile f(projectFilePath);
         if (f.open(QIODevice::ReadOnly)) {
             oldBytes = f.readAll();
             oldSavedAt = QFileInfo(projectFilePath).lastModified();
             had = true;
+            break;
         }
+        if (!QFileInfo(projectFilePath).isFile() || !tryAgain(projectFilePath, made))
+            break;
     }
     // A save that changes nothing replaces nothing - or the previous saved version would
     // become a second copy of this one.
@@ -1428,7 +1695,7 @@ SwitchResult switchProjectFile(const QString &projectFilePath, const QJsonObject
         }
     }
     QString why;
-    if (!giveName(part, projectFilePath, true, &why)) {
+    if (!giveName(part, projectFilePath, true, &why, &res.tries, &res.held)) {
         QFile::remove(part);
         res.failure = SwitchFailure::CannotComplete;
         res.systemSays = why;
@@ -1602,6 +1869,18 @@ void setSaveSkipPushForTest(bool skip)
 void setOverwriteInPlaceForTest(bool on)
 {
     saveHooks().overwriteInPlace.store(on);
+}
+
+void setNameRetryHookForTest(std::function<void(const QString &file, int triesMade)> hook)
+{
+    SaveHooks &h = saveHooks();
+    QMutexLocker lock(&h.mutex);
+    h.retryHook = std::move(hook);
+}
+
+void setNameRetryOffForTest(bool off)
+{
+    saveHooks().retryOff.store(off);
 }
 
 namespace {

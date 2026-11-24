@@ -238,10 +238,11 @@ QWidget *ScriptEditorPage::createWritingPanel()
     return panel;
 }
 
-void ScriptEditorPage::setSavedState(const QString &text, bool lit)
+void ScriptEditorPage::setSavedState(const QString &text, bool lit, bool failed)
 {
     m_restingText = text;
     m_restingLit = lit;
+    m_restingFailed = failed;
     if (m_savedTimer && m_savedTimer->isActive())
         return; // the typing flash settles to it
     applyRestingSavedState();
@@ -251,6 +252,13 @@ void ScriptEditorPage::applyRestingSavedState()
 {
     if (!m_savedDot || !m_savedText)
         return;
+    // "NOT saved" (saving step 2, 2026-11-23; Figma S-1): the dot and the words in red.
+    if (m_restingFailed) {
+        m_savedDot->setStyleSheet(QStringLiteral("background-color: #e86464; border-radius: 4px;"));
+        m_savedText->setText(m_restingText);
+        m_savedText->setStyleSheet(QStringLiteral("color: #e86464; font-size: 12px;"));
+        return;
+    }
     m_savedDot->setStyleSheet(
         m_restingLit ? SankoTheme::themed("background-color: %ACCENT%; border-radius: 4px;")
                      : QStringLiteral("background-color: #666666; border-radius: 4px;"));

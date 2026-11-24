@@ -58,6 +58,7 @@ this fence."
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QProgressBar>
 #include <QProgressDialog>
 #include <QSaveFile>
 #include <QFileDialog>
@@ -124,6 +125,85 @@ struct RecoveryCopyRun
     Qt::HANDLE manifestThread = nullptr;
     qint64 bytes = 0;
 };
+
+// A SAVE IN FLIGHT (saving step 2, 2026-11-23). As the recovery copy's: everything its
+// worker needs was taken on the UI thread at Ctrl+S - the plan's images and panel
+// snapshots as shared copies, the project file's text - and the worker writes and
+// reports back here; the UI thread releases it.
+struct SaveRun
+{
+    quint64 serial = 0;
+    QString path;                    // the project file it writes
+    quint64 editSerial = 0;          // the window's count of edits at the snapshot
+    bool onUiThread = false;         // the checks' control: the writer of before this step
+    bool cancelledRecovery = false;  // a recovery copy in flight was told to stop for it
+    ProjectIO::ImagePlan plan;       // every image to write
+    ProjectIO::WriteResult written;  // the snapshot's own result (the text, the skips, the audio)
+    QJsonObject root;                // the project file's text
+    ProjectIO::SaveOptions options;
+    std::atomic<bool> hold{false};   // the gate's: the worker waits at its start
+    QFuture<void> future;
+    QElapsedTimer clock;             // from Ctrl+S
+    qint64 uiMs = 0;                 // the snapshot's own time on the UI thread
+    // The worker's report, read after the future finishes.
+    ProjectIO::PlanResult images;
+    bool switchRan = false;
+    ProjectIO::SwitchResult switched;
+    Qt::HANDLE switchThread = nullptr;
+};
+
+namespace {
+// What a save does off the UI thread: every image of its plan, and only when each of
+// them is on disk, the project file - the one switch - and the tidying after it.
+void runSaveWork(SaveRun *r)
+{
+    if (!r->onUiThread) {
+        while (r->hold.load())
+            QThread::msleep(2);
+        r->images = ProjectIO::runSavePlan(r->plan, &r->root);
+        if (!r->images.ok)
+            return;
+    }
+    r->switchThread = QThread::currentThreadId();
+    r->switched = ProjectIO::switchProjectFile(r->path, r->root, r->options);
+    r->switchRan = true;
+}
+
+// "Finishing the save..." (Figma S-1, 675:755): what waits for a running save shows
+// this. No buttons and no way to close it - Esc and Alt+F4 do nothing - it goes by
+// itself when the save has ended. It never cancels the save.
+class FinishingSaveBox : public QDialog
+{
+public:
+    explicit FinishingSaveBox(QWidget *parent)
+        : QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint)
+    {
+        setObjectName(QStringLiteral("finishingSaveBox"));
+        setModal(true);
+        setFixedWidth(340);
+        setStyleSheet(SankoTheme::themed(
+            "QDialog#finishingSaveBox { background-color: #161616; border: 1px solid #2a2a2a; border-radius: 8px; }"
+            "QLabel { color: #e6e6e6; font-size: 13px; background: transparent; }"
+            "QProgressBar { background-color: #262626; border: none; border-radius: 2px; }"
+            "QProgressBar::chunk { background-color: %ACCENT%; border-radius: 2px; }"));
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(20, 24, 20, 26);
+        layout->setSpacing(18);
+        auto *words = new QLabel(QString::fromUtf8("Finishing the save\xE2\x80\xA6"), this);
+        words->setObjectName(QStringLiteral("finishingSaveText"));
+        layout->addWidget(words);
+        auto *bar = new QProgressBar(this);
+        bar->setRange(0, 0); // no end to show: it runs until the save has ended
+        bar->setTextVisible(false);
+        bar->setFixedHeight(4);
+        layout->addWidget(bar);
+    }
+    void reject() override {} // Esc closes nothing
+
+protected:
+    void closeEvent(QCloseEvent *event) override { event->ignore(); } // nor does Alt+F4
+};
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_imageLedger(std::make_unique<ProjectIO::ImageLedger>())
@@ -316,6 +396,14 @@ MainWindow::MainWindow(QWidget *parent)
     });
     m_recoveryMinutes =
         qBound(0, sankoSettings().value(QStringLiteral("recovery/minutes"), 2).toInt(), 10);
+    // THE SAVE IN THE BACKGROUND (saving step 2, 2026-11-23): a Save's writing runs
+    // here, off the UI thread, one save at a time. A failed save's message waits for a
+    // stroke in flight to end, looked for every 250 ms as the recovery copy's tick is.
+    m_savePool = new QThreadPool(this);
+    m_savePool->setMaxThreadCount(1);
+    m_saveFailureRetry = new QTimer(this);
+    m_saveFailureRetry->setInterval(250);
+    connect(m_saveFailureRetry, &QTimer::timeout, this, [this] { tellSaveFailure(); });
     updateSavedIndicator();
 
 #ifdef SANKOTV_DEV_RECORDER
@@ -556,7 +644,16 @@ void MainWindow::updateChromeFor(const QWidget *page)
 
 MainWindow::~MainWindow()
 {
-    finishRecoveryCopy(true); // no worker may outlive what it reports to
+    // No worker may outlive what it reports to. A save in flight is let end - it is
+    // never cancelled - and its report is dropped: the window is going (closeEvent has
+    // waited for it and read it; this is for a window deleted without a close).
+    if (m_saveRun) {
+        m_saveRun->hold.store(false);
+        if (!m_saveRun->onUiThread)
+            m_saveRun->future.waitForFinished();
+        m_saveRun.reset();
+    }
+    finishRecoveryCopy(true);
     freeScenes();
 }
 
@@ -1071,6 +1168,8 @@ bool MainWindow::onRecoveryTick()
 {
     if (!m_dirty || m_recoveryMinutes <= 0 || recoveryBasePath().isEmpty())
         return false;
+    if (m_saveRun)
+        return false; // (saving step 2) the copy skips its turn while a save runs
     if (m_recoveryRun)
         return false; // one copy at a time: the next tick takes what changed since
     if (actionInProgress()) {
@@ -1241,8 +1340,7 @@ void MainWindow::finishRecoveryRun(quint64 serial)
         return; // another project is open now: this one's word is not its
     m_lastRecoveryWritten = written;
     m_lastRecoveryAt = QDateTime::currentDateTime();
-    m_storyboard->setRecoveryStatus(QStringLiteral("Recovery copy saved %1")
-                                        .arg(m_lastRecoveryAt.toString(QStringLiteral("HH:mm"))));
+    updateWorkspaceStatus(); // "Recovery copy saved 19:42"
     updateSavedIndicator();
     updateSaveActions(); // Discard Recovery Copy
 #ifdef SANKOTV_DEV_RECORDER
@@ -1351,11 +1449,20 @@ void MainWindow::openRecoveryCopy(const QString &original, const QString &copyPa
     }
 }
 
+// THE WORD (saving step 2, 2026-11-23; Figma S-1): "Saving..." from Ctrl+S until the
+// save has ended, in both places - here, the Script Editor's indicator, and at the right
+// of the workspace's bottom bar (updateWorkspaceStatus). Then "Saved" (the bar: "Saved
+// 14:32"), or "Unsaved changes" when something was drawn meanwhile, or "NOT saved" in red
+// when it failed - until the next edit, when both show again what they showed before.
 void MainWindow::updateSavedIndicator()
 {
     if (!m_scriptEditor)
         return;
-    if (!m_dirty)
+    if (m_saveRun)
+        m_scriptEditor->setSavedState(QString::fromUtf8("Saving\xE2\x80\xA6"), true);
+    else if (m_saveNote == SaveNote::Failed)
+        m_scriptEditor->setSavedState(QStringLiteral("NOT saved"), true, true);
+    else if (!m_dirty)
         m_scriptEditor->setSavedState(QStringLiteral("Saved"), false);
     else if (m_lastRecoveryAt.isValid())
         m_scriptEditor->setSavedState(
@@ -1364,6 +1471,27 @@ void MainWindow::updateSavedIndicator()
             true);
     else
         m_scriptEditor->setSavedState(QStringLiteral("Unsaved changes"), true);
+}
+
+// The right of the workspace's bottom bar: the save's word while there is one to say,
+// else the recovery copy's, as before ("Recovery copy saved 19:42", empty until one is
+// written).
+void MainWindow::updateWorkspaceStatus()
+{
+    if (!m_storyboard)
+        return;
+    if (m_saveRun)
+        m_storyboard->setRecoveryStatus(QString::fromUtf8("Saving\xE2\x80\xA6"), true);
+    else if (m_saveNote == SaveNote::Failed)
+        m_storyboard->setRecoveryStatus(QStringLiteral("NOT saved"), true, true);
+    else if (m_saveNote == SaveNote::Saved)
+        m_storyboard->setRecoveryStatus(
+            QStringLiteral("Saved %1").arg(m_lastSavedAt.toString(QStringLiteral("HH:mm"))));
+    else if (m_lastRecoveryAt.isValid())
+        m_storyboard->setRecoveryStatus(QStringLiteral("Recovery copy saved %1")
+                                            .arg(m_lastRecoveryAt.toString(QStringLiteral("HH:mm"))));
+    else
+        m_storyboard->setRecoveryStatus(QString());
 }
 
 QString MainWindow::savedIndicatorForTest() const
@@ -1389,8 +1517,7 @@ int MainWindow::discardRecoveryCopy(std::function<bool()> confirm, QString *why)
     finishRecoveryCopy(true); // nothing may write into what is being removed
     ProjectRecovery::discardCopy(base);
     m_lastRecoveryAt = QDateTime();
-    if (m_storyboard)
-        m_storyboard->setRecoveryStatus(QString());
+    updateWorkspaceStatus();
     updateSavedIndicator();
     updateSaveActions();
     return 1;
@@ -1434,6 +1561,7 @@ int MainWindow::discardRecoveryCopyForTest(bool confirm)
 // are in use - File > Restore Previous Saved Version... opens them.
 int MainWindow::cleanUpProjectFolder(std::function<bool(int, qint64)> confirm, QString *why)
 {
+    waitForSave(); // (saving step 2) a running save is making and removing files there
     if (m_currentProjectPath.isEmpty()) {
         if (why)
             *why = QStringLiteral("Save the project first: there is no project folder to clean up yet.");
@@ -1569,6 +1697,11 @@ void MainWindow::refreshRestorePreviousAction()
 {
     if (!m_restorePreviousAct)
         return;
+    // (Saving step 2) While a save runs the entry stays as it was: its worker is
+    // replacing the very file this would read, and a file held open here could not be
+    // replaced there. The save's end asks again (finishSaveRun, updateSaveActions).
+    if (m_saveRun)
+        return;
     QString why;
     bool can = false;
     if (m_currentProjectPath.isEmpty()) {
@@ -1600,6 +1733,7 @@ void MainWindow::refreshRestorePreviousAction()
 // previous one - so the artist can change their mind once more.
 bool MainWindow::restorePreviousVersion()
 {
+    waitForSave(); // (saving step 2) the version a running save is about to replace
     if (m_currentProjectPath.isEmpty())
         return false;
     const QString project = m_currentProjectPath;
@@ -2810,6 +2944,17 @@ void MainWindow::updateTitle()
 
 void MainWindow::markDirty()
 {
+    // EVERY EDIT IS COUNTED (saving step 2, 2026-11-23), also one made while the project
+    // is unsaved already: a save in the background asks by this count whether anything
+    // changed after its snapshot, and so whether the project is saved when it ends.
+    ++m_editSerial;
+    // "Saved 14:32" and "NOT saved" stay until the next edit: this is it.
+    if (m_saveNote != SaveNote::None && !m_saveRun) {
+        m_saveNote = SaveNote::None;
+        updateWorkspaceStatus();
+        if (m_dirty)
+            updateSavedIndicator();
+    }
     if (m_dirty)
         return; // idempotent: this is called from very many places
     m_dirty = true;
@@ -2964,6 +3109,16 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
 // the VPs, loadScenes clears the stack), which is why only New showed it.
 void MainWindow::resetProjectState(ClipboardPolicy clipboards)
 {
+    // (Saving step 2) A save in flight is of the project that is about to go: it is let
+    // end and read first, where the caller stands. (What the artist can reach - New,
+    // Open, Close - has waited behind "Finishing the save..." already: waitForSave.)
+    if (m_saveRun)
+        finishSaveNow();
+    m_saveAgain = false;
+    m_saveNote = SaveNote::None;
+    m_saveFailureWaiting = false;
+    if (m_saveFailureRetry)
+        m_saveFailureRetry->stop();
     // A clean teardown takes the session lock with it (a crash leaves it,
     // 2026-11-04); the recovery copy stays until a clean Save of that
     // project removes it. A waiting tick has nothing to write any more, and
@@ -2977,8 +3132,7 @@ void MainWindow::resetProjectState(ClipboardPolicy clipboards)
     if (m_recoveryTimer)
         m_recoveryTimer->stop();
     m_lastRecoveryAt = QDateTime();
-    if (m_storyboard)
-        m_storyboard->setRecoveryStatus(QString());
+    updateWorkspaceStatus(); // nothing to say
 
     freeScenes(); // detaches every page BEFORE deleting the scenes
 
@@ -3045,6 +3199,7 @@ void MainWindow::onNewProject()
 // that covers whatever the dialog then does, and it is asked exactly once.
 void MainWindow::requestNewProject()
 {
+    waitForSave(); // (saving step 2) "Finishing the save...": never under a running save
     if (!confirmDiscardChanges(QStringLiteral("starting a new project")))
         return;
     runNewProjectDialog();
@@ -3084,6 +3239,7 @@ void MainWindow::runNewProjectDialog()
 
 void MainWindow::onCloseProject()
 {
+    waitForSave(); // (saving step 2) "Finishing the save..."
     if (!confirmDiscardChanges(QStringLiteral("closing the project")))
         return;
     resetProjectState(ClipboardPolicy::Clear);
@@ -3158,6 +3314,9 @@ bool MainWindow::confirmDiscardChanges(const QString &actionDescription)
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // (Saving step 2) A running save is let end first, behind "Finishing the save...";
+    // closing then still asks about what was changed since.
+    waitForSave();
     if (!confirmDiscardChanges(QStringLiteral("exiting"))) {
         event->ignore(); // Cancel must actually cancel, X included
         return;
@@ -3211,6 +3370,7 @@ void MainWindow::onOpenProject()
 // load exist once rather than once per entry point.
 void MainWindow::openProject(const QString &path)
 {
+    waitForSave(); // (saving step 2) "Finishing the save..."
     if (!confirmDiscardChanges(QStringLiteral("opening another project")))
         return;
     if (!QFileInfo::exists(path)) {
@@ -3296,14 +3456,48 @@ void MainWindow::onSaveProject()
         onSaveProjectAs();
         return;
     }
-    if (saveToPath(m_currentProjectPath))
-        updateTitle();
+    // THE SAVE IN THE BACKGROUND (saving step 2, 2026-11-23): Ctrl+S takes the snapshot
+    // and returns; the worker writes; finishSaveRun reads the result. ONE SAVE AT A TIME:
+    // a Ctrl+S during a save is remembered and runs once, after it.
+    if (m_saveRun) {
+        m_saveAgain = true;
+        return;
+    }
+    // (The checks' control and red run: the writer of before this step did all of a save
+    // before Ctrl+S returned, and said a failure at once.)
+    if (beginSave(m_currentProjectPath) && m_saveRun && m_saveRun->onUiThread)
+        finishSaveNow();
+}
+
+bool MainWindow::startSaveForTest()
+{
+    onSaveProject();
+    return m_saveRun != nullptr;
+}
+
+bool MainWindow::waitForSaveForTest(int maxMs)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (m_saveRun && clock.elapsed() < maxMs)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    return !m_saveRun;
+}
+
+void MainWindow::setSaveHoldForTest(bool hold)
+{
+    m_saveHoldForTest = hold;
+    if (!hold && m_saveRun)
+        m_saveRun->hold.store(false);
 }
 
 void MainWindow::onSaveProjectAs()
 {
     if (m_scenes.isEmpty())
         return;
+    // (Saving step 2) Save As waits for a running save, behind "Finishing the save...",
+    // and never cancels it. (Save As itself still saves and waits; step 3.)
+    waitForSave();
 
     // A recovered document's Save As defaults to the project it came from
     // (2026-11-04). For it the file dialog's own "already exists" question is
@@ -3402,10 +3596,77 @@ void MainWindow::saySaveFailed(const QString &target, const QString &generic)
 
 // --- Save / Load ----------------------------------------------------------
 
+// SAVE AND WAIT (saving step 2, 2026-11-23): the same save as Ctrl+S's - its snapshot
+// here, its writing on the worker - with the caller standing still until it has ended and
+// been read. Save As, the unsaved-changes prompt's Save and the checks come this way; a
+// save already in flight is let end first.
 bool MainWindow::saveToPath(const QString &path)
+{
+    if (m_saveRun)
+        finishSaveNow();
+    if (!beginSave(path))
+        return false;
+    return finishSaveNow();
+}
+
+bool MainWindow::finishSaveNow()
+{
+    if (!m_saveRun)
+        return false;
+    m_saveRun->hold.store(false);
+    if (!m_saveRun->onUiThread)
+        m_saveRun->future.waitForFinished();
+    return finishSaveRun(m_saveRun->serial, true);
+}
+
+// "FINISHING THE SAVE..." (Figma S-1): shown while a save is in flight and something
+// asks for what must not meet it. The box goes when finishSaveRun has read the save;
+// what was asked for then goes on. Nothing here cancels the save.
+void MainWindow::waitForSave()
+{
+    if (!m_saveRun)
+        return;
+    FinishingSaveBox box(this);
+    m_finishingBox = &box;
+    box.exec(); // finishSaveRun ends it
+    m_finishingBox = nullptr;
+}
+
+// The message of a save that failed in the background, once no stroke is in flight: a
+// box never opens under the pen.
+void MainWindow::tellSaveFailure()
+{
+    if (!m_saveFailureWaiting) {
+        if (m_saveFailureRetry)
+            m_saveFailureRetry->stop();
+        return;
+    }
+    if (actionInProgress())
+        return; // looked for again by the timer
+    m_saveFailureWaiting = false;
+    if (m_saveFailureRetry)
+        m_saveFailureRetry->stop();
+    const QString target = m_saveFailureTarget, text = m_saveFailureText;
+    saySaveFailed(target, text);
+}
+
+bool MainWindow::beginSave(const QString &path)
 {
     m_storyboard->commitQuickShape(); // temporary vectors are not serialized
     m_storyboard->ensureBrushPixelsForSave();
+    auto run = std::make_unique<SaveRun>();
+    run->clock.start();
+    run->path = path;
+    run->editSerial = m_editSerial; // what is changed after this is not in the save
+    run->onUiThread = m_saveOnUiThreadForTest;
+    run->options.keepPrevious = keepPreviousVersion();
+    m_lastSaveChangedSince = false;
+    m_lastSaveTries = 0;
+    m_lastSaveHeld = false;
+    // A failure still waiting to be told is of an older save: this one tells its own.
+    m_saveFailureWaiting = false;
+    if (m_saveFailureRetry)
+        m_saveFailureRetry->stop();
 
     // THE PROJECT FILE FIRST (the safe save, 2026-11-23). It is the one file a save still
     // replaces - every picture that changed goes into a new file. A project file that may
@@ -3420,6 +3681,11 @@ bool MainWindow::saveToPath(const QString &path)
             m_lastSaveWritten.clear();
             m_lastSaveSkipped = 0;
             m_lastSaveRenamed.clear();
+            m_lastSaveSteps = 0;
+            m_lastSaveUiSteps = 0;
+            m_saveNote = SaveNote::Failed; // "NOT saved", in both places
+            updateSavedIndicator();
+            updateWorkspaceStatus();
             saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
                                                "Could not write to:\n%1\n\n(%2)\n\n"
                                                "Your work is still open and "
@@ -3443,43 +3709,50 @@ bool MainWindow::saveToPath(const QString &path)
     data.tracks = m_animatic->tracks(); // lock / visibility / mute (Part B)
     data.perspective = m_storyboard->perspectiveToJson();
     data.symmetry = m_storyboard->symmetryToJson(); // the switch and the axis (batch H)
-    // Only the images whose files do not already hold them are written, and
-    // those are encoded on several threads (the 25-second save, 2026-10-27).
+    // Only the images whose files do not already hold them are written (the 25-second
+    // save, 2026-10-27).
     data.ledger = m_imageLedger.get();
-    // STEP 1 — the images, every write checked. This stops at the first
-    // failure and, crucially, happens BEFORE the manifest is touched: if a
-    // single PNG cannot be written, the project file on disk must stay
-    // exactly as it was rather than become a manifest naming pixels that
-    // are not there.
-    //
-    // The project's own AUDIO TRACK is part of this step: a save whose
+    // THE SNAPSHOT (saving step 2, 2026-11-23): with a plan that is a Save's, this call
+    // composites nothing, encodes nothing and writes no image - it decides the names,
+    // writes down the project file's text and takes every image that changed as a shared
+    // copy. The worker does the rest (runSaveWork). The checks' control leaves the plan
+    // out: the writer of before this step, every step where the caller stands.
+    if (!run->onUiThread) {
+        data.plan = &run->plan;
+        data.planIsSave = true;
+    }
+    // The project's own AUDIO TRACK is still part of this call: a save whose
     // assets folder does not hold it yet (Save As) copies it in first, with
     // a progress window if that takes long enough to notice. The window
     // lives only for this call - it must not be alive under the warnings
     // below.
-    const ProjectIO::WriteResult written = [&] {
+    run->written = [&] {
         MediaCopyProgress progress(
             this, QStringLiteral("Copying the audio file into the project..."));
         return ProjectIO::projectToJson(data, path, progress.callback());
     }();
-    m_lastSaveWritten = written.writtenFiles;
-    m_lastSaveSkipped = written.imagesSkipped;
-    m_lastSaveRenamed = written.renamedFiles;
-    m_lastSaveEncodeThreads = written.encodeThreads;
-    // Where the Save's work runs (2026-11-05), counted as the recovery copy's
-    // is: each flatten composite, each encode, and the manifest below - which
-    // a Save writes on this, the UI thread.
-    m_lastSaveSteps = int(written.composeThreadIds.size() + written.encodeThreadIds.size()) + 1;
-    m_lastSaveUiSteps = (QThread::currentThreadId() == m_uiThread ? 1 : 0);
-    for (Qt::HANDLE t : written.composeThreadIds)
-        m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
-    for (Qt::HANDLE t : written.encodeThreadIds)
-        m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
-    if (!written.ok && written.cancelled)
-        return false; // the artist pressed Cancel: nothing to tell them
-    if (!written.ok && written.stopped)
-        return false; // a check stopped the writer at one of its steps: nobody to tell
+    const ProjectIO::WriteResult &written = run->written;
     if (!written.ok) {
+        // Failed before anything was in flight: the images folder that could not be
+        // made, the audio copy - or, in the control, an image written where the caller
+        // stands.
+        m_lastSaveWritten = written.writtenFiles;
+        m_lastSaveSkipped = written.imagesSkipped;
+        m_lastSaveRenamed = written.renamedFiles;
+        m_lastSaveEncodeThreads = written.encodeThreads;
+        m_lastSaveSteps = int(written.composeThreadIds.size() + written.encodeThreadIds.size());
+        m_lastSaveUiSteps = 0;
+        for (Qt::HANDLE t : written.composeThreadIds)
+            m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
+        for (Qt::HANDLE t : written.encodeThreadIds)
+            m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
+        if (written.cancelled)
+            return false; // the artist pressed Cancel: nothing to tell them
+        if (written.stopped)
+            return false; // a check stopped the writer at one of its steps: nobody to tell
+        m_saveNote = SaveNote::Failed;
+        updateSavedIndicator();
+        updateWorkspaceStatus();
         saySaveFailed(written.failedFile.isEmpty() ? path : written.failedFile,
                       QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
                                      "Your work is still open and still unsaved. The "
@@ -3488,6 +3761,101 @@ bool MainWindow::saveToPath(const QString &path)
                                      "to write it somewhere else.")
                           .arg(written.failedFile, written.reason));
         return false; // no token is made: the dirty flag stays set
+    }
+
+    // IN FLIGHT FROM HERE. The worker gets the plan and the text; this thread goes back
+    // to the artist. "Saving..." shows in both places until finishSaveRun.
+    run->root = written.root;
+    run->serial = ++m_saveSerial;
+    run->hold.store(m_saveHoldForTest);
+    // A recovery copy in flight is of work this save is about to make the saved file:
+    // it is told to stop (not waited for here), so the save's end does not wait for it.
+    if (m_recoveryRun) {
+        m_recoveryRun->cancel.store(true);
+        run->cancelledRecovery = true;
+    }
+    SaveRun *r = run.get();
+    m_saveRun = std::move(run);
+    updateSavedIndicator();
+    updateWorkspaceStatus();
+    const quint64 serial = r->serial;
+    r->uiMs = r->clock.elapsed();
+    if (r->onUiThread) {
+        runSaveWork(r); // the control: where the caller stands, as before this step
+        return true;
+    }
+    r->future = QtConcurrent::run(m_savePool, [this, r, serial] {
+        runSaveWork(r);
+        // Back on the UI thread; dropped if the save was waited for and read already
+        // (finishSaveNow), or if the window is gone (it waits for this worker first).
+        QMetaObject::invokeMethod(
+            this, [this, serial] { finishSaveRun(serial, false); }, Qt::QueuedConnection);
+    });
+    return true;
+}
+
+// THE SAVE'S RESULT, on the UI thread (saving step 2, 2026-11-23). The ledger learns what
+// landed; the steps are counted by thread; and the project is marked saved - when
+// nothing was changed after the snapshot - or stays unsaved: because something was, or
+// because the save failed, with the message a failed save always gave.
+bool MainWindow::finishSaveRun(quint64 serial, bool tellNow)
+{
+    if (!m_saveRun || m_saveRun->serial != serial)
+        return false; // already read (waited for), or another save's report
+    std::unique_ptr<SaveRun> run = std::move(m_saveRun);
+    if (!run->onUiThread)
+        run->future.waitForFinished(); // the report is posted as its last act
+    const QString path = run->path;
+    const ProjectIO::WriteResult &written = run->written;
+    // What landed is in its file, whatever became of the save: the next one need not
+    // write it again. (The control's writer told the ledger itself.)
+    for (const ProjectIO::ImageJob &job : run->plan.jobs) {
+        if (job.ok)
+            m_imageLedger->record(job.file, job.content, job.origin);
+        else if (job.tried)
+            m_imageLedger->forget(job.file); // may be half-written now
+    }
+    // (What the snapshot's call wrote itself - the control's writer, and the writer of
+    // before 2026-11-23 - and what the plan wrote: one of the two is empty.)
+    m_lastSaveWritten = written.writtenFiles + run->images.writtenFiles;
+    m_lastSaveSkipped = written.imagesSkipped;
+    m_lastSaveRenamed = written.renamedFiles;
+    m_lastSaveEncodeThreads = written.encodeThreads + run->images.encodeThreads;
+    m_lastSaveUiMs = run->uiMs;
+    // WHERE THE SAVE'S WORK RAN, counted as the recovery copy's is: each full layer
+    // reduced to its drawn part, each flatten composited, each image encoded and
+    // written, and the project file. None of them on the UI thread - but in the control.
+    {
+        QVector<Qt::HANDLE> ran = run->images.foldThreadIds + run->images.composeThreadIds
+            + run->images.encodeThreadIds + written.composeThreadIds + written.encodeThreadIds;
+        if (run->switchThread)
+            ran.append(run->switchThread);
+        m_lastSaveSteps = int(ran.size());
+        m_lastSaveUiSteps = 0;
+        for (Qt::HANDLE t : ran)
+            m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
+    }
+    m_lastSaveTries = run->switched.tries;
+    m_lastSaveHeld = run->switched.held;
+    const bool changedSince = m_editSerial != run->editSerial;
+    m_lastSaveChangedSince = changedSince;
+
+    // A recovery copy this save stopped: read now (it was told to stop at the snapshot).
+    if (run->cancelledRecovery)
+        finishRecoveryCopy(true);
+
+    // The failure, if there is one: its target and its words, as they always were.
+    bool stopped = false;
+    QString failTarget, failText;
+    if (!run->onUiThread && !run->images.ok) {
+        stopped = run->images.stopped; // a check stopped the writer: nobody to tell
+        failTarget = run->images.failedFile.isEmpty() ? path : run->images.failedFile;
+        failText = QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
+                                  "Your work is still open and still unsaved. The "
+                                  "previous version of the project file has not "
+                                  "been changed. Try saving again, or use Save As "
+                                  "to write it somewhere else.")
+                       .arg(run->images.failedFile, run->images.reason);
     }
 
     // STEP 2 — THE PROJECT FILE IS THE ONE SWITCH (the safe save, 2026-11-23; ProjectIO.h).
@@ -3500,31 +3868,67 @@ bool MainWindow::saveToPath(const QString &path)
     // has completed - and only after that are the pictures nothing names any more removed.
     // (It was QSaveFile here: the same temp file and one-step replace for the project file,
     // but the images before it were written over their own files.)
-    ProjectIO::SaveOptions options;
-    options.keepPrevious = keepPreviousVersion();
-    const ProjectIO::SwitchResult switched = ProjectIO::switchProjectFile(path, written.root, options);
-    if (!switched.ok) {
-        if (switched.stopped)
-            return false; // a check stopped the writer: nobody to tell
+    // (Saving step 2: the worker made the switch, runSaveWork; its result is read here.)
+    const ProjectIO::SwitchResult &switched = run->switched;
+    if (failText.isEmpty() && !stopped && !switched.ok) {
+        stopped = switched.stopped; // a check stopped the writer: nobody to tell
+        failTarget = path;
         if (switched.failure == ProjectIO::SwitchFailure::CannotOpen) {
-            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
-                                               "Could not write to:\n%1\n\n"
-                                               "Your work is still open and "
-                                               "still unsaved.").arg(path));
+            failText = QStringLiteral("This project was NOT saved.\n\n"
+                                      "Could not write to:\n%1\n\n"
+                                      "Your work is still open and "
+                                      "still unsaved.").arg(path);
         } else if (switched.failure == ProjectIO::SwitchFailure::ShortWrite) {
             // A SHORT WRITE IS A FAILED WRITE: the new file is dropped, the old one is
             // where it was.
-            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
-                                               "Only part of the project file "
-                                               "could be written to:\n%1\n\n"
-                                               "The disk may be full. The "
-                                               "previous version has not been "
-                                               "changed.").arg(path));
+            failText = QStringLiteral("This project was NOT saved.\n\n"
+                                      "Only part of the project file "
+                                      "could be written to:\n%1\n\n"
+                                      "The disk may be full. The "
+                                      "previous version has not been "
+                                      "changed.").arg(path);
+        } else if (switched.held) {
+            // THE SHORT RETRY (saving step 2): Windows refused the project file's name as
+            // it refuses a file another program holds, and still did after about 2 seconds
+            // of trying again. (It says the same of a lasting refusal: hence "may be".)
+            failText = QStringLiteral("This project was NOT saved.\n\n"
+                                      "The project file could not be "
+                                      "completed at:\n%1\n\n%2\n\n"
+                                      "The file may be in use by another program (an "
+                                      "antivirus or a sync program such as OneDrive). "
+                                      "SankoTV tried again for about 2 seconds. Your "
+                                      "work is still open and still unsaved.")
+                           .arg(path, switched.systemSays);
         } else {
-            saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
-                                               "The project file could not be "
-                                               "completed at:\n%1\n\n%2")
-                                    .arg(path, switched.systemSays));
+            failText = QStringLiteral("This project was NOT saved.\n\n"
+                                      "The project file could not be "
+                                      "completed at:\n%1\n\n%2")
+                           .arg(path, switched.systemSays);
+        }
+    }
+    if (stopped || !failText.isEmpty()) {
+        // NOT SAVED. The dirty flag stays set; no token is made.
+        m_saveNote = stopped ? SaveNote::None : SaveNote::Failed;
+        m_saveAgain = false; // a Ctrl+S remembered during it is not run on top of a failure
+        updateSavedIndicator();
+        updateWorkspaceStatus();
+        updateSaveActions();
+        // The recovery copy this save stopped has a turn again now, the work being unsaved.
+        if (run->cancelledRecovery)
+            onRecoveryTick();
+        if (m_finishingBox)
+            m_finishingBox->done(0); // what waited for the save goes on
+        if (!stopped) {
+            if (tellNow || !actionInProgress()) {
+                saySaveFailed(failTarget, failText);
+            } else {
+                // Never under the pen: told when the stroke has ended (tellSaveFailure).
+                m_saveFailureWaiting = true;
+                m_saveFailureTarget = failTarget;
+                m_saveFailureText = failText;
+                if (m_saveFailureRetry)
+                    m_saveFailureRetry->start();
+            }
         }
         return false;
     }
@@ -3534,28 +3938,44 @@ bool MainWindow::saveToPath(const QString &path)
     m_lastSaveRemoved = switched.removedFiles;
     m_lastSavePreviousKept = switched.previousKept;
 
-    // Reached only when every image and the manifest are on disk. This is
-    // the one place a SaveCompleted can be made.
-    markSavedTo(path, SaveCompleted{});
+    // Reached only when every image and the project file are on disk. This is
+    // the one place a SaveCompleted can be made. What was changed after the
+    // snapshot is not in the save: the project is then still unsaved.
+    m_saveNote = changedSince ? SaveNote::None : SaveNote::Saved;
+    m_lastSavedAt = QDateTime::currentDateTime();
+    markSavedTo(path, SaveCompleted{}, changedSince);
     // The project's own audio track is now the copy in THIS project's
     // folder. After an ordinary save that is where it already was and
     // nothing happens; after a Save As it is the new project's copy, and
     // the old project's is left to the old project. Not an edit.
     if (m_animatic && !written.audioFile.isEmpty())
         m_animatic->relocateAudio(written.audioFile);
+    const bool waitedFor = tellNow || m_finishingBox;
+    if (m_finishingBox)
+        m_finishingBox->done(0); // what waited for the save goes on
+    // A CTRL+S DURING THE SAVE WAS REMEMBERED: it runs once, now - when there is
+    // something for it to save, and nothing is waiting that takes the project over.
+    if (m_saveAgain) {
+        m_saveAgain = false;
+        if (changedSince && !waitedFor)
+            QTimer::singleShot(0, this, &MainWindow::onSaveProject);
+    }
     return true;
 }
 
 // Adopt what was just written. Unreachable without a SaveCompleted, which
-// only the tail of saveToPath can construct — see the declaration.
-void MainWindow::markSavedTo(const QString &path, SaveCompleted)
+// only the tail of finishSaveRun can construct — see the declaration.
+void MainWindow::markSavedTo(const QString &path, SaveCompleted, bool changedSince)
 {
     const QString previous = m_currentProjectPath;
     m_currentProjectPath = path;
     if (m_animatic)
         m_animatic->setProjectFile(path);
     RecentProjects::record(path);
-    setClean(); // what is on disk now matches what is in memory
+    // What is on disk now matches what is in memory - unless something was changed
+    // after the save's snapshot (saving step 2): then the project stays unsaved.
+    if (!changedSince)
+        setClean();
     // THE SAVED FILE IS THE TRUTH AGAIN (2026-11-04): its recovery copy goes
     // (r5) and its lock marks this session; a Save As leaves the previous
     // file's lock behind it; a document recovered from a crash is an
@@ -3567,8 +3987,7 @@ void MainWindow::markSavedTo(const QString &path, SaveCompleted)
     ProjectRecovery::discardCopy(path);
     ProjectRecovery::writeLock(path, m_sessionId, buildStamp());
     m_lastRecoveryAt = QDateTime();
-    if (m_storyboard)
-        m_storyboard->setRecoveryStatus(QString());
+    updateWorkspaceStatus(); // "Saved 14:32" - or nothing, when it was drawn on meanwhile
     updateSavedIndicator();
     updateSaveActions();
     updateTitle();
@@ -3577,6 +3996,10 @@ void MainWindow::markSavedTo(const QString &path, SaveCompleted)
 
 bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy, const QString &asPreviousOf)
 {
+    // (Saving step 2) No file is read under a save in flight: it is let end and read
+    // first. (Open and Restore have waited behind "Finishing the save..." already.)
+    if (m_saveRun)
+        finishSaveNow();
     m_storyboard->commitQuickShape(); // resolve before panels are replaced
     // THE PREVIOUS SAVED VERSION (the safe save, 2026-11-23): `path` is then the kept
     // project file of the version before the last save, and `project` the project it is a
@@ -3758,8 +4181,7 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy, const QS
         ProjectRecovery::writeLock(path, m_sessionId, buildStamp());
     }
     m_lastRecoveryAt = QDateTime();
-    if (m_storyboard)
-        m_storyboard->setRecoveryStatus(QString());
+    updateWorkspaceStatus();
     updateSavedIndicator();
     updateTitle();
     armRecoveryTimer();

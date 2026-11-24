@@ -1,5 +1,193 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-23 (night) / 2026-11-24 (morning): SAVING STEP 2 COMMITTED ON THE USER'S WORD AFTER HAND TEST S2 (THIS COMMIT) - THE SAVE IN THE BACKGROUND (CTRL+S TAKES A SNAPSHOT AND RETURNS; A WORKER WRITES), "SAVING..." IN BOTH PLACES, "FINISHING THE SAVE...", THE SHORT RETRY; NEW CHECKS (sb1)-(sb10) WITH CONTROLS AND A RED RUN; 2 OLD CHECKS CHANGED (OLD AND NEW BELOW); GATE S2 GREEN IN BOTH BUILDS
+HAND TEST S2 (the user, 2026-11-24, 09:08: "Hand test S2 done: all steps looked right; the pen never stopped around
+a save. ... If it ran the right build and nothing failed: 1. Commit and push saving step 2 with its HANDOFF notes,
+matching its hash list, git status clean."). The two Dev Recorder sessions after 19:46 on 2026-11-23, oldest first:
+20261123-204243 (20:42:43, 329 s) and 20261123-204829 (20:48:29, 407 s). Both system.txt: built Nov 23 2026
+19:46:02, git d36cc27e7+dirty; the title bar names "TEST COPY - small pirate, background save S2" in both. Per step:
+ 1. PASS. Ctrl+S at 20:43:51: "Saved 20:43" at the bar and the * gone; the next stroke: the bar empty, the * back.
+ 2. PASS. 20:45:17-20:45:38: about 45 Ctrl+S between and DURING strokes (the pen still down at many of them, the
+    last at 175.19 s with the pen up at 175.22 s - so that stroke was rightly not in the save and the title kept its
+    *); the next save took it. No UI stall in that stretch reaches 64 ms (the session's worst: the open, 316 ms, and
+    the save the unsaved-changes prompt waits for, 134 ms).
+ 3. PASS. Pairs of Ctrl+S 20:46:07-20:46:15: no message; "Saved 20:46", no *.
+ 4. PASS. The Script Editor: "Saved" (grey); after an edit (an Undo, not a stroke) "Unsaved changes" (accent dot).
+ 5. PASS, the "at once" part NOT TESTED: strokes on panels 2, 3 and 4, Ctrl+S 20:50:24, Close Project (Ctrl+F4)
+    20:50:34 - ten seconds later, so the save had long ended and no box could show; it closed without asking, and
+    reopened from the start window (20:50:48) the three strokes are there.
+ 6. PASS. Restore Previous Saved Version (20:51:12): "as it was saved on 23 November at 20:49" - the save before
+    the last; the scene shows its one panel, as it had at 20:49 (panels 2-4 were added at 20:50:16). Two more
+    restores with the amber line; closed at the end with the X, Discard.
+Also seen, and reported by the user: the Brush Library's Rename Brush dialog makes the SankoTV window go from view
+(20:54:11-20:54:55, four times) - its own change, after this one.
+THE USER (2026-11-23, about 18:37, pasted): "Hand test S1 done: all steps looked right. Read every Dev Recorder
+session made after 17:20 on 23 November, oldest first (there is one more after the Task Manager restart in step 6).
+Confirm from each system.txt that it ran the Nov 23 2026 17:20:45 build (git a0977b3ef+dirty) and that the title bar
+named "TEST COPY - small pirate, safe save S1", then report pass, fail or "not tested" per step of
+handtest_S1_safe_save.md. If every session ran the right build and nothing failed, commit and push saving step 1
+with its HANDOFF notes, matching its hash list, git status clean. Then saving step 2: saving in the background, with
+"Saving..." in the Script Editor's indicator and on the workspace's bottom bar, and the "Finishing the save..." box,
+as approved in S-1. Your question: yes, add a short retry. When another program (an antivirus like Norton, OneDrive,
+Windows search) holds the project file for a moment, the save waits and tries again for up to about 2 seconds, in
+the background, before it reports a failure. Your work stays open and unsaved if it still fails. Build step 2 with
+your checks (a stroke drawn during a held save, steps counted by thread, a file held by another process and released
+during the retry, and one never released, with no timing in any verdict), controls and a red run. Quick check, full
+gate before stopping (every family green in both builds), a fresh TEST COPY, the exe stamp and a short hand-test
+list. Don't commit it until my hand test passes. If anything failed or the build is wrong, commit nothing and
+report. ALL DONE when finished, and send a notification."
+ITS FIRST PART IS DONE: both recordings ran the 17:20:45 build on the copy, nothing failed (per step: the section
+below, "HAND TEST S1"); saving step 1 is COMMITTED d36cc27e7 and pushed (a0977b3ef..d36cc27e7), git status clean
+after it. This section is step 2. Ten files, nothing else (app/build/_probe/split/sha_S2_gate.txt):
+app/src/ProjectIO.cpp / .h, app/src/MainWindow.cpp / .h, app/src/ScriptEditorPage.cpp / .h,
+app/src/StoryboardPage.cpp / .h, app/tests/ProjectLifecycleTest.cpp, app/CMakeLists.txt. No new dependency.
+
+WHAT CTRL+S DOES NOW (MainWindow::beginSave / finishSaveRun; ProjectIO::runSavePlan; the recovery copy's way since
+2026-11-05):
+ 1. ON THE UI THREAD, ONLY THE SNAPSHOT: the pending shape finished, the brush's pixels brought up to date, and
+    ProjectIO::projectToJson with a Save's plan (SaveData::plan + planIsSave): the names (the safe save's settle),
+    the project file's text, the ledger's skips, and every image that changed as a SHARED COPY - a flatten as its
+    panel's layers, a layer still a full image (the panel on the canvas, edited) as that image, to be reduced to its
+    drawn part where the plan runs (ImageJob::fold). Nothing composited, reduced, encoded or written here. The
+    pre-check of the project file (step 1) and Save As's audio copy are still here, as before.
+ 2. ON A WORKER (one; m_savePool), runSaveWork: ProjectIO::runSavePlan - each flatten composited, each full layer
+    reduced, every image encoded, written whole, pushed, named (as many at once as a Save encoded before) - then,
+    only when every image landed, the places of the reduced layers written into the project file's text, and
+    ProjectIO::switchProjectFile (step 1's switch, previous saved version, removals).
+ 3. BACK ON THE UI THREAD, finishSaveRun: the ledger learns what landed; the steps are counted by thread; saved -
+    unless something was changed after the snapshot (m_editSerial: markDirty counts every edit, also while the
+    project is unsaved already), then the save has completed and the project stays unsaved, the title keeps its *.
+    The pictures are the bytes a Save wrote before: the flatten without an alpha channel, as QPixmap::toImage gave
+    it (asPixmapHolds), a layer's drawn part as ImageSaver::layer made it.
+ - ONE SAVE AT A TIME: Ctrl+S during a save is remembered (m_saveAgain) and runs once after it, when something was
+   drawn meanwhile and nothing is waiting that takes the project over. The recovery copy skips its turn while a
+   save runs; a copy in flight at Ctrl+S is told to stop (its work is the save's).
+ - WHAT WAITS (waitForSave, "Finishing the save..." - FinishingSaveBox: no buttons, Esc and Alt+F4 do nothing, goes
+   by itself): the window's close, Close Project, Open / Open Recent, New Project, Save As, Clean Up Project
+   Folder, Restore Previous Saved Version. None cancels the save; closing then still asks about changes made since.
+   (resetProjectState and loadFromPath also finish a save in flight first, where they stand.)
+ - A FAILURE'S MESSAGE is the one a failed save always gave, but never under the pen: while a stroke is in flight
+   it waits (m_saveFailureWaiting, looked for every 250 ms) and is told when the stroke has ended.
+ - SAVE AND WAIT stays for Save As, the unsaved-changes prompt's Save and every check (saveToPath = beginSave +
+   finishSaveNow): the same writer, its work on the worker, the caller standing still until it ends.
+THE SHORT RETRY (the user's word; ProjectIO.h "THE SHORT RETRY", kNameTries 21, kNamePauseMs 100 - about 2 s): every
+name the writer gives (giveName: the project file's, a picture's, the previous version's, the recovery copy's) and
+the reading of the project file it is about to replace are tried again when Windows refuses them as it refuses a
+file another program holds - a sharing or lock violation, or "access is denied" of anything but a folder. It runs
+where the writer runs: on the worker for a Save. Held to the end, the switch fails as before (SwitchResult::held)
+and the message adds: "The file may be in use by another program (an antivirus or a sync program such as
+OneDrive). SankoTV tried again for about 2 seconds. Your work is still open and still unsaved." ("may be": Windows
+says the same of a lasting refusal.) The checks replace the pause by a hook that counts the tries.
+
+WHAT THE ARTIST SEES (Figma S-1, approved; pictures in Documents\SankoTV-Design\saving-step2-2026-11-23\):
+ - The Script Editor's indicator: "Saving..." (accent dot) from Ctrl+S until the save has ended; then "Saved", or
+   "Unsaved changes" when something was drawn meanwhile, or "NOT saved" in red (#e86464, dot and words) when it
+   failed - until the next edit.
+ - The right of the workspace's bottom bar (where "Recovery copy saved 19:42" shows): "* Saving..." (accent dot),
+   then "Saved 14:32" (dimmed, as the copy's words), or "* NOT saved" in red; at the next edit it shows again what it
+   showed before. StoryboardPage::setRecoveryStatus(text, lit, failed); recoveryStatusForTest gives the words alone.
+ - "Finishing the save..." only when something must wait: a box with an accent bar running, no buttons.
+
+THE NEW CHECKS (runBackgroundSavePass, in the family after (ss); slices "safesave" and "bgsave"; every verdict read
+from a count, a state or a file - the worker is held by setSaveHoldForTest, the retry's pause is replaced by
+ProjectIO::setNameRetryHookForTest; nothing judged by the clock). Every stroke now also proves it changed the
+picture (strokeAt: 30 places on the paper):
+ (sb1) Ctrl+S with the worker held returns with the save in flight, the UI thread free, "Saving..." in both places,
+       nothing on disk; let go, saved, the file the snapshot's picture, 2 images, 5 steps, NONE on the UI thread.
+       Control: the writer of before this step (setSaveOnUiThreadForTest) - done before Ctrl+S returns, 4 steps, 2 on
+       the UI thread.
+ (sb2) the words after: "Saved" / "Saved HH:MM"; at the next edit "Unsaved changes" / nothing.
+ (sb3) A STROKE DRAWN DURING A HELD SAVE lands, is not in that save; the project stays unsaved (*, "Unsaved
+       changes"); the next save holds it. Control: the two files differ.
+ (sb4) ONE SAVE AT A TIME: a Ctrl+S during it is remembered and runs once after (2 switches; no picture of it named
+       before the first switch). Control: with nothing drawn meanwhile, 1 switch.
+ (sb5) the recovery copy skips its turn while a save runs. Control: the same tick after it starts a copy.
+ (sb6) two checks: Close Project, Open Project, the window's X (asks about the stroke drawn during the save), Save
+       As, Clean Up, Restore - each waits behind the box (up while in flight, no button, Esc and a close leave it
+       up), the save completes, then the action goes on.
+ (sb7) a failure's message waits for the stroke to end ("NOT saved" in red in both places meanwhile), then is told
+       once. Control: with no stroke in flight it is told at once.
+ (sb8) THE RETRY, A FILE HELD BY A SECOND PROCESS AND LET GO DURING IT: tries 2, completes, says nothing; the retry
+       ran on the worker. Control: one try (the writer before) - fails at once, refused as held.
+ (sb9) THE RETRY, HELD TO THE END: 21 tries, 20 waits on the worker, "NOT saved", the message, the project file and
+       the previous version as they were, no ".part"; let go, the next save completes.
+ (sb10) a project file that cannot even be READ for a moment: the save waits, reads it, keeps it as the previous
+       saved version (whole, the one before) and completes.
+ (sb) no box a check did not expect ("Finishing the save..." counted apart: 6).
+The second process is this test program (SANKO_SAFESAVE_HOLDER; safesave::runHolder / Holder): it holds the file
+with no leave to delete or replace it (and, for (sb10), none to read), and lets go when a flag file appears - files,
+because the hook that tells it runs on the writer's thread.
+RED RUN (runBackgroundSavePass: const bool beforeStep2 = true, marker "// RED RUN" - the writer before this step in
+the main checks' place: every step where Ctrl+S was pressed, one try at each name), 19:31-19:35: 10 FAILED - (sb1),
+(sb3), (sb4), (sb5), both (sb6), (sb7), (sb8), (sb9), (sb10); (sb2) and every control passed. Output: Documents\
+SankoTV-Design\saving-step2-2026-11-23\red_run_against_the_writer_before_step2.txt. Marker removed, grep finds no
+"RED RUN" in app/src and app/tests outside _backups; the slice 232 / 232 after it (s2_slice4).
+
+FIRST RUNS, READ BEFORE ANYTHING WAS CHANGED:
+ - s2_slice1 (step 1's checks against the new writer, 207 checks): 4 failed. (ss3) control, (ss5) control, (ss) box
+   count: the writer of before 2026-11-23 (the red run's and the controls') took a Save's plan and wrote it with the
+   safe save's "name nothing has" rule - "Cannot create a file when that file already exists". CAUSE MINE, IN THE
+   CODE: fixed in projectToJson (that writer takes no plan of a Save's; it writes where it stands, as it did). (r5):
+   the new word, below.
+ - s2_slice2 (with the new pass): 6 failed - (sb6) Restore, (sb7), (sb8) and its control, (sb9), (sb10). CAUSE MINE,
+   IN THE CHECKS: their strokes were drawn lower and lower, past the 960 x 540 paper's foot from the 18th on - they
+   changed nothing, the saves after them had nothing to write (tries 0, no picture to block, the previous version
+   not replaced). Fixed: strokeAt (30 places on the paper) and every such check also requires its stroke changed the
+   picture. Then 232 / 232 (s2_slice3, s2_slice4).
+
+THE OLD CHECKS THAT CHANGED (OLD and NEW):
+ 1. (r5) OLD "(r5) A CLEAN SAVE REMOVES THE RECOVERY COPY, its manifest and images, keeps the lock (the project is
+    still open) and clears the bottom bar's word" (the word empty). NEW "(r5) A CLEAN SAVE REMOVES THE RECOVERY COPY,
+    its manifest and images, keeps the lock (the project is still open) and takes the copy's word off the bottom
+    bar: the save's own word is there instead, "Saved HH:MM" (saving step 2, 2026-11-23; Figma S-1)" (the word
+    "Saved " + HH:MM, without "ecovery"). New control: "(r5) control (2026-11-23): the same reading before the Save
+    found the copy's word, "Recovery copy saved HH:MM" - it sees the copy's word when it is there".
+ 2. (r9) control OLD "(r9) control: a Save, counted the same way, ran steps on the UI thread (its flatten composite
+    and its manifest), so the count sees UI-thread work when there is some". NEW "(r9) control: a Save made by the
+    writer of before saving step 2 (2026-11-23), counted the same way, ran steps on the UI thread (its flatten
+    composite and its project file), so the count sees UI-thread work when there is some" - the same condition
+    (>= 2 of >= 4), that save made with setSaveOnUiThreadForTest(true): an ordinary Save has none now ((sb1)).
+CMakeLists.txt: /bigobj for SankoProjectLifecycle only - the family's one file passed MSVC's limit of sections in an
+object file (C1128) with this pass. A compiler switch; nothing linked, the app untouched by it.
+
+MEASURED on the scratch copy only (C:\SankoTV-TestCopies\MEASURE COPY - Mansour song, save timing\; the original's
+"all 24 rel+hash" f65683f3f08e... before and after, as at step 1). 3840 x 2160, 7 panels; 3 runs each, SaveTime2
+(Documents\SankoTV-Design\save-timing-2026-11-23\savetime_step2.cpp, measure_step2.sh,
+results_step2_background_save.txt):
+                                   Ctrl+S holds the window       the worker       (step 1: the window held)
+   first Ctrl+S after opening      1 ms                          179-188 ms       238-245 ms
+   nothing changed                 1 ms                          0 ms             1 ms
+   one stroke on one panel         1 ms                          150-153 ms       145-149 ms
+   a stroke on every panel         1-2 ms                        294-309 ms       302-315 ms
+   Save As (37 MB audio copied)    36-54 ms (the copy)           300-306 ms       314-337 ms (and still waited
+                                                                                  for: Save As saves and waits)
+
+GATE S2 (normal mode, 19:44-20:39, 3287 s; app/build/_probe/split/fullgate_S2.log and fullgate_S2\,
+sha_S2_gate.txt): GREEN. EVERY FAMILY, BOTH BUILDS, 0 failures - the same counts in Release and in Debug:
+   BrushLibrary 187   PaintPixelLock 13   CanvasBrushLock 3   QuickShapeGeometryLock 19   DevRecorder 46
+   CanvasEdgeLock 74   CanvasSizeLock 170   ProjectLifecycle 1808   Camera 336
+Lifecycle 1808 = 1788 + the 19 of (sb) + (r5)'s new control; all 29 "(sb" lines pass in both builds, and the two
+changed checks ((r5), (r9) control) pass. After the gate: the ten files hash as sha_S2_gate.txt says, no "RED RUN",
+git status names those ten and this file, nothing staged. The quick check before it: 232 / 232 (s2_slice4).
+THE BUILD FOR HAND TEST S2: C:\SankoTV\app\build\Release\SankoTV.exe, built Nov 23 2026 19:46:02, git
+d36cc27e7+dirty (the gate's own Release build), sha256 fcbb21cec9ca...e5d28c3; the 20 exes: sha_S2_exes.txt.
+THE COPY: "TEST COPY - small pirate, background save S2" in C:\SankoTV-TestCopies (made 19:46 from the original
+small pirate in Downloads, read only; 93 files, 79 named, none missing or differing).
+THE LIST: Documents\SankoTV-Design\handtest_S2_background_save.md (6 steps, no Shapes tool).
+
+KNOWN, AND LEFT AS IT IS:
+ - "Finishing the save..." cannot be seen by hand on these projects (a save is 0.15-0.3 s): the checks show it, and
+   the picture of it is in the folder above.
+ - Save As still saves and waits (the window stands still for it, as before); its audio copy's progress window is as
+   it was. That is step 3.
+ - Export does not wait for a save: it reads the panels, not the files.
+ - A refusal that lasts (a folder's rights, say) of a NAME is now reported about 2 seconds later, with "may be in
+   use". A refusal to make a file at all (the ".part") is not retried: it fails at once, as before.
+
+NEXT (the user's word of 2026-11-24): step 3 - Save As through the same background path, with the "Finishing the
+save..." rules and the short retry, and the Dev Recorder noting each save (when it started and ended, and whether
+it succeeded); and Rename Brush in place, its own change. Neither committed until their hand test.
+
 ## STATUS 2026-11-23 (evening): SAVING STEP 1 COMMITTED ON THE USER'S WORD AFTER HAND TEST S1 (THIS COMMIT) - THE SAFE SAVE (NOTHING WRITTEN OVER, THE PROJECT FILE THE ONE SWITCH), THE PREVIOUS SAVED VERSION KEPT, PREFERENCES > SAVING, FILE > RESTORE PREVIOUS SAVED VERSION... WITH ITS WARNING; NEW CHECKS (ss1)-(ss14) WITH CONTROLS AND A RED RUN AGAINST TODAY'S WRITER; 19 OLD CHECKS CHANGED (OLD AND NEW TEXTS BELOW); GATE S1 NOT GREEN (3 OF 1788, READ, ONE FIXED), GATE S1b IN SERIAL MODE GREEN - EVERY FAMILY, BOTH BUILDS; HAND TEST S1: BOTH RECORDINGS RAN THE GATE'S BUILD ON THE COPY, NOTHING FAILED, STEPS 4 AND 6 AND THE SECOND RESTORE OF STEP 5 WERE NOT DONE AS WRITTEN (BELOW); STEP 2 (THE SAVE IN THE BACKGROUND, WITH A SHORT RETRY) IS APPROVED AND COMES NEXT, STEP 3 NOT APPROVED YET
 The user's request is quoted whole in the section below ("late afternoon"). Its first paragraph (batch H) is done:
 a0977b3ef, pushed. This section is the rest: saving step 1. Five files changed, nothing else:

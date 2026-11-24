@@ -113,6 +113,22 @@ struct ImageJob
     bool ok = false;
     Qt::HANDLE composeThread = nullptr;   // where a flatten was composited
     Qt::HANDLE encodeThread = nullptr;    // where it was encoded and written
+    // A SAVE'S IMAGE (saving step 2, 2026-11-23; runSavePlan): `file` is a name nothing has,
+    // and the image is written whole, pushed through and named, as every file of the safe
+    // save is. `fold`: a layer that is still a full image (the panel on the canvas, edited)
+    // - `image` is reduced to its drawn part where the job runs, with `tiles` the layer's
+    // tiles so far, `frameAt` the frame's top-left in the image and `paper` for a
+    // Background; the place it then has (`origin`) and a Background's `fill` are written
+    // into the project file's text at scenes[scene].panels[panel].layers[layer].
+    bool fold = false;
+    QPoint frameAt;
+    bool paper = false;
+    int scene = -1, panel = -1, layer = -1;
+    quint32 fill = 0;
+    QString why;                          // a failure's reason, as the writer and the file gave it
+    bool tried = false;                   // the job ran (false: an earlier one had failed)
+    bool stopped = false;                 // a check stopped the writer in it
+    Qt::HANDLE foldThread = nullptr;      // where a full image was reduced to its drawn part
 };
 struct ImagePlan
 {
@@ -122,6 +138,38 @@ struct ImagePlan
 // under its name is always whole - several at once, and starts no new one
 // once `cancel` is set. True when every job was written.
 bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel);
+
+// THE SAVE IN THE BACKGROUND (saving step 2, 2026-11-23; the report of that day, approved).
+// A Save used to composite its flattens on the UI thread and then stand still there until
+// its encoders had written every image, and write the project file there too: the window
+// was frozen from Ctrl+S to the last file. Now a Save is made as the recovery copy has been
+// since 2026-11-05. ON THE CALLER'S THREAD, projectToJson with SaveData::plan and
+// SaveData::planIsSave: the names (settle), the project file's text and the ledger's skips,
+// and every image that must be written as a job of shared copies - nothing composited,
+// nothing reduced, nothing encoded, nothing written. ON WHATEVER THREAD RUNS IT, runSavePlan:
+// each job's flatten composited, each full layer reduced to its drawn part, every image
+// encoded, written whole, pushed through to the disk and named - then the caller's
+// switchProjectFile. The pictures are the bytes the Save wrote before (a flatten without
+// an alpha channel, as QPixmap::toImage gave it). Recording what landed in the ledger is
+// the caller's, back on its own thread, where the plan must also be released.
+struct [[nodiscard]] PlanResult
+{
+    bool ok = false;
+    bool stopped = false;     // a check stopped the writer (setSaveStopAfterForTest)
+    QString failedFile;       // the earliest image in the save's order that could not be written
+    QString reason;           // why, in words an artist can act on
+    int imagesWritten = 0;
+    QStringList writtenFiles; // every image the plan wrote (absolute), in the save's order
+    int encodeThreads = 0;    // distinct threads that encoded them
+    // Where the work ran, one entry per step: each full layer reduced, each flatten
+    // composited, each image encoded and written.
+    QVector<Qt::HANDLE> foldThreadIds;
+    QVector<Qt::HANDLE> composeThreadIds;
+    QVector<Qt::HANDLE> encodeThreadIds;
+};
+// `root`: the project file's text as projectToJson gave it; the places and fills of the
+// layers reduced here are written into it (only when every image landed).
+PlanResult runSavePlan(ImagePlan &plan, QJsonObject *root);
 
 // THE FILE'S VERSION (2026-11-06, batch 6a). 2: each panel says its stage
 // margin ("margin": [left, top, right, bottom], omitted when 0), and the
@@ -190,8 +238,13 @@ struct SaveData
     // Null (the seam, the fixtures) writes every image, as before.
     ImageLedger *ledger = nullptr;
     // THE RECOVERY COPY (2026-11-05): images go into this plan instead of
-    // being written here (see ImagePlan). A Save leaves it null.
+    // being written here (see ImagePlan). A Save that writes on the caller's
+    // thread leaves it null.
     ImagePlan *plan = nullptr;
+    // THE SAVE IN THE BACKGROUND (saving step 2, 2026-11-23): the plan is a Save's -
+    // the safe save's names, nothing written over - and runSavePlan writes it.
+    // Needs the ledger. False with a plan: the recovery copy's, as before.
+    bool planIsSave = false;
 };
 
 // The outcome of a save's IMAGE pass.
@@ -407,7 +460,29 @@ struct [[nodiscard]] SwitchResult
     bool previousKept = false;     // what was replaced is now the previous saved version
     QStringList removedFiles;      // superseded pictures removed after the switch (absolute)
     bool stopped = false;          // a check stopped the writer (setSaveStopAfterForTest)
+    // THE SHORT RETRY (saving step 2): how often the project file's name was tried (1: at
+    // once), and whether the switch failed because another program held the file to the end.
+    int tries = 0;
+    bool held = false;
 };
+
+// THE SHORT RETRY (saving step 2, 2026-11-23; the user's word of that day). Another program -
+// an antivirus, OneDrive, Windows' search - may hold a file for a moment just as the save
+// gives it its name or reads the project file it is about to replace; Windows then refuses
+// (a sharing or lock violation, or "access is denied"). The writer waits and tries again:
+// kNameTries tries in all, kNamePauseMs between them - about 2 seconds - before it reports
+// the failure it would have reported at once. Every name the writer gives is tried so (the
+// project file's, a picture's, the previous saved version's, the recovery copy's): the same
+// hold can meet any of them. It runs where the writer runs, so in the background for a Save.
+// Any other refusal - a name that is taken, a path that is not there - fails at once.
+inline constexpr int kNameTries = 21;
+inline constexpr int kNamePauseMs = 100;
+// For the checks: called on the writer's thread before each further try, IN PLACE OF the
+// pause, with the file being named (or read) and the tries made so far - so a check decides
+// by the count of tries, never by the clock. Null: the pause.
+void setNameRetryHookForTest(std::function<void(const QString &file, int triesMade)> hook);
+// The writer as it was before the retry: one try. For the checks' red run.
+void setNameRetryOffForTest(bool off);
 
 // STEP 2 OF A SAVE, after projectToJson has said every image is on disk: the project file,
 // the previous saved version, the superseded pictures - in that order (see above). On a

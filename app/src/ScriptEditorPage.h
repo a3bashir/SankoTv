@@ -26,7 +26,9 @@ public:
     // on - the text, and whether the dot is lit - from the project's saved
     // state and its recovery copy; the editor's own typing flash settles
     // back to it.
-    void setSavedState(const QString &text, bool lit);
+    // `failed` (saving step 2, 2026-11-23; Figma S-1): "NOT saved" - the dot and the
+    // words in red.
+    void setSavedState(const QString &text, bool lit, bool failed = false);
     QString savedStateForTest() const;
 
 signals:
@@ -57,6 +59,7 @@ private:
     QTimer *m_savedTimer = nullptr;
     QString m_restingText = QStringLiteral("Saved");
     bool m_restingLit = false;
+    bool m_restingFailed = false;
 
     QVBoxLayout *m_scenesLayout = nullptr; // holds scene cards / status messages
 

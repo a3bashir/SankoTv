@@ -40,6 +40,8 @@ struct Pending;
 }
 
 struct RecoveryCopyRun; // a recovery copy in flight (MainWindow.cpp)
+struct SaveRun;         // a Save in flight (saving step 2; MainWindow.cpp)
+class QDialog;
 class QThreadPool;
 class QUrl;
 
@@ -112,6 +114,30 @@ public:
     // (no project, or unsaved changes).
     int cleanUpProjectFolderForTest(bool confirm);
     int lastSaveEncodeThreadsForTest() const { return m_lastSaveEncodeThreads; }
+    // THE SAVE IN THE BACKGROUND (saving step 2, 2026-11-23), driven by the gate.
+    // saveProjectForTest above is still "save and wait" - through the same writer, its
+    // work on the worker, the caller standing still until it has ended. These reach what
+    // File > Save Project (Ctrl+S) does: the save started and NOT waited for (true: one is
+    // now in flight); whether one is in flight; events processed until none is (at most
+    // maxMs); the worker made to wait at its start while set (clearing it releases the one
+    // in flight); the writer of before this step - every step on the UI thread - for the
+    // checks' control and red run; "Finishing the save..." when it is up; whether the last
+    // save ended with edits made since its snapshot; how often its project file's name was
+    // tried and whether it failed as held by another program; the snapshot's own time on
+    // the UI thread (printed, never checked); how many failure messages wait for a stroke
+    // to end.
+    bool startSaveForTest();
+    bool saveInFlightForTest() const { return m_saveRun != nullptr; }
+    bool waitForSaveForTest(int maxMs = 180000);
+    void setSaveHoldForTest(bool hold);
+    void setSaveOnUiThreadForTest(bool on) { m_saveOnUiThreadForTest = on; }
+    QDialog *finishingSaveBoxForTest() const { return m_finishingBox; }
+    bool lastSaveChangedSinceForTest() const { return m_lastSaveChangedSince; }
+    int lastSaveTriesForTest() const { return m_lastSaveTries; }
+    bool lastSaveHeldForTest() const { return m_lastSaveHeld; }
+    qint64 lastSaveUiMsForTest() const { return m_lastSaveUiMs; }
+    bool saveFailureWaitingForTest() const { return m_saveFailureWaiting; }
+    bool saveAgainForTest() const { return m_saveAgain; }
     // The real slot the Project Settings dialog's applied() signal reaches.
     void applyProjectSettingsForTest(const QString &name, int fps)
     {
@@ -451,7 +477,34 @@ private:
     // a new panel gets, and every panel after a margin change.
     QMargins projectMargin() const;
     void applyProjectSettings(const QString &projectName, int fps);
+    // SAVE AND WAIT: the save started (beginSave) and the caller standing still until
+    // it has ended (finishSaveNow). What Save As, the unsaved-changes prompt and the
+    // checks use; File > Save Project does not wait (onSaveProject).
     bool saveToPath(const QString &path);
+    // --- The save in the background (saving step 2, 2026-11-23) -------------------
+    // ON THE UI THREAD, AT CTRL+S, ONLY THE SNAPSHOT: the pending shape finished, the
+    // project file's text written down, and every image that changed taken as a shared
+    // copy (ProjectIO's plan). ON THE WORKER: every flatten composited, every image
+    // encoded, written, pushed to the disk and named, then the project file's switch
+    // and the tidying after it. One save at a time. What is drawn after the snapshot is
+    // not in that save: the project then stays unsaved when it ends (m_editSerial).
+    // True: a save is now in flight. False: it failed at once (and said so) or was
+    // cancelled, and nothing is in flight.
+    bool beginSave(const QString &path);
+    // Its result, on the UI thread: the ledger learns what landed, the project is
+    // marked saved - or left unsaved, with the failure's message. `tellNow`: the
+    // message at once (save and wait); else it waits for a stroke in flight to end,
+    // never opening under the pen. True when the save completed.
+    bool finishSaveRun(quint64 serial, bool tellNow);
+    // The save in flight waited for where the caller stands (no events), and reported.
+    bool finishSaveNow();
+    // "Finishing the save...": what must not meet a running save - closing the window,
+    // opening or starting another project, Save As, Clean Up Project Folder, Restore
+    // Previous Saved Version - waits here, behind a box with no buttons, until it has
+    // ended. It never cancels the save.
+    void waitForSave();
+    void tellSaveFailure();       // the message of a save that failed, once no stroke is in flight
+    void updateWorkspaceStatus(); // the words at the right of the workspace's bottom bar
     // A save, export or recording that failed: when Windows blocked it in a
     // protected folder, the plain explanation and an offer to write
     // elsewhere (true when taken); otherwise the caller's own message.
@@ -465,10 +518,12 @@ private:
     // did not fully happen" must not be a rule a future edit can forget.
     //
     // SaveCompleted is a token with a PRIVATE constructor whose only friend
-    // is saveToPath. markSavedTo() — which adopts the path, records the
-    // recent entry and calls setClean() — cannot be called without one, and
-    // the single place that can make one is the tail of saveToPath, after
-    // every image write and the manifest commit have been checked. Anywhere
+    // is finishSaveRun (it was saveToPath until the save went to the
+    // background, 2026-11-23: finishSaveRun is where a save's result is read).
+    // markSavedTo() — which adopts the path, records the recent entry and
+    // calls setClean() — cannot be called without one, and the single place
+    // that can make one is the tail of finishSaveRun, after every image write
+    // and the project file's switch have been checked. Anywhere
     // else in this class, clearing the dirty flag after a partial save is
     // not a mistake to be caught in review: there is nothing to pass, and
     // the code does not compile.
@@ -485,9 +540,11 @@ private:
         // constructor user-provided, the class a non-aggregate, and the
         // access check real.
         SaveCompleted() {}
-        friend bool MainWindow::saveToPath(const QString &path);
+        friend bool MainWindow::finishSaveRun(quint64 serial, bool tellNow);
     };
-    void markSavedTo(const QString &path, SaveCompleted);
+    // changedSince: edits were made after the save's snapshot was taken - the save
+    // has completed and the project is still unsaved.
+    void markSavedTo(const QString &path, SaveCompleted, bool changedSince);
 
     // asRecoveryCopy: the file is a crash's recovery copy of m_recoveredFrom
     // - loaded as an UNSAVED document with no file of its own, not recorded
@@ -563,6 +620,31 @@ private:
     int m_lastSaveSteps = 0;
     int m_lastSaveUiSteps = 0;
     qint64 m_lastRecoveryUiMs = 0;
+    // The save in the background (saving step 2, 2026-11-23).
+    std::unique_ptr<SaveRun> m_saveRun; // the save in flight
+    QThreadPool *m_savePool = nullptr;  // its worker (one)
+    quint64 m_saveSerial = 0;
+    // Counts every edit - markDirty() is called for each, also while the project is
+    // unsaved already - so a save can tell whether anything changed after its snapshot.
+    quint64 m_editSerial = 0;
+    bool m_saveAgain = false; // Ctrl+S during a save: remembered, runs once, after it
+    // What the last save came to, shown where "Saved" shows until the next edit:
+    // "Saved 14:32" at the right of the workspace's bottom bar, or "NOT saved".
+    enum class SaveNote { None, Saved, Failed };
+    SaveNote m_saveNote = SaveNote::None;
+    QDateTime m_lastSavedAt;
+    QDialog *m_finishingBox = nullptr; // "Finishing the save...", while it is up
+    // A failed save's message, kept while a stroke is in flight (never under the pen).
+    bool m_saveFailureWaiting = false;
+    QString m_saveFailureTarget;
+    QString m_saveFailureText;
+    QTimer *m_saveFailureRetry = nullptr;
+    bool m_saveHoldForTest = false;
+    bool m_saveOnUiThreadForTest = false;
+    bool m_lastSaveChangedSince = false;
+    int m_lastSaveTries = 0;
+    bool m_lastSaveHeld = false;
+    qint64 m_lastSaveUiMs = 0;
     Qt::HANDLE m_uiThread = nullptr; // the thread this window lives on
     std::function<void(const QUrl &)> m_openFolderForTest;
     QString m_projectName = QStringLiteral("Untitled Project");

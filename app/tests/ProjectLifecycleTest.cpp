@@ -15594,12 +15594,25 @@ void runRecoveryPass(const QString &scratch)
               at > 0 && copyNorm != normalised(QJsonDocument::fromJson(other.toUtf8()).object()));
     }
     // --- (r5) a clean Save removes the copy --------------------------------------
-    check(QStringLiteral("(r5) A CLEAN SAVE REMOVES THE RECOVERY COPY, its manifest and images, keeps "
-                         "the lock (the project is still open) and clears the bottom bar's word"),
-          !ProjectRecovery::hasCopy(proj) && !QDir(copyAssets).exists() && ProjectRecovery::hasLock(proj)
-              && window.recoveryStatusForTest().isEmpty(),
-          QStringLiteral("copy %1 images %2 lock %3 status '%4'").arg(ProjectRecovery::hasCopy(proj))
-              .arg(QDir(copyAssets).exists()).arg(ProjectRecovery::hasLock(proj), 0).arg(window.recoveryStatusForTest()));
+    // (Saving step 2, 2026-11-23: the bottom bar's place says the save's own word after a
+    // save - "Saved HH:MM", Figma S-1 - where it used to say nothing. What the check proves
+    // is unchanged: the copy's word is gone with the copy.)
+    {
+        const QString after = window.recoveryStatusForTest();
+        check(QStringLiteral("(r5) A CLEAN SAVE REMOVES THE RECOVERY COPY, its manifest and images, keeps "
+                             "the lock (the project is still open) and takes the copy's word off the bottom "
+                             "bar: the save's own word is there instead, \"Saved HH:MM\" (saving step 2, "
+                             "2026-11-23; Figma S-1)"),
+              !ProjectRecovery::hasCopy(proj) && !QDir(copyAssets).exists() && ProjectRecovery::hasLock(proj)
+                  && after.startsWith(QStringLiteral("Saved ")) && after.size() == 11
+                  && !after.contains(QStringLiteral("ecovery")),
+              QStringLiteral("copy %1 images %2 lock %3 status '%4'").arg(ProjectRecovery::hasCopy(proj))
+                  .arg(QDir(copyAssets).exists()).arg(ProjectRecovery::hasLock(proj), 0).arg(after));
+        check(QStringLiteral("(r5) control (2026-11-23): the same reading before the Save found the copy's word, "
+                             "\"Recovery copy saved HH:MM\" - it sees the copy's word when it is there"),
+              statusCopied == QStringLiteral("Recovery copy saved ") + copyHHmm && statusCopied != after,
+              QStringLiteral("before '%1', after '%2'").arg(statusCopied, after));
+    }
     // --- (r7) the Script Editor's indicator --------------------------------------
     check(QStringLiteral("(r7) THE SCRIPT EDITOR'S INDICATOR IS REAL: 'Saved' with the project saved, "
                          "'Unsaved changes' after the stroke, 'Unsaved - recovery copy HH:MM' after "
@@ -16166,15 +16179,19 @@ void runRecoveryOffThreadPass(const QString &scratch)
                          "finished %7 images %8 steps %9 on the UI thread %10")
               .arg(dirty).arg(started).arg(uiRan).arg(inFlight).arg(onDiskWhileHeld).arg(manifestWhileHeld)
               .arg(finished).arg(images).arg(steps).arg(uiSteps));
-    // Control: a Save, counted the same way, has UI-thread steps - its
-    // flatten composite and its manifest - so the count sees them when they
-    // are there.
+    // Control: a Save made the way every Save was made before saving step 2
+    // (2026-11-23), counted the same way, has UI-thread steps - its flatten
+    // composite and its project file - so the count sees them when they are
+    // there. (Since step 2 an ordinary Save has none: (sb1).)
     clickThumb(r, 1);
     paint();
+    window.setSaveOnUiThreadForTest(true);
     window.saveProjectForTest(proj);
+    window.setSaveOnUiThreadForTest(false);
     pump(200);
-    check(QStringLiteral("(r9) control: a Save, counted the same way, ran steps on the UI thread (its flatten "
-                         "composite and its manifest), so the count sees UI-thread work when there is some"),
+    check(QStringLiteral("(r9) control: a Save made by the writer of before saving step 2 (2026-11-23), counted "
+                         "the same way, ran steps on the UI thread (its flatten composite and its project file), "
+                         "so the count sees UI-thread work when there is some"),
           window.lastSaveUiStepsForTest() >= 2 && window.lastSaveStepsForTest() >= 4,
           QStringLiteral("save steps %1, on the UI thread %2").arg(window.lastSaveStepsForTest())
               .arg(window.lastSaveUiStepsForTest()));
@@ -35370,6 +35387,104 @@ QMenu *fileMenu(MainWindow &window)
     return nullptr;
 }
 
+// ANOTHER PROGRAM HOLDING A FILE (saving step 2, 2026-11-23; (sb7)-(sb9)): this program started
+// by the pass itself to hold one file open as an antivirus, OneDrive or Windows' search hold
+// it - with no leave to delete or replace it (`exclusive`: with no leave to read it either).
+// It says "held" by making a file of that name in `dir`, lets go when a file "release" appears
+// there and says "released", and ends at "quit". Files, not pipes: what tells it to let go is
+// the writer's retry hook, on the writer's thread, where no QProcess may be used.
+int runHolder()
+{
+    const QString file = qEnvironmentVariable("SANKO_SAFESAVE_HOLDER");
+    const QString dir = qEnvironmentVariable("SANKO_SAFESAVE_HOLDER_DIR");
+    const bool exclusive = qEnvironmentVariableIsSet("SANKO_SAFESAVE_HOLDER_EXCLUSIVE");
+    auto say = [&dir](const char *name) {
+        QFile f(dir + QLatin1Char('/') + QLatin1String(name));
+        f.open(QIODevice::WriteOnly);
+        f.close();
+    };
+#ifdef Q_OS_WIN
+    const std::wstring native = QDir::toNativeSeparators(file).toStdWString();
+    const HANDLE h = CreateFileW(native.c_str(), GENERIC_READ, exclusive ? 0 : (FILE_SHARE_READ | FILE_SHARE_WRITE),
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        say("failed");
+        return 2;
+    }
+    say("held");
+    QElapsedTimer life;
+    life.start();
+    while (!QFileInfo::exists(dir + QStringLiteral("/release")) && life.elapsed() < 600000)
+        QThread::msleep(5);
+    CloseHandle(h);
+    say("released");
+    while (!QFileInfo::exists(dir + QStringLiteral("/quit")) && life.elapsed() < 600000)
+        QThread::msleep(5);
+    return 0;
+#else
+    Q_UNUSED(file);
+    Q_UNUSED(exclusive);
+    say("failed");
+    return 2;
+#endif
+}
+
+// The pass's side of it: the holder started on `file`, and waited for until it holds.
+struct Holder
+{
+    QProcess child;
+    QString dir;
+    bool held = false;
+    Holder(const QString &file, const QString &flags, bool exclusive)
+        : dir(flags)
+    {
+        QDir(dir).removeRecursively();
+        QDir().mkpath(dir);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("SANKO_SAFESAVE_HOLDER"), file);
+        env.insert(QStringLiteral("SANKO_SAFESAVE_HOLDER_DIR"), dir);
+        if (exclusive)
+            env.insert(QStringLiteral("SANKO_SAFESAVE_HOLDER_EXCLUSIVE"), QStringLiteral("1"));
+        env.remove(QStringLiteral("SANKO_LIFECYCLE_ONLY"));
+        env.remove(QStringLiteral("SANKO_SAFESAVE_VICTIM"));
+        child.setProcessEnvironment(env);
+        child.setProgram(QCoreApplication::applicationFilePath());
+        child.setStandardErrorFile(QProcess::nullDevice());
+        child.setStandardOutputFile(QProcess::nullDevice());
+        child.start();
+        held = waitFor("held");
+    }
+    // Until the holder has said `name` (or has gone, or said it failed). Any thread.
+    bool waitFor(const char *name) const
+    {
+        QElapsedTimer waited;
+        waited.start();
+        const QString flag = dir + QLatin1Char('/') + QLatin1String(name);
+        while (!QFileInfo::exists(flag) && !QFileInfo::exists(dir + QStringLiteral("/failed"))
+               && waited.elapsed() < 120000)
+            QThread::msleep(5);
+        return QFileInfo::exists(flag);
+    }
+    // Told to let go, and waited for until it has. Any thread (the writer's retry hook).
+    bool release() const
+    {
+        QFile f(dir + QStringLiteral("/release"));
+        f.open(QIODevice::WriteOnly);
+        f.close();
+        return waitFor("released");
+    }
+    ~Holder()
+    {
+        release();
+        QFile f(dir + QStringLiteral("/quit"));
+        f.open(QIODevice::WriteOnly);
+        f.close();
+        if (!child.waitForFinished(15000))
+            child.kill();
+        child.waitForFinished(5000);
+    }
+};
+
 } // namespace safesave
 
 void runSafeSavePass(const QString &scratch)
@@ -35984,6 +36099,758 @@ void runSafeSavePass(const QString &scratch)
     pump(300);
 }
 
+// ---- (sb) THE SAVE IN THE BACKGROUND (saving step 2, 2026-11-23) ------------------------------
+// The approved report of 2026-11-23, step 2, its Figma frame S-1 (675:755) and the user's word
+// of that evening on the short retry. Ctrl+S takes a snapshot on the UI thread and returns; every
+// flatten composited, every layer reduced to its drawn part, every encode and write, and the
+// project file's switch run on a worker. One save at a time; what is drawn meanwhile is not in it
+// and leaves the project unsaved; "Saving..." in the Script Editor's indicator and at the right
+// of the workspace's bottom bar; close, open, Save As, Clean Up and Restore wait behind
+// "Finishing the save..." and never cancel it; a failure's message never opens under the pen; a
+// project file another program holds for a moment is tried again for about 2 seconds, in the
+// background. EVERY VERDICT IS READ FROM A COUNT, A STATE OR A FILE, NONE FROM THE CLOCK: the
+// worker is held by a switch the check controls, and the retry's pause is replaced by the
+// check's hook, which counts the tries (and lets go of the file when a check says so).
+namespace bgsave {
+
+// Every box that opened: "Finishing the save..." is left alone (a check waits behind it, and it
+// goes by itself) and counted; any other is closed and named.
+struct BoxWatch
+{
+    QTimer timer;
+    QStringList others;
+    int finishing = 0;
+    const void *lastFinishing = nullptr;
+    BoxWatch()
+    {
+        timer.setInterval(120);
+        QObject::connect(&timer, &QTimer::timeout, [this] {
+            QWidget *modal = QApplication::activeModalWidget();
+            if (!modal)
+                return;
+            if (modal->objectName() == QLatin1String("finishingSaveBox")) {
+                if (modal != lastFinishing)
+                    ++finishing;
+                lastFinishing = modal;
+                return;
+            }
+            const auto *box = qobject_cast<QMessageBox *>(modal);
+            others << (box ? box->windowTitle() + QStringLiteral(": ") + box->text()
+                           : QString::fromLatin1(modal->metaObject()->className()) + QStringLiteral(": ")
+                                 + modal->windowTitle())
+                          .simplified()
+                          .left(300);
+            modal->close();
+        });
+        timer.start();
+    }
+};
+
+// One brush stroke on the canvas's panel, ON THE PAPER (the fixtures are 960 x 540): the n-th of
+// 30 places, each its own, so every stroke changes pixels. (A first run drew lower and lower,
+// past the paper's foot from the 18th stroke on: those changed nothing, and the saves after them
+// had nothing to write - every check now also says its stroke changed the picture.)
+void strokeAt(MainWindow &window, int n)
+{
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    if (!canvas)
+        return;
+    const int dx = (n % 6) * 100, dy = ((n / 6) % 5) * 50;
+    const QTransform t = canvas->viewTransformForTest();
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(60 + dx, 40 + dy)), Qt::LeftButton);
+    for (int i = 1; i <= 8; ++i)
+        sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(60 + dx + i * 10, 40 + dy + i * 7)), Qt::LeftButton);
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(60 + dx + 90, 40 + dy + 60)), Qt::LeftButton);
+    pump(700);
+}
+
+// What the layers in the window are, as a save followed by an open gives them back.
+safesave::Picture shown(MainWindow &window)
+{
+    safesave::Picture out;
+    for (const Scene *scene : window.scenesForTest())
+        for (const Panel *panel : scene->panels) {
+            out.append(QVector<QImage>());
+            for (const Layer &layer : panel->layers)
+                out.last().append(isGroupLayer(layer) ? QImage() : safesave::asSaved(layer.pixels()));
+        }
+    return out;
+}
+
+// One thing that must wait for a running save, done while one runs. A stroke, then Ctrl+S with
+// the worker held; `during` (a stroke, say) while it is held; then `action`. A timer that fires
+// inside whatever the action waits in looks at the box, presses Esc in it and asks it to close,
+// and only then lets the worker go - so the action can only have gone on once the save ended.
+struct Wait
+{
+    bool changed = false;   // the stroke changed the picture: the save had something to write
+    bool started = false;   // Ctrl+S put a save in flight
+    bool boxUp = false;     // "Finishing the save..." was up, with the save still in flight
+    bool noButtons = false; // ...with no button in it
+    bool kept = false;      // ...and Esc and a close left it up
+    bool goneAfter = false; // it was gone when the action went on
+    bool saved = false;     // the save completed: the project file is the snapshot's picture
+    QString note;
+    bool ok() const { return changed && started && boxUp && noButtons && kept && goneAfter && saved; }
+};
+
+Wait waitBehind(MainWindow &window, const QString &proj, int n, const std::function<void()> &during,
+                const std::function<void()> &action)
+{
+    using namespace safesave;
+    Wait w;
+    const QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+    const OnDisk before = onDisk(proj, proj);
+    strokeAt(window, n);
+    w.changed = keysOf(window.scenesForTest()) != keysBefore;
+    const Version want = inWindow(window.scenesForTest(), keysBefore, before.version);
+    window.setSaveHoldForTest(true);
+    w.started = window.startSaveForTest();
+    if (during)
+        during();
+    bool looked = false;
+    QTimer::singleShot(150, &window, [&] {
+        looked = true;
+        QDialog *box = window.finishingSaveBoxForTest();
+        w.boxUp = box && box->isVisible() && window.saveInFlightForTest();
+        if (box) {
+            // A picture of it, for looking at beside the design (Figma S-1), when asked for by hand.
+            const QString pictures = qEnvironmentVariable("SANKO_SAFESAVE_PICTURES");
+            if (!pictures.isEmpty() && !QFileInfo::exists(pictures + QStringLiteral("/finishing_the_save.png")))
+                box->grab().save(pictures + QStringLiteral("/finishing_the_save.png"));
+            w.noButtons = box->findChildren<QAbstractButton *>().isEmpty();
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(box, &esc);
+            const bool closed = box->close();
+            w.kept = !closed && box->isVisible() && window.finishingSaveBoxForTest() == box;
+        }
+        window.setSaveHoldForTest(false); // only now may the save end
+    });
+    action();
+    w.goneAfter = window.finishingSaveBoxForTest() == nullptr;
+    // An action that did not wait has gone on already, and the look has not been taken: it is
+    // let happen (it finds no box), so the worker is let go and the save can end.
+    QElapsedTimer guard;
+    guard.start();
+    while (!looked && guard.elapsed() < 60000)
+        pump(20);
+    window.setSaveHoldForTest(false);
+    window.waitForSaveForTest();
+    pump(200);
+    const OnDisk got = onDisk(proj, proj);
+    w.saved = got.whole() && got.version == want;
+    w.note = QStringLiteral("stroke changed it %1, started %2, box up %3, no buttons %4, kept up %5, gone after %6, "
+                            "saved %7 (%8)")
+                 .arg(w.changed).arg(w.started).arg(w.boxUp).arg(w.noButtons).arg(w.kept).arg(w.goneAfter)
+                 .arg(w.saved).arg(got.state());
+    return w;
+}
+
+QAction *fileAction(MainWindow &window, const QString &text)
+{
+    if (QMenu *menu = safesave::fileMenu(window))
+        for (QAction *a : menu->actions())
+            if (a->text() == text)
+                return a;
+    return nullptr;
+}
+
+} // namespace bgsave
+
+void runBackgroundSavePass(const QString &scratch)
+{
+    using namespace safesave;
+    using namespace bgsave;
+    out() << "--- (sb) the save in the background: the snapshot, the worker, the waits, the retry ---" << Qt::endl;
+    // For a red run only: the writer as it was before this step - every step of a save where
+    // Ctrl+S was pressed, and one try at each name - in the main checks' place.
+    const bool beforeStep2 = false;
+    const QString root = scratch + QStringLiteral("/bgsave");
+    QDir(root).removeRecursively();
+    QDir().mkpath(root);
+    {
+        QSettings s = sankoSettings();
+        s.remove(QStringLiteral("saving/keepPrevious")); // keep, the default
+    }
+    const Qt::HANDLE ui = QThread::currentThreadId();
+    const QString saving = QString::fromUtf8("Saving\xE2\x80\xA6");
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    BoxWatch boxes;
+    const int minutesBefore = window.recoveryMinutesForTest();
+    window.setRecoveryMinutesForTest(0); // no copy of the timer's own in the middle of a check
+    // A failed save's message, and the unsaved-changes question, answered here and counted.
+    int told = 0;
+    QString toldText;
+    window.setBlockedPromptForTest([&told, &toldText](const QString &, const QString &text) {
+        ++told;
+        toldText = text;
+        return false;
+    });
+    window.setDiscardPromptForTest([] { return MainWindow::DiscardAnswer::Cancel; });
+    window.setSaveOnUiThreadForTest(beforeStep2);
+    ProjectIO::setNameRetryOffForTest(beforeStep2);
+
+    // The fixture: a 3-panel project opened by the window and saved twice, a stroke between, so
+    // it has its id names and a previous saved version. The family's random art is left as it was.
+    quint32 seedBefore = g_seed;
+    const QString proj = writeProject(root + QStringLiteral("/work"), QStringLiteral("Bg"), QSize(960, 540), 24, 1, 3);
+    const QString other = writeProject(root + QStringLiteral("/other"), QStringLiteral("Other"), QSize(960, 540), 24, 1, 2);
+    g_seed = seedBefore;
+    const QString work = QFileInfo(proj).absolutePath();
+    const QString assets = work + QStringLiteral("/Bg_assets");
+    const QString previousFile = ProjectIO::previousVersionFile(proj);
+    const bool opened = window.loadProjectForTest(proj);
+    pump(500);
+    const bool first = window.saveProjectForTest(proj);
+    strokeAt(window, 0);
+    const bool second = window.saveProjectForTest(proj);
+    pump(200);
+    check(QStringLiteral("(sb) control: the fixture opens, saves, and has a previous saved version"),
+          opened && first && second && onDisk(proj, proj).whole() && onDisk(previousFile, proj).whole());
+
+    // --- (sb1) Ctrl+S runs off the UI thread ---------------------------------------------------------------
+    {
+        QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+        const OnDisk before = onDisk(proj, proj);
+        strokeAt(window, 1);
+        const bool changed = keysOf(window.scenesForTest()) != keysBefore;
+        const Version want = inWindow(window.scenesForTest(), keysBefore, before.version);
+        const QString fileBefore = shaOfFile(proj);
+        const QStringList filesBefore = filesUnder(work);
+        window.setSaveHoldForTest(true);
+        const bool started = window.startSaveForTest(); // File > Save Project's own path
+        bool uiRan = false;
+        QTimer::singleShot(0, &window, [&uiRan] { uiRan = true; });
+        pump(300);
+        const bool inFlight = window.saveInFlightForTest();
+        const QString editorWord = window.savedIndicatorForTest(), barWord = window.recoveryStatusForTest();
+        // A picture of the bottom bar saying it, when asked for by hand (never by the gate).
+        const QString pictures = qEnvironmentVariable("SANKO_SAFESAVE_PICTURES");
+        if (!pictures.isEmpty())
+            if (auto *word = window.findChild<QLabel *>(QStringLiteral("recoveryStatus")))
+                if (QWidget *bar = word->parentWidget())
+                    bar->grab().save(pictures + QStringLiteral("/bottom_bar_saving.png"));
+        QStringList madeWhileHeld;
+        for (const QString &name : filesUnder(work))
+            if (!filesBefore.contains(name))
+                madeWhileHeld << name;
+        const bool fileSame = shaOfFile(proj) == fileBefore;
+        window.setSaveHoldForTest(false);
+        const bool ended = window.waitForSaveForTest();
+        pump(200);
+        const int steps = window.lastSaveStepsForTest(), uiSteps = window.lastSaveUiStepsForTest();
+        const int written = int(window.lastSaveWrittenForTest().size());
+        const OnDisk got = onDisk(proj, proj);
+        out() << QStringLiteral("  NOTE (sb1) the snapshot held the UI thread %1 ms (printed, never checked)")
+                     .arg(window.lastSaveUiMsForTest())
+              << Qt::endl;
+        check(QStringLiteral("(sb1) CTRL+S RUNS OFF THE UI THREAD: with its worker held, Ctrl+S returns with the save "
+                             "in flight, the UI thread free (a posted event ran), \"Saving...\" in the Script "
+                             "Editor's indicator and at the right of the workspace's bottom bar, and nothing of "
+                             "it on disk; let go, it completes - the project saved, the file the picture of the "
+                             "moment Ctrl+S was pressed - and none of its steps, counted by thread (each layer "
+                             "reduced, each flatten composited, each image encoded and written, the project "
+                             "file), ran on the UI thread"),
+              changed && started && uiRan && inFlight && editorWord == saving && barWord == saving
+                  && madeWhileHeld.isEmpty() && fileSame && ended && !window.isDirty() && got.whole()
+                  && got.version == want && written == 2 && steps >= 4 && uiSteps == 0,
+              QStringLiteral("stroke changed it %15, started %1, ui ran %2, in flight %3, words '%4' / '%5', made "
+                             "while held [%6], file the same %7, ended %8, dirty %9, on disk %10 the picture %11, %12 "
+                             "images, %13 steps, %14 on the UI thread")
+                  .arg(started).arg(uiRan).arg(inFlight).arg(editorWord, barWord)
+                  .arg(madeWhileHeld.join(QLatin1Char(' '))).arg(fileSame).arg(ended).arg(window.isDirty())
+                  .arg(got.state()).arg(got.version == want).arg(written).arg(steps).arg(uiSteps).arg(changed));
+
+        // (sb2) the words after it, until the next edit.
+        const QString editorAfter = window.savedIndicatorForTest(), barAfter = window.recoveryStatusForTest();
+        if (!pictures.isEmpty())
+            if (auto *word = window.findChild<QLabel *>(QStringLiteral("recoveryStatus")))
+                if (QWidget *bar = word->parentWidget())
+                    bar->grab().save(pictures + QStringLiteral("/bottom_bar_saved.png"));
+        strokeAt(window, 2);
+        const QString editorEdited = window.savedIndicatorForTest(), barEdited = window.recoveryStatusForTest();
+        const QRegularExpression savedAt(QStringLiteral("^Saved [0-2][0-9]:[0-5][0-9]$"));
+        check(QStringLiteral("(sb2) THE WORDS AFTER IT: \"Saved\" in the Script Editor and \"Saved HH:MM\" at the "
+                             "right of the bottom bar once the save has completed; at the next edit both show again "
+                             "what they showed before - \"Unsaved changes\", and nothing at the bar"),
+              editorAfter == QStringLiteral("Saved") && savedAt.match(barAfter).hasMatch()
+                  && editorEdited == QStringLiteral("Unsaved changes") && barEdited.isEmpty(),
+              QStringLiteral("after '%1' / '%2'; edited '%3' / '%4'").arg(editorAfter, barAfter, editorEdited, barEdited));
+        window.saveProjectForTest(proj);
+        pump(200);
+
+        // Control: the writer of before this step, counted the same way.
+        keysBefore = keysOf(window.scenesForTest());
+        strokeAt(window, 3);
+        window.setSaveOnUiThreadForTest(true);
+        window.setSaveHoldForTest(true);
+        const bool startedC = window.startSaveForTest();
+        const bool inFlightC = window.saveInFlightForTest();
+        window.setSaveHoldForTest(false);
+        window.setSaveOnUiThreadForTest(beforeStep2);
+        window.waitForSaveForTest();
+        pump(200);
+        check(QStringLiteral("(sb1) control: the same Ctrl+S made by the writer of before this step - every step "
+                             "where Ctrl+S was pressed - returns with the save done, not in flight, and the same "
+                             "count finds its steps on the UI thread (its flatten composited, its project file): the "
+                             "check sees a save that is not in the background"),
+              !startedC && !inFlightC && !window.isDirty() && window.lastSaveUiStepsForTest() >= 2,
+              QStringLiteral("in flight after Ctrl+S %1 / %2, dirty %3, %4 steps, %5 on the UI thread").arg(startedC)
+                  .arg(inFlightC).arg(window.isDirty()).arg(window.lastSaveStepsForTest())
+                  .arg(window.lastSaveUiStepsForTest()));
+    }
+
+    // --- (sb3) a stroke drawn during a held save -------------------------------------------------------------
+    {
+        const QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+        const OnDisk before = onDisk(proj, proj);
+        strokeAt(window, 4); // in the save
+        const Version want = inWindow(window.scenesForTest(), keysBefore, before.version);
+        window.setSaveHoldForTest(true);
+        const bool started = window.startSaveForTest();
+        const QVector<QVector<qint64>> keysAtSnapshot = keysOf(window.scenesForTest());
+        strokeAt(window, 5); // during it: not in it
+        const bool landed = keysOf(window.scenesForTest()) != keysAtSnapshot;
+        const bool stillInFlight = window.saveInFlightForTest();
+        window.setSaveHoldForTest(false);
+        const bool ended = window.waitForSaveForTest();
+        pump(200);
+        const OnDisk got = onDisk(proj, proj);
+        const bool dirty = window.isDirty(), marked = window.isWindowModified();
+        const bool changedSince = window.lastSaveChangedSinceForTest();
+        const QString editorWord = window.savedIndicatorForTest(), barWord = window.recoveryStatusForTest();
+        const Version want2 = inWindow(window.scenesForTest(), keysAtSnapshot, got.version);
+        const bool saved2 = window.saveProjectForTest(proj);
+        pump(200);
+        const OnDisk got2 = onDisk(proj, proj);
+        check(QStringLiteral("(sb3) A STROKE DRAWN DURING A HELD SAVE lands at once and is not in that save: let go, "
+                             "the save completes with the picture of the moment Ctrl+S was pressed, and the project "
+                             "stays unsaved - the title's *, \"Unsaved changes\", nothing at the bar; the next save "
+                             "holds the stroke and leaves the project saved"),
+              started && landed && stillInFlight && ended && got.whole() && got.version == want && dirty && marked
+                  && changedSince && editorWord == QStringLiteral("Unsaved changes") && barWord.isEmpty() && saved2
+                  && got2.whole() && got2.version == want2 && !window.isDirty(),
+              QStringLiteral("started %1, landed %2, in flight while drawn %3, ended %4, first save the snapshot %5 "
+                             "(%6), unsaved after %7 * %8 changed since %9 words '%10' / '%11'; second save %12 "
+                             "with the stroke %13, saved %14")
+                  .arg(started).arg(landed).arg(stillInFlight).arg(ended).arg(got.version == want).arg(got.state())
+                  .arg(dirty).arg(marked).arg(changedSince).arg(editorWord, barWord).arg(saved2)
+                  .arg(got2.version == want2).arg(!window.isDirty()));
+        check(QStringLiteral("(sb3) control: the same reading tells the two saves apart - the second file is not the "
+                             "first (the stroke drawn during the first is in the second only)"),
+              got.whole() && got2.whole() && got2.version != got.version);
+    }
+
+    // --- (sb4) one save at a time ----------------------------------------------------------------------------
+    auto switches = [](const Log &log) {
+        int n = 0;
+        for (const ProjectIO::SaveStepRecord &r : log)
+            n += r.step == ProjectIO::SaveStep::ProjectFileSwitched ? 1 : 0;
+        return n;
+    };
+    auto namedBeforeFirstSwitch = [](const Log &log) {
+        int n = 0;
+        for (const ProjectIO::SaveStepRecord &r : log) {
+            if (r.step == ProjectIO::SaveStep::ProjectFileSwitched)
+                break;
+            n += r.step == ProjectIO::SaveStep::ImageNamed ? 1 : 0;
+        }
+        return n;
+    };
+    {
+        Log log;
+        strokeAt(window, 6);
+        ProjectIO::setSaveLogForTest(&log);
+        window.setSaveHoldForTest(true);
+        const bool started = window.startSaveForTest();
+        strokeAt(window, 7);
+        const bool again = window.startSaveForTest(); // Ctrl+S during the save
+        const bool remembered = window.saveAgainForTest();
+        window.setSaveHoldForTest(false);
+        window.waitForSaveForTest();
+        // The remembered Ctrl+S is posted when the first save has been read: let it start, then end.
+        QElapsedTimer guard;
+        guard.start();
+        while (switches(log) < 2 && guard.elapsed() < 30000) {
+            pump(20);
+            window.waitForSaveForTest();
+        }
+        pump(200);
+        ProjectIO::setSaveLogForTest(nullptr);
+        const OnDisk got = onDisk(proj, proj);
+        check(QStringLiteral("(sb4) ONE SAVE AT A TIME: a Ctrl+S during a save starts no second save beside it - it "
+                             "is remembered, and runs once, after the first has completed (no picture of it named "
+                             "before the first save's switch), because something was drawn meanwhile; then the "
+                             "project is saved with that stroke"),
+              started && again && remembered && switches(log) == 2 && namedBeforeFirstSwitch(log) == 2
+                  && !window.isDirty() && got.whole() && got.version.layers == shown(window),
+              QStringLiteral("started %1, second Ctrl+S %2 remembered %3, switches %4, named before the first switch "
+                             "%5, dirty %6 | %7")
+                  .arg(started).arg(again).arg(remembered).arg(switches(log)).arg(namedBeforeFirstSwitch(log))
+                  .arg(window.isDirty()).arg(safesave::told(log)));
+
+        Log quiet;
+        strokeAt(window, 8);
+        ProjectIO::setSaveLogForTest(&quiet);
+        window.setSaveHoldForTest(true);
+        window.startSaveForTest();
+        window.startSaveForTest(); // remembered, with nothing drawn after it
+        window.setSaveHoldForTest(false);
+        window.waitForSaveForTest();
+        pump(300);
+        window.waitForSaveForTest();
+        ProjectIO::setSaveLogForTest(nullptr);
+        check(QStringLiteral("(sb4) control: the same count tells one save from two - with nothing drawn after the "
+                             "first Ctrl+S, the remembered one has nothing to save and no second save is made"),
+              switches(quiet) == 1 && !window.isDirty(),
+              QStringLiteral("switches %1, dirty %2").arg(switches(quiet)).arg(window.isDirty()));
+    }
+
+    // --- (sb5) the recovery copy skips its turn ------------------------------------------------------------------
+    {
+        window.setRecoveryMinutesForTest(10); // its timer far off: the checks fire its tick themselves
+        strokeAt(window, 9);
+        window.setSaveHoldForTest(true);
+        window.startSaveForTest();
+        strokeAt(window, 10); // unsaved again, during the save
+        const bool tickDuring = window.startRecoveryTickForTest();
+        const bool copyDuring = window.recoveryInFlightForTest();
+        window.setSaveHoldForTest(false);
+        window.waitForSaveForTest();
+        pump(200);
+        check(QStringLiteral("(sb5) THE RECOVERY COPY SKIPS ITS TURN WHILE A SAVE RUNS: its tick, on an unsaved project, "
+                             "starts no copy"),
+              window.isDirty() && !tickDuring && !copyDuring,
+              QStringLiteral("dirty %1, tick %2, copy in flight %3").arg(window.isDirty()).arg(tickDuring).arg(copyDuring));
+        const bool tickAfter = window.startRecoveryTickForTest();
+        const bool copied = window.waitForRecoveryCopyForTest();
+        check(QStringLiteral("(sb5) control: the same tick once the save has ended, the project still unsaved, starts "
+                             "a copy"),
+              tickAfter && copied && ProjectRecovery::hasCopy(proj),
+              QStringLiteral("tick %1, copied %2").arg(tickAfter).arg(copied));
+        window.setRecoveryMinutesForTest(0);
+        window.saveProjectForTest(proj);
+        pump(200);
+    }
+
+    // --- (sb6) what waits: "Finishing the save..." --------------------------------------------------------------
+    {
+        // Close Project: the save ends first, and with nothing changed since, closing asks nothing.
+        window.setDiscardPromptForTest([] { return MainWindow::DiscardAnswer::Cancel; });
+        const Wait closeW = waitBehind(window, proj, 11, {}, [&window] { window.closeProjectForTest(); });
+        const bool closeOn = window.onDashboardForTest() && window.discardPromptCountForTest() == 0;
+        window.loadProjectForTest(proj);
+        pump(400);
+        // Open Project: the other project opens once the save has ended.
+        window.setDiscardPromptForTest([] { return MainWindow::DiscardAnswer::Cancel; });
+        const Wait openW = waitBehind(window, proj, 12, {}, [&window, &other] { window.openProjectForTest(other); });
+        const bool openOn = QFileInfo(window.projectPathForTest()) == QFileInfo(other)
+            && window.discardPromptCountForTest() == 0;
+        window.loadProjectForTest(proj);
+        pump(400);
+        // The window's X, with a stroke drawn during the save: closing still asks about it.
+        window.setDiscardPromptForTest([] { return MainWindow::DiscardAnswer::Cancel; });
+        const Wait xW = waitBehind(window, proj, 13, [&window] { strokeAt(window, 14); }, [&window] { window.close(); });
+        const bool xOn = window.isVisible() && window.discardPromptCountForTest() == 1 && window.isDirty();
+        window.saveProjectForTest(proj);
+        pump(200);
+        check(QStringLiteral("(sb6) \"FINISHING THE SAVE...\": Close Project, Open Project and the window's X, asked "
+                             "for while a save runs, wait behind the box - up while the save is in flight, no button "
+                             "in it, Esc and a close leave it up - and never cancel the save: it completes, the box "
+                             "goes by itself, and then what was asked goes on - the project closes, the other "
+                             "opens, and closing the window asks about the stroke drawn during the save"),
+              closeW.ok() && closeOn && openW.ok() && openOn && xW.ok() && xOn,
+              QStringLiteral("close: %1, went on %2 || open: %3, went on %4 || X: %5, asked once and still open %6")
+                  .arg(closeW.note).arg(closeOn).arg(openW.note).arg(openOn).arg(xW.note).arg(xOn));
+
+        // Save As.
+        const QString asPath = root + QStringLiteral("/as/BgAs.sankotv");
+        QDir().mkpath(QFileInfo(asPath).absolutePath());
+        window.setSaveAsPathForTest([asPath] { return asPath; });
+        QAction *saveAs = fileAction(window, QStringLiteral("Save Project As..."));
+        const Wait asW = waitBehind(window, proj, 15, {}, [saveAs] {
+            if (saveAs)
+                saveAs->trigger();
+        });
+        const OnDisk asDisk = onDisk(asPath, asPath);
+        const bool asOn = saveAs && QFileInfo(window.projectPathForTest()) == QFileInfo(asPath) && asDisk.whole()
+            && asDisk.version.layers == onDisk(proj, proj).version.layers && !window.isDirty();
+        window.setSaveAsPathForTest({});
+        window.loadProjectForTest(proj);
+        pump(400);
+        // Clean Up Project Folder.
+        int cleaned = -2;
+        const Wait cleanW = waitBehind(window, proj, 16, {}, [&window, &cleaned] {
+            cleaned = window.cleanUpProjectFolderForTest(true);
+        });
+        const bool cleanOn = cleaned >= 0;
+        // Restore Previous Saved Version: the version the running save makes the previous one.
+        const Version beforeRestore = onDisk(proj, proj).version;
+        window.setRestorePromptForTest([](const QString &, const QString &, const QString &) { return true; });
+        bool restored = false;
+        const Wait restoreW = waitBehind(window, proj, 17, {}, [&window, &restored] {
+            restored = window.restorePreviousVersionForTest();
+        });
+        const bool restoredPicture = shown(window) == beforeRestore.layers;
+        const bool restoredUnsaved = window.isDirty();
+        const bool restoreOn = restored && restoredPicture && restoredUnsaved;
+        window.setRestorePromptForTest({});
+        window.markCleanForTest();
+        window.loadProjectForTest(proj);
+        pump(400);
+        check(QStringLiteral("(sb6) ...SAVE AS, CLEAN UP PROJECT FOLDER AND RESTORE PREVIOUS SAVED VERSION wait the same "
+                             "way and never cancel the save; then Save As writes the new project, Clean Up compares "
+                             "the folder with the project as now saved, and Restore opens the version that save made "
+                             "the previous one"),
+              asW.ok() && asOn && cleanW.ok() && cleanOn && restoreW.ok() && restoreOn,
+              QStringLiteral("Save As: %1, went on %2 || Clean Up: %3, went on %4 (%5) || Restore: %6, went on %7 "
+                             "(restored %8, the previous picture %9, unsaved %10)")
+                  .arg(asW.note).arg(asOn).arg(cleanW.note).arg(cleanOn).arg(cleaned).arg(restoreW.note).arg(restoreOn)
+                  .arg(restored).arg(restoredPicture).arg(restoredUnsaved));
+    }
+
+    // --- (sb7) a failure's message never opens under the pen ----------------------------------------------------
+    {
+        auto blockNext = [&window, &assets] {
+            const Panel *panel = window.scenesForTest().at(0)->panels.at(0);
+            const QString base = QStringLiteral("p_%1_l_%2.png")
+                                     .arg(ProjectIO::imageIdStem(panel->id),
+                                          ProjectIO::imageIdStem(panel->layers.at(panel->activeLayerIndex).id));
+            QString next;
+            for (int n = 1; next.isEmpty(); ++n)
+                if (!QFileInfo::exists(assets + QStringLiteral("/") + ProjectIO::imageNameVariant(base, n)))
+                    next = ProjectIO::imageNameVariant(base, n);
+            const QString blocker = assets + QStringLiteral("/") + next + QStringLiteral(".part");
+            QDir().mkpath(blocker);
+            return blocker;
+        };
+        const QString projectBytes = shaOfFile(proj);
+        const QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+        strokeAt(window, 18);
+        const bool changed = keysOf(window.scenesForTest()) != keysBefore;
+        const QString blocker = blockNext();
+        told = 0;
+        toldText.clear();
+        window.setSaveHoldForTest(true);
+        const bool started = window.startSaveForTest();
+        // A stroke begun and held: the pen is down when the save's result is read.
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        const QTransform t = canvas ? canvas->viewTransformForTest() : QTransform();
+        if (canvas) {
+            sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(200, 420)), Qt::LeftButton);
+            sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(240, 440)), Qt::LeftButton);
+        }
+        const bool penDown = canvas && canvas->inputHeld();
+        window.setSaveHoldForTest(false);
+        const bool ended = window.waitForSaveForTest();
+        pump(600); // what a message told under the pen would need to show itself
+        const int toldWhileDown = told;
+        const bool waiting = window.saveFailureWaitingForTest();
+        const QString editorWord = window.savedIndicatorForTest(), barWord = window.recoveryStatusForTest();
+        {
+            // A picture of the bottom bar saying it, when asked for by hand (never by the gate).
+            const QString pictures = qEnvironmentVariable("SANKO_SAFESAVE_PICTURES");
+            if (!pictures.isEmpty())
+                if (auto *word = window.findChild<QLabel *>(QStringLiteral("recoveryStatus")))
+                    if (QWidget *bar = word->parentWidget())
+                        bar->grab().save(pictures + QStringLiteral("/bottom_bar_not_saved.png"));
+        }
+        if (canvas)
+            sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(280, 460)), Qt::LeftButton);
+        QElapsedTimer guard;
+        guard.start();
+        while (told == 0 && guard.elapsed() < 15000)
+            pump(50);
+        const bool toldAfter = told == 1 && toldText.contains(QStringLiteral("This project was NOT saved"));
+        check(QStringLiteral("(sb7) A FAILURE'S MESSAGE NEVER OPENS UNDER THE PEN: a save that fails in the background "
+                             "while a stroke is being drawn says nothing until the stroke has ended - \"NOT saved\" in "
+                             "red in both places meanwhile - and then says it once; the work stays unsaved and the "
+                             "project file as it was"),
+              changed && started && penDown && ended && toldWhileDown == 0 && waiting
+                  && editorWord == QStringLiteral("NOT saved") && barWord == QStringLiteral("NOT saved") && toldAfter
+                  && window.isDirty() && shaOfFile(proj) == projectBytes,
+              QStringLiteral("stroke changed it %1, started %2, pen down %3, ended %4, told while down %5, waiting %6, "
+                             "words '%7' / '%8', told after %9 ('%10')")
+                  .arg(changed).arg(started).arg(penDown).arg(ended).arg(toldWhileDown).arg(waiting)
+                  .arg(editorWord, barWord).arg(told).arg(toldText.left(160).simplified()));
+        // Control: the same failure with no stroke in flight is told as soon as the save's result is read.
+        told = 0;
+        strokeAt(window, 19);
+        QDir(blocker).removeRecursively();
+        const QString blocker2 = blockNext();
+        window.startSaveForTest();
+        window.waitForSaveForTest();
+        const int toldAtOnce = told;
+        QDir(blocker2).removeRecursively();
+        check(QStringLiteral("(sb7) control: the same failure with no stroke in flight is told as soon as the save's "
+                             "result is read - the check sees a message when one is told"),
+              toldAtOnce == 1 && window.isDirty(), QStringLiteral("told %1").arg(toldAtOnce));
+        QDir(blocker).removeRecursively();
+        window.saveProjectForTest(proj);
+        pump(200);
+    }
+
+    // --- (sb8) - (sb10) the short retry -------------------------------------------------------------------------
+    {
+        // (sb8) held by another program, and let go during the retry.
+        const QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+        const OnDisk before = onDisk(proj, proj);
+        strokeAt(window, 20);
+        const bool changed = keysOf(window.scenesForTest()) != keysBefore;
+        const Version want = inWindow(window.scenesForTest(), keysBefore, before.version);
+        const QString projectBytes = shaOfFile(proj);
+        Holder holder(proj, root + QStringLiteral("/holder1"), false);
+        // Control first: one try, as the writer was before this step.
+        ProjectIO::setNameRetryOffForTest(true);
+        told = 0;
+        toldText.clear();
+        window.startSaveForTest();
+        window.waitForSaveForTest();
+        pump(200);
+        const int triesC = window.lastSaveTriesForTest();
+        const bool heldC = window.lastSaveHeldForTest();
+        const bool failedC = window.isDirty() && told == 1 && shaOfFile(proj) == projectBytes;
+        ProjectIO::setNameRetryOffForTest(beforeStep2);
+        check(QStringLiteral("(sb8) control: the hold is real - with one try at the name, as the writer was before this "
+                             "step, the same save fails at once, refused as a held file, the work unsaved and the "
+                             "project file as it was"),
+              changed && holder.held && triesC == 1 && heldC && failedC,
+              QStringLiteral("stroke changed it %1, held %2, tries %3, refused as held %4, failed %5 ('%6')").arg(changed)
+                  .arg(holder.held).arg(triesC).arg(heldC).arg(failedC).arg(toldText.left(120).simplified()));
+        int calls = 0;
+        Qt::HANDLE where = nullptr;
+        QString which;
+        ProjectIO::setNameRetryHookForTest([&](const QString &file, int made) {
+            ++calls;
+            where = QThread::currentThreadId();
+            which = QFileInfo(file).fileName();
+            if (made == 1)
+                holder.release(); // another program lets go while the writer waits
+        });
+        told = 0;
+        window.startSaveForTest();
+        window.waitForSaveForTest();
+        pump(200);
+        ProjectIO::setNameRetryHookForTest({});
+        const OnDisk got = onDisk(proj, proj);
+        check(QStringLiteral("(sb8) THE SHORT RETRY: A PROJECT FILE ANOTHER PROGRAM HOLDS, LET GO DURING THE RETRY: the "
+                             "save is refused the name, waits and tries again - on the worker, not the UI thread - "
+                             "and at its second try completes, saying nothing; the project saved, its file the "
+                             "picture of the moment Ctrl+S was pressed. Counted by tries, never by the clock"),
+              holder.held && !window.isDirty() && window.lastSaveTriesForTest() == 2 && !window.lastSaveHeldForTest()
+                  && calls == 1 && where != nullptr && where != ui && which == QFileInfo(proj).fileName() && told == 0
+                  && got.whole() && got.version == want,
+              QStringLiteral("held %1, saved %2, tries %3, held at the end %4, retries %5 on the UI thread %6 of %7, "
+                             "told %8, on disk %9 the picture %10")
+                  .arg(holder.held).arg(!window.isDirty()).arg(window.lastSaveTriesForTest())
+                  .arg(window.lastSaveHeldForTest()).arg(calls).arg(where == ui).arg(which).arg(told).arg(got.state())
+                  .arg(got.version == want));
+    }
+    {
+        // (sb9) held to the end.
+        const QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+        strokeAt(window, 21);
+        const bool changed = keysOf(window.scenesForTest()) != keysBefore;
+        const QString projectBytes = shaOfFile(proj), previousBytes = shaOfFile(previousFile);
+        Holder holder(proj, root + QStringLiteral("/holder2"), false);
+        int calls = 0;
+        bool offUi = true;
+        ProjectIO::setNameRetryHookForTest([&](const QString &, int) {
+            ++calls;
+            offUi = offUi && QThread::currentThreadId() != ui;
+        });
+        told = 0;
+        toldText.clear();
+        window.startSaveForTest();
+        window.waitForSaveForTest();
+        pump(200);
+        ProjectIO::setNameRetryHookForTest({});
+        const int tries = window.lastSaveTriesForTest();
+        const bool held = window.lastSaveHeldForTest();
+        const bool dirty = window.isDirty();
+        const QString editorWord = window.savedIndicatorForTest(), barWord = window.recoveryStatusForTest();
+        const bool allOld = shaOfFile(proj) == projectBytes && shaOfFile(previousFile) == previousBytes;
+        const bool partLeft = QFileInfo::exists(proj + QStringLiteral(".part"));
+        const bool released = holder.release();
+        const bool savedAfter = window.saveProjectForTest(proj);
+        pump(200);
+        check(QStringLiteral("(sb9) THE SHORT RETRY: A PROJECT FILE HELD TO THE END: the save tries the name 21 times in "
+                             "all, on the worker, then fails as before - \"NOT saved\" in red in both places, the "
+                             "message saying the file may be in use by another program and that SankoTV tried again "
+                             "for about 2 seconds, the work unsaved, the project file and the previous saved version "
+                             "as they were, nothing left half made; let go, the next save completes"),
+              changed && holder.held && tries == ProjectIO::kNameTries && held && calls == ProjectIO::kNameTries - 1
+                  && offUi && dirty && editorWord == QStringLiteral("NOT saved")
+                  && barWord == QStringLiteral("NOT saved") && told == 1
+                  && toldText.contains(QStringLiteral("may be in use by another program"))
+                  && toldText.contains(QStringLiteral("about 2 seconds")) && allOld && !partLeft && released
+                  && savedAfter && !window.isDirty(),
+              QStringLiteral("stroke changed it %1, held %2, tries %3 (of %4), held at the end %5, retries %6 off the UI "
+                             "thread %7, unsaved %8, words '%9' / '%10', told %11, all as it was %12, part left %13, let "
+                             "go %14, saved then %15 | '%16'")
+                  .arg(changed).arg(holder.held).arg(tries).arg(ProjectIO::kNameTries).arg(held).arg(calls).arg(offUi)
+                  .arg(dirty).arg(editorWord, barWord).arg(told).arg(allOld).arg(partLeft).arg(released)
+                  .arg(savedAfter).arg(toldText.simplified().left(260)));
+    }
+    {
+        // (sb10) a project file another program will not even let be read, for a moment.
+        const QVector<QVector<qint64>> keysBefore = keysOf(window.scenesForTest());
+        const OnDisk before = onDisk(proj, proj);
+        strokeAt(window, 22);
+        const bool changed = keysOf(window.scenesForTest()) != keysBefore;
+        const Version want = inWindow(window.scenesForTest(), keysBefore, before.version);
+        Holder holder(proj, root + QStringLiteral("/holder3"), true);
+        int calls = 0;
+        QString which;
+        ProjectIO::setNameRetryHookForTest([&](const QString &file, int made) {
+            ++calls;
+            which = QFileInfo(file).fileName();
+            if (made == 1)
+                holder.release();
+        });
+        told = 0;
+        window.startSaveForTest();
+        window.waitForSaveForTest();
+        pump(200);
+        ProjectIO::setNameRetryHookForTest({});
+        const OnDisk got = onDisk(proj, proj);
+        const OnDisk previous = onDisk(previousFile, proj);
+        check(QStringLiteral("(sb10) THE SHORT RETRY: A PROJECT FILE THAT CANNOT EVEN BE READ FOR A MOMENT: the save "
+                             "waits for it, reads it, and keeps it as the previous saved version - whole, the project "
+                             "as it was saved before - so the version it replaces is not lost; the save completes"),
+              changed && holder.held && !window.isDirty() && calls == 1 && which == QFileInfo(proj).fileName()
+                  && window.lastSavePreviousKeptForTest() && previous.whole() && previous.version == before.version
+                  && got.whole() && got.version == want && told == 0,
+              QStringLiteral("stroke changed it %1, held %2, saved %3, retries %4 (%5), previous kept %6 whole %7 the one "
+                             "before %8, on disk the picture %9, told %10")
+                  .arg(changed).arg(holder.held).arg(!window.isDirty()).arg(calls).arg(which)
+                  .arg(window.lastSavePreviousKeptForTest()).arg(previous.whole()).arg(previous.version == before.version)
+                  .arg(got.version == want).arg(told));
+    }
+
+    check(QStringLiteral("(sb) no box opened that a check did not expect (\"Finishing the save...\" is counted apart)"),
+          boxes.others.isEmpty(),
+          QStringLiteral("%1 other(s): %2; \"Finishing the save...\" %3 time(s)").arg(boxes.others.size())
+              .arg(boxes.others.join(QStringLiteral(" || "))).arg(boxes.finishing));
+
+    window.setBlockedPromptForTest({});
+    window.setDiscardPromptForTest({});
+    window.setSaveOnUiThreadForTest(false);
+    ProjectIO::setNameRetryOffForTest(false);
+    ProjectIO::setNameRetryHookForTest({});
+    window.setRecoveryMinutesForTest(minutesBefore);
+    {
+        QSettings s = sankoSettings();
+        s.remove(QStringLiteral("saving/keepPrevious")); // as the family found it
+    }
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -36025,6 +36892,10 @@ int main(int argc, char **argv)
     // itself, to be killed in the middle of a save. It works in the family's scratch as the
     // family left it - so the scratch is not cleared - and runs nothing of the family.
     const bool victim = qEnvironmentVariableIsSet("SANKO_SAFESAVE_VICTIM");
+    // THE PROGRAM THAT HOLDS A FILE ((sb8)-(sb10), 2026-11-23): this program started by the pass
+    // to hold one file open; it works in the family's scratch as the family left it.
+    if (qEnvironmentVariableIsSet("SANKO_SAFESAVE_HOLDER"))
+        return safesave::runHolder();
     if (!victim)
         QDir(scratch).removeRecursively();
     QDir().mkpath(scratch + QStringLiteral("/settings"));
@@ -36051,12 +36922,24 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("bgsave")) {
+        runBackgroundSavePass(scratch); // saving step 2 alone (2026-11-23)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("safesave")) {
         // The safe save (saving step 1), with the passes whose checks it changed: the
         // incremental save (sv), the save that cannot finish (i), the stable ids and
         // Clean Up (n), the recovery copy (r), the audio's folder (aq) and the blocked
         // write (cf).
         runSafeSavePass(scratch);
+        // (Saving step 2, 2026-11-23) the save in the background, and the pass whose control
+        // it changed: (r9). (Its own slice, "bgsave", runs it alone.)
+        runBackgroundSavePass(scratch);
+        runRecoveryOffThreadPass(scratch);
         runIncrementalSavePass(scratch);
         runSaveFailurePass(scratch);
         runStableIdsPass(scratch);
@@ -36300,6 +37183,7 @@ int main(int argc, char **argv)
     runSaveFailurePass(scratch);
     runIncrementalSavePass(scratch);
     runSafeSavePass(scratch); // saving step 1 (2026-11-23)
+    runBackgroundSavePass(scratch); // saving step 2 (2026-11-23)
     runRecentThumbnailSourcePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runNewProjectPromptPass(a);

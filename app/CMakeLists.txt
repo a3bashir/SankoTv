@@ -421,6 +421,12 @@ target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets
     # its clicks at the window-system level, as a real click arrives.
     Qt6::GuiPrivate)
 sanko_link_media_foundation(SankoProjectLifecycle)
+# (2026-11-23, saving step 2) The family's one source file passed MSVC's limit of
+# sections in an object file (error C1128); /bigobj lifts it. A compiler switch,
+# nothing linked: the program and the app are unchanged by it.
+if(MSVC)
+    target_compile_options(SankoProjectLifecycle PRIVATE /bigobj)
+endif()
 
 # Permanent CAMERA family (tests/CameraTest.cpp; the shot camera's Phase 1A,
 # 2026-10-25): the neutral pins recorded before the camera existed (MP4
