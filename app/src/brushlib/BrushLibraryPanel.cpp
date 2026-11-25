@@ -10,10 +10,15 @@
 #include <QDialog>
 #include <QFileDialog>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QTimer>
+#include <QWindow>
+#include <QBackingStore>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -98,6 +103,50 @@ protected:
 private:
     QString m_name;
     bool m_active = false;
+};
+
+// --- The name field of RENAME IN PLACE (2026-11-24; the user's word: "its name becomes
+// editable right in the Brush Library, with the whole name selected ... Enter confirms, Esc
+// cancels and keeps the old name, and a click anywhere else confirms, as in Windows Explorer").
+// Enter and Esc are its own; losing the keyboard - Tab, another window - confirms, as Explorer
+// does, but not to its own context menu (Cut, Copy, Paste).
+class NameEditor : public QLineEdit
+{
+public:
+    explicit NameEditor(QWidget *parent)
+        : QLineEdit(parent)
+    {
+    }
+    std::function<void()> onConfirm;
+    std::function<void()> onCancel;
+
+protected:
+    void keyPressEvent(QKeyEvent *e) override
+    {
+        if ((e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) && onConfirm) {
+            onConfirm();
+            return;
+        }
+        if (e->key() == Qt::Key_Escape && onCancel) {
+            onCancel();
+            return;
+        }
+        QLineEdit::keyPressEvent(e);
+    }
+    void focusInEvent(QFocusEvent *e) override
+    {
+        m_hadFocus = true;
+        QLineEdit::focusInEvent(e);
+    }
+    void focusOutEvent(QFocusEvent *e) override
+    {
+        QLineEdit::focusOutEvent(e);
+        if (m_hadFocus && e->reason() != Qt::PopupFocusReason && onConfirm)
+            onConfirm();
+    }
+
+private:
+    bool m_hadFocus = false;
 };
 
 // --- Brush row (Figma rows 245:86..119: r10 px16 py12 gap8; name Bold 13
@@ -230,6 +279,43 @@ public:
     std::function<void()> onResetClicked;
     std::function<void(const QPoint &)> onContextMenu;
 
+    // RENAME IN PLACE (2026-11-24): the name becomes a field where it is drawn, in the
+    // row's own font, with the whole name selected.
+    NameEditor *startEditing()
+    {
+        if (m_editor)
+            return m_editor;
+        m_editor = new NameEditor(this);
+        m_editor->setObjectName(QStringLiteral("brushNameEditor"));
+        QFont f = font();
+        f.setFamily(QStringLiteral("Inter"));
+        f.setPixelSize(13);
+        f.setWeight(QFont::Bold);
+        m_editor->setFont(f);
+        m_editor->setStyleSheet(SankoTheme::themed(
+            "QLineEdit { background-color: #16161a; color: #ffffff; border: 1px solid %ACCENT%;"
+            " border-radius: 4px; padding: 0px 3px; selection-background-color: %ACCENT%;"
+            " selection-color: #ffffff; }"));
+        m_editor->setText(m_name);
+        m_editor->setGeometry(nameRect().adjusted(-4, -4, 4, 4));
+        m_editor->selectAll();
+        m_editor->show();
+        update();
+        return m_editor;
+    }
+    void stopEditing()
+    {
+        if (!m_editor)
+            return;
+        m_editor->onConfirm = nullptr;
+        m_editor->onCancel = nullptr;
+        m_editor->hide();
+        m_editor->deleteLater();
+        m_editor = nullptr;
+        update();
+    }
+    NameEditor *editor() const { return m_editor; }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -276,14 +362,18 @@ protected:
         }
         const QString elided =
             QFontMetrics(f).elidedText(m_name, Qt::ElideRight, nameW);
-        p.drawText(QRect(16 + markW, 12, nameW, 16),
-                   Qt::AlignVCenter | Qt::AlignLeft, elided);
+        // (Rename in place, 2026-11-24: while the name is being typed the field stands
+        // where it is drawn - nameRect() - and the name and its dot are left to it.)
+        if (!m_editor)
+            p.drawText(QRect(16 + markW, 12, nameW, 16),
+                       Qt::AlignVCenter | Qt::AlignLeft, elided);
         if (m_dirty) {
             // White dot right after the name: "you are no longer on stock".
             const int textW = QFontMetrics(f).horizontalAdvance(elided);
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(Qt::white));
-            p.drawEllipse(QRectF(16 + textW + 6, 17, 6, 6));
+            if (!m_editor)
+                p.drawEllipse(QRectF(16 + textW + 6, 17, 6, 6));
             // Reset chip.
             const QRect chip = resetChipRect();
             p.setBrush(QColor(255, 255, 255, m_selected ? 46 : 28));
@@ -367,6 +457,17 @@ protected:
 private:
     static constexpr int kResetChipW = 42;
     QRect swatchRect() const { return QRect(16, 36, width() - 32, 26); }
+    // Where the name is drawn (paintEvent's own sums): the field of rename in place.
+    QRect nameRect() const
+    {
+        const int favW = m_favourite ? 14 : 0;
+        const int sizeW = 44;
+        const int resetW = m_dirty ? kResetChipW + 8 : 0;
+        const int markW = m_overrideMark ? 14 : 0;
+        const int nameW = width() - 32 - sizeW - favW - resetW - markW - (m_dirty ? 10 : 0);
+        return QRect(16 + markW, 12, qMax(nameW, 80), 16);
+    }
+    NameEditor *m_editor = nullptr; // rename in place, while the name is typed
     QRect resetChipRect() const
     {
         const int favW = m_favourite ? 14 : 0;
@@ -674,6 +775,14 @@ int BrushLibraryPanel::overrideMarkForTest(const QString &presetId) const
     return -1;
 }
 
+QWidget *BrushLibraryPanel::rowForTest(const QString &presetId) const
+{
+    for (BrushRow *row : m_brushRows)
+        if (row->presetId() == presetId)
+            return row;
+    return nullptr;
+}
+
 int BrushLibraryPanel::rowSizeLabelForTest(const QString &presetId) const
 {
     for (BrushRow *row : m_brushRows)
@@ -708,13 +817,19 @@ void BrushLibraryPanel::showRowMenu(BrushRow *row, const QPoint &globalPos)
     const QString id = preset->id;
     QMenu menu(this);
     menu.addAction(tr("Rename Brush"), [this, id] {
-        const BrushPreset *p = m_model->preset(id);
-        bool ok = false;
-        const QString name = QInputDialog::getText(
-            this, tr("Rename Brush"), tr("Name:"), QLineEdit::Normal,
-            p ? p->name : QString(), &ok);
-        if (ok)
-            m_model->renamePreset(id, name);
+        if (s_renameByDialogForTest) {
+            // The box this replaced (2026-11-24), for the checks' red run only.
+            const BrushPreset *p = m_model->preset(id);
+            bool ok = false;
+            const QString name = QInputDialog::getText(
+                this, tr("Rename Brush"), tr("Name:"), QLineEdit::Normal,
+                p ? p->name : QString(), &ok);
+            if (ok)
+                m_model->renamePreset(id, name);
+            return;
+        }
+        // RENAME IN PLACE - once the menu has gone.
+        QTimer::singleShot(0, this, [this, id] { beginRename(id); });
     });
     menu.addAction(tr("Duplicate Brush"),
                    [this, id] { m_model->duplicatePreset(id); });
@@ -761,12 +876,165 @@ void BrushLibraryPanel::showRowMenu(BrushRow *row, const QPoint &globalPos)
     menu.exec(globalPos);
 }
 
+// --- RENAME IN PLACE (2026-11-24) --------------------------------------------------------
+// Rename Brush opened a box; with it the Library hid, and four times in hand test S2 the
+// SankoTV window went behind another program. Now the brush's name becomes a field right in
+// the Library, the whole name selected so typing replaces it. Enter confirms; Esc cancels and
+// keeps the old name; a click anywhere else confirms, as in Windows Explorer - and so does the
+// Library closing, or the keyboard going to another window. An empty name keeps the old one,
+// as the model's own rule has it (renamePreset: trimmed, never empty, the user's brush written
+// to disk first). The Library stays open meanwhile, and takes the keyboard for as long as the
+// name is typed (it takes none otherwise: FloatingToolWindow.h); after, the SankoTV window has
+// it back.
+bool BrushLibraryPanel::s_renameByDialogForTest = false;
+bool BrushLibraryPanel::s_wholePictureOffForTest = false;
+
+// THE LIBRARY STAYS ON SCREEN WHEN ITS WINDOW'S FLAGS CHANGE (hand test S3, 2026-11-24). The Library
+// is a see-through window (WA_TranslucentBackground: a layered window on Windows). Changing one flag
+// of it has Qt set all of its window styles again, and setting them takes the layered style off and
+// puts it back - which makes Windows forget the window's picture. Qt then sends the screen only what
+// has changed since: the row whose name became a field. The Library went from the screen, all but
+// that row, floating over the canvas (and after Esc or Enter, its edges stayed gone). So the whole
+// picture is sent again at once, from what is already drawn - and drawn again on the next frame.
+void BrushLibraryPanel::takesFocus(bool on)
+{
+    QWindow *w = windowHandle();
+    if (!w)
+        return;
+    w->setFlag(Qt::WindowDoesNotAcceptFocus, !on);
+    if (s_wholePictureOffForTest)
+        return;
+    if (QBackingStore *store = backingStore())
+        store->flush(QRegion(QRect(QPoint(0, 0), size())), w);
+    update();
+}
+
+namespace {
+// A press anywhere but in the field (or in a menu it opened): `onElsewhere` runs. Never takes
+// the press - it goes on to where it was going.
+class PressWatch : public QObject
+{
+public:
+    PressWatch(QWidget *field, std::function<void()> onElsewhere)
+        : m_field(field)
+        , m_onElsewhere(std::move(onElsewhere))
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *receiver, QEvent *event) override
+    {
+        const QEvent::Type t = event->type();
+        if (t != QEvent::MouseButtonPress && t != QEvent::MouseButtonDblClick && t != QEvent::TabletPress
+            && t != QEvent::NonClientAreaMouseButtonPress)
+            return false;
+        if (!receiver->isWidgetType())
+            return false;
+        for (const QWidget *w = static_cast<QWidget *>(receiver); w; w = w->parentWidget())
+            if (w == m_field)
+                return false; // in the field, or its own context menu
+        // THE PEN'S TAP IN THE FIELD IS IN THE FIELD (re-test R1, 2026-11-24: four renames ended the
+        // moment the pen tapped the name field). A line edit takes no pen press, so Qt hands the
+        // same press on to the row under it, and on up - each a press this filter sees, on a widget
+        // that is not the field. Where the press is decides, not which widget it is handed to.
+        if (m_field && m_field->isVisible()) {
+            const auto *press = static_cast<QSinglePointEvent *>(event);
+            if (m_field->rect().contains(m_field->mapFromGlobal(press->globalPosition()).toPoint()))
+                return false;
+        }
+        if (m_onElsewhere)
+            m_onElsewhere();
+        return false;
+    }
+
+private:
+    QPointer<QWidget> m_field;
+    std::function<void()> m_onElsewhere;
+};
+} // namespace
+
+void BrushLibraryPanel::beginRename(const QString &presetId)
+{
+    finishRename(true); // one at a time
+    BrushRow *row = nullptr;
+    for (BrushRow *r : m_brushRows)
+        if (r->presetId() == presetId)
+            row = r;
+    const BrushPreset *preset = m_model->preset(presetId);
+    if (!row || !preset || !isVisible())
+        return;
+    m_renamingId = presetId;
+    m_renameOld = preset->name;
+    // This window takes the keyboard while the name is typed.
+    setHoldsActivation(true);
+    takesFocus(true);
+    NameEditor *field = row->startEditing();
+    field->onConfirm = [this] { QTimer::singleShot(0, this, [this] { finishRename(true); }); };
+    field->onCancel = [this] { QTimer::singleShot(0, this, [this] { finishRename(false); }); };
+    m_pressWatch = new PressWatch(field, [this] { finishRename(true); });
+    qApp->installEventFilter(m_pressWatch);
+    activateWindow();
+    field->setFocus(Qt::OtherFocusReason);
+    field->selectAll();
+}
+
+void BrushLibraryPanel::finishRename(bool keep)
+{
+    if (m_renamingId.isEmpty())
+        return;
+    const QString id = m_renamingId;
+    m_renamingId.clear();
+    if (m_pressWatch) {
+        qApp->removeEventFilter(m_pressWatch);
+        m_pressWatch->deleteLater();
+        m_pressWatch = nullptr;
+    }
+    BrushRow *row = nullptr;
+    for (BrushRow *r : m_brushRows)
+        if (r->presetId() == id)
+            row = r;
+    const QString typed = row && row->editor() ? row->editor()->text() : QString();
+    if (row)
+        row->stopEditing();
+    takesFocus(false);
+    setHoldsActivation(false);
+    // The keyboard goes back to the SankoTV window - unless the artist went to another
+    // program, or a box has it.
+    if (QApplication::activeWindow() == this && !QApplication::activeModalWidget())
+        if (QWidget *host = fileDialogOwner(); host != this)
+            host->activateWindow();
+    // Renamed through the model's own rules - after this call, when the field is gone: the
+    // model's change rebuilds every row.
+    if (keep && !typed.trimmed().isEmpty() && typed.trimmed() != m_renameOld)
+        QTimer::singleShot(0, this, [this, id, typed] { m_model->renamePreset(id, typed); });
+}
+
+QLineEdit *BrushLibraryPanel::renameFieldForTest() const
+{
+    for (BrushRow *r : m_brushRows)
+        if (r->editor())
+            return r->editor();
+    return nullptr;
+}
+
+// THE OWNER OF WINDOWS' OWN FILE DIALOGS (2026-11-24): the app's window, not this panel.
+// Windows gives activation back to a dialog's owner when it closes; a floating panel holding it
+// is the start of the window going behind another program (FloatingToolWindow.h). A click in
+// such a dialog never reaches the Library's click-away rule, so nothing else changes. The
+// Library's own boxes keep the panel as their parent: a click in one of them is a click inside
+// the Library.
+QWidget *BrushLibraryPanel::fileDialogOwner() const
+{
+    QWidget *host = parentWidget() ? parentWidget()->window() : nullptr;
+    return host ? host : const_cast<BrushLibraryPanel *>(this);
+}
+
 void BrushLibraryPanel::showChevronMenu(const QPoint &globalPos)
 {
     QMenu menu(this);
     menu.addAction(tr("Export Brushes..."), [this] {
         const QString path = QFileDialog::getSaveFileName(
-            this, tr("Export Brushes"),
+            fileDialogOwner(), tr("Export Brushes"),
             m_model->libraryName() + QStringLiteral(".sankobrushset"),
             tr("SankoTV Brush Set (*.sankobrushset)"));
         if (!path.isEmpty())
@@ -791,7 +1059,7 @@ void BrushLibraryPanel::showChevronMenu(const QPoint &globalPos)
 void BrushLibraryPanel::importBrushes()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Import Brushes"), QString(),
+        fileDialogOwner(), tr("Import Brushes"), QString(),
         tr("All Supported Brushes (*.sankobrush *.sankobrushset *.abr);;"
            "SankoTV Brushes (*.sankobrush *.sankobrushset);;"
            "Photoshop Brushes (*.abr)"));
@@ -1164,6 +1432,7 @@ void BrushLibraryPanel::showEvent(QShowEvent *event)
 
 void BrushLibraryPanel::hideEvent(QHideEvent *event)
 {
+    finishRename(true); // the Library closing confirms a name being typed, as a click away does
     FloatingToolWindow::hideEvent(event);
     saveGeometry();
     emit visibilityChanged(false);

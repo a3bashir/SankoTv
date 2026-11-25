@@ -14,6 +14,10 @@
 
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
+
 // ONE shared event filter for every FloatingToolWindow (present and future):
 // watches each registered window's anchor and the anchor's top-level window,
 // repositioning on Move/Resize and re-deriving effective visibility on
@@ -210,7 +214,57 @@ QHash<QWidget *, QVector<QVector<SuppressedBar>>> &suppressedBars()
 // future modal-surface window inherits it by setting the role, and
 // cannot re-wire itself into the defect.
 bool g_suppressionWalking = false;
+
+// A FLOATING WINDOW NEVER HOLDS ACTIVATION (2026-11-24; the header). Off only for the
+// checks' red run.
+bool g_activationGuard = true;
+
+// Whether `w` is the window that holds activation - as Windows has it, which Qt hears of a
+// moment later (the Library still "active" in Qt as it hid, in the hand test's recording).
+bool holdsActivationNow(const QWidget *w)
+{
+    if (!w->isVisible())
+        return false;
+    if (QApplication::activeWindow() == w)
+        return true;
+#ifdef Q_OS_WIN
+    const HWND h = reinterpret_cast<HWND>(w->internalWinId());
+    return h && (GetForegroundWindow() == h || GetActiveWindow() == h);
+#else
+    return false;
+#endif
+}
 } // namespace
+
+void FloatingToolWindow::setActivationGuardForTest(bool on)
+{
+    g_activationGuard = on;
+}
+
+// Posted, and posted again while a box or a menu is still up (a file dialog of Windows'
+// closes before Qt lets go of its modal state): the anchor's window takes activation back
+// once nothing is in the way - if this window still holds it.
+void FloatingToolWindow::handBackActivation()
+{
+    QTimer::singleShot(m_handBackTries == 0 ? 0 : 50, this, [this] {
+        const bool still = QApplication::activeWindow() == this;
+        if (m_holdsActivation || !g_activationGuard || !still) {
+            m_handBackPending = false;
+            m_handBackTries = 0;
+            return;
+        }
+        if ((QApplication::activeModalWidget() || QApplication::activePopupWidget()) && ++m_handBackTries < 200) {
+            handBackActivation(); // looked at again in a moment
+            return;
+        }
+        m_handBackPending = false;
+        m_handBackTries = 0;
+        QWidget *win = m_anchor ? m_anchor->window() : nullptr;
+        if (win && win != this && win->isVisible() && !QApplication::activeModalWidget()
+            && !QApplication::activePopupWidget())
+            win->activateWindow();
+    });
+}
 
 void FloatingToolWindow::suppressFloatingBars(
     QWidget *anchor, const QVector<FloatingToolWindow *> &except)
@@ -223,6 +277,24 @@ void FloatingToolWindow::suppressFloatingBars(
     // future bar that inherits this class.
     const QVector<FloatingToolWindow *> all =
         FloatingToolWindowManager::instance()->windows();
+    // ACTIVATION GOES TO THE BOX FIRST (2026-11-24). Hiding the window that holds
+    // activation makes Windows activate the next window it can; with a box up the
+    // SankoTV window is disabled, so that was another program's, which came up over
+    // SankoTV and stayed there. The box takes activation before anything is hidden -
+    // the anchor's window when no box is showing.
+    if (g_activationGuard) {
+        bool holder = false;
+        for (FloatingToolWindow *w : all)
+            if (w->m_anchor == anchor && !except.contains(w) && holdsActivationNow(w))
+                holder = true;
+        if (holder) {
+            QWidget *to = QApplication::activeModalWidget();
+            if (!to || !to->isWindow() || !to->isVisible())
+                to = anchor->window();
+            if (to)
+                to->activateWindow();
+        }
+    }
     g_suppressionWalking = true; // holder actions are inert for the walk
     g_batchingPlacement = true;  // one re-pack at the end, not one per bar
     for (FloatingToolWindow *w : all) {
@@ -521,6 +593,14 @@ bool FloatingToolWindow::isDragBackgroundAt(const QPoint &pos) const
 // leaves the bar in a valid position, exactly as a completed drag would.
 bool FloatingToolWindow::event(QEvent *event)
 {
+    // ACTIVATION GOES BACK TO THE ANCHOR'S WINDOW (2026-11-24; the header): Windows
+    // makes a floating window the active one when a box it owned closes. As soon as no
+    // box or menu is up, the anchor's window takes it back - and with it the keys.
+    if (event->type() == QEvent::WindowActivate && g_activationGuard && !m_holdsActivation
+        && (windowFlags() & Qt::WindowDoesNotAcceptFocus) && !m_handBackPending) {
+        m_handBackPending = true;
+        handBackActivation();
+    }
     if (m_managed
         && (event->type() == QEvent::WindowDeactivate
             || event->type() == QEvent::FocusOut)

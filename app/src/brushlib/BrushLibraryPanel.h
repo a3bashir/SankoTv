@@ -8,6 +8,7 @@
 #include <QPointer>
 
 class QLabel;
+class QLineEdit;
 class QMenu;
 class QScrollArea;
 class QVBoxLayout;
@@ -63,6 +64,17 @@ public:
     // How many times the row list was rebuilt (2026-10-24): a second open
     // of an unchanged list must add nothing.
     int rebuildCountForTest() const { return m_rebuildCount; }
+    // (2026-11-24) The row a brush is shown in (null: not in the list), so the gate can
+    // right-click it as the artist does; and the model behind the panel.
+    QWidget *rowForTest(const QString &presetId) const;
+    BrushLibraryModel *modelForTest() const { return m_model; }
+    // RENAME IN PLACE (2026-11-24; the .cpp): the name field while a name is typed (null
+    // otherwise); and, for the checks' red run only, Rename Brush as the box it was.
+    QLineEdit *renameFieldForTest() const;
+    static void setRenameByDialogForTest(bool on) { s_renameByDialogForTest = on; }
+    // ...and the Library's whole picture NOT sent again after its window's flags change (the
+    // red run of (rn6) only: the Library as it went from the screen in hand test S3).
+    static void setWholePictureOffForTest(bool off) { s_wholePictureOffForTest = off; }
 
     // --- Brush-button anchoring -------------------------------------------
     // The panel opens attached to the Brush BUTTON: directly below it when
@@ -139,6 +151,15 @@ private:
     void showRowMenu(BrushRow *row, const QPoint &globalPos);
     void showChevronMenu(const QPoint &globalPos);
     void importBrushes();
+    QWidget *fileDialogOwner() const; // the app's window (2026-11-24; the .cpp)
+    void beginRename(const QString &presetId); // rename in place (2026-11-24)
+    void finishRename(bool keep);              // keep: Enter, a click away; else Esc
+    QString m_renamingId;                      // the brush whose name is being typed
+    QString m_renameOld;
+    QObject *m_pressWatch = nullptr;           // a click anywhere else confirms
+    void takesFocus(bool on);                  // the window's "takes no focus", lifted or put back
+    static bool s_renameByDialogForTest;
+    static bool s_wholePictureOffForTest;
     void showImportReport(const QString &report);
     void updateImportedRow(); // sidebar row shown only once imports exist
     void saveGeometry() const;

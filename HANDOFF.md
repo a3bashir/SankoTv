@@ -1,5 +1,167 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-25 (morning): RENAME BRUSH COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1 (ITS STEPS 13-14 WERE RE-TEST R2) - THE WINDOW NEVER GOES BEHIND ANOTHER PROGRAM, RENAME IN PLACE, THE LIBRARY STAYS ON SCREEN, A PEN TAP IN THE NAME FIELD KEEPS THE FIELD; GATED ALONE IN A SCRATCH WORKTREE (GATE RN), GREEN IN BOTH BUILDS
+THE USER (2026-11-25, about 08:5x, pasted): "Hand test I1 done. Read every Dev Recorder session made after 22:36 on 24
+November, oldest first. ... If it ran the right build and nothing failed, commit and push Rename Brush first, gated
+on its own in a scratch worktree, then batch I-1 on top of it, each with its HANDOFF notes and matching its own hash
+list, git status clean. Mark I-1 BUILT in Figma. My notes below are follow-up changes, not reasons to hold I-1 back."
+(The notes, I-1b, are in the next commit's HANDOFF.)
+THIS COMMIT: app/src/brushlib/BrushLibraryPanel.cpp/.h, app/src/FloatingToolWindow.cpp/.h, and the Rename parts of
+app/tests/ProjectLifecycleTest.cpp (the dwmapi include; namespace libbox and runLibraryBoxesPass with (lb), (rn1)-(rn7);
+the witness's entry in main; the "libbox" slice; runLibraryBoxesPass in the full run). What it does is in the two
+sections below (written before the commit; they say "NOT COMMITTED" as they did then).
+SINCE THEM - RE-TEST R1 (session 20261124-204550, built 15:39:12): four renames ended the moment the pen tapped the
+name field. PressWatch (the rename's click-away, an application event filter) walked the receiver's parents; a
+QLineEdit takes no tablet press, so Qt handed the same TabletPress on to the row, which the filter saw as "elsewhere"
+and confirmed. FIX: where the press is decides (the field's rect at the press's global position). CHECK (rn7): the
+pen through the window system taps the field - field, keyboard and caret kept, " Pen" typed, Enter renames; control:
+the pen on another brush confirms and ends the field. RED RUN (`if (false && ...)`): (rn7) FAIL "after the tap:
+field 0, keyboard 0, caret 0" - what the recording showed - control PASS (Documents\SankoTV-Design\rename-brush-
+2026-11-24\red_run_rn7_pen_tap_in_field.txt).
+RE-TEST R2 = HAND TEST I1 STEPS 13-14 (session 20261125-082030, built Nov 24 2026 22:36:56, c1acffcf1+dirty; title
+"TEST COPY - small pirate, layer motion I1"): 13 PASS - four renames with a pen tap in the field (116.9, 129.6, 141.1,
+145.0 s): each time the mouse press Qt makes from the pen reached the field and the field stayed (9.3, 7.7, 1.3, 1.7 s
+more), ended by the keyboard. 14 HALF TESTED - a tap on the canvas while a name was typed (137.3 s) confirmed it and
+the Library closed; no rename ended by a tap on another brush (the check (rn4)/(rn7) cover it).
+GATE RN (scratch worktree C:/SankoTV_split at c1acffcf1 with this commit's tree; the main tree's bytes copied for the
+238 tracked files that differ only by CRs - autocrlf; log app/build/_probe/split/split_worktree_gates/fullgate_RN.log,
+3393 s): every family GREEN in both builds - Lifecycle 1832/1832, Camera 336/336, BrushLibrary 187, CanvasSizeLock
+170, CanvasEdgeLock 74, DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3.
+THE SPLIT (the test file holds Rename and batch I-1): the full diff HEAD -> the main tree, cut to the Rename hunks by
+a script that edits the PATCH TEXT only (drops the (rp) hunks, the (lm) block inside the one big insertion, the
+"motion" slice and runLayerMotionPass's call; recounts the headers), applied with git apply --cached (every context
+line checked). The result is 38745 lines - the count the file had right after (rn7), before any I-1 code. The other
+four files whole. HASH LIST: app/build/_probe/split/sha_RN_commit.txt.
+
+## STATUS 2026-11-24 (evening): RENAME BRUSH NOT COMMITTED - WAITING FOR RE-TEST R1; THE FIXTURE RETRY (68cee2f13) AND SAVING STEP 3 (c1acffcf1) COMMITTED AND PUSHED; BATCH I ANSWERED - FIGMA I-1 FOR APPROVAL, NOTHING OF BATCH I BUILT
+THE USER (2026-11-24, about 15:2x, pasted): "Hand test S3: Rename Brush failed. When I choose Rename Brush, the whole
+Brush Library disappears and only the brush being renamed stays on screen, floating over the canvas with its name
+field. My screenshots are in Documents\SankoTV-Design\reference\ (rename_before.png and rename_during.png). The
+Library must stay fully open and in place while I rename, with only the brush's name turned into a field. I skipped
+steps 3-5, since they rename the same way. Read every Dev Recorder session made after 12:00 on 24 November, oldest
+first. Confirm from system.txt that it ran the Nov 24 2026 12:00:32 build (git 8802c7f90+dirty) and that the title
+bar named "TEST COPY - small pirate, Save As and Rename S3", then report pass, fail or "not tested" per step of
+handtest_S3_save_as_and_rename.md. Find the cause from the recording and the code (it may come from the activation
+fix or the click-away rule) and fix it in the Rename Brush change, with a check that reproduces what my screenshots
+show and fails without the fix (red run). Then quick check, full gate before stopping (every family green in both
+builds), a fresh TEST COPY, the exe stamp and a short re-test list for Rename Brush (steps 1-6 of the old list). If
+nothing else failed, commit and push the safe save's test-project retry and saving step 3 now, each on its own with
+its HANDOFF notes and matching its own hash list. If the Rename fix touches files they share, gate each alone in a
+scratch worktree first. Commit Rename Brush only after my re-test passes. Then batch I. My answers to your proposal:
+1. A layer's keys stretch with its panel, like the camera's. 2. The pivot: the centre of the layer's drawn art.
+3. Size: one scale for both directions, to start. 4. An Animate switch on each layer in the Layers panel. 5. The
+timeline: design BOTH options in Figma, side by side, using SankoTV's existing UI: A, one LAYER row for the selected
+layer; B, one folding row per animated layer. Show how each handles animated layers and their keys across several
+scenes, including ISLAND BEACH and JUNGLE ENTRANCE, so I can compare them before choosing. 6. A new drawing's
+exposure: on 2s. 7. Onion skin in a layer with drawings: the previous drawing only. 8. The strip's thumbnails and the
+SHOTS clips: the panel's first frame. 9. Screen layers: as I-3, after I-1. 10. Duplicating a panel copies its layers'
+keys and drawings. 11. Copy and paste of keys between layers: later. 12. The order: I-1 first, then I-2. Make the
+Figma frame I-1 in the area labelled "Claude Code please Start new design here 002": the Layers panel's Animate
+diamond, a layer's key on the canvas, and the two timeline options side by side as above. Screenshot it and stop for
+my approval before building anything of batch I. If anything else failed or the build is wrong, report it before
+committing anything. ALL DONE when finished, and send a notification."
+DONE: hand test S3 read (the step 3 section below has steps 6-9; Rename's steps here); nothing else failed, so the
+fixture retry (68cee2f13) and saving step 3 (c1acffcf1) are committed and pushed, each gated alone in a scratch
+worktree (their sections below). Rename Brush: fixed, gated, NOT committed - re-test R1. Worktree gate logs:
+app/build/_probe/split/split_worktree_gates/ (FX, FX2, S3W).
+BATCH I - FIGMA FRAME I-1 = 693:755, "PROPOSAL 2026-11-24 I-1 — Layer motion: the Animate diamond, a layer's key on the
+canvas, the timeline two ways (batch I, waits for your approval)", below S-1 in the area "Claude Code please Start new
+design here 002" (x 14670, y 16528, 1660 x 1962). Screenshot Documents\SankoTV-Design\figma-I1\I-1_693-755.png. It
+shows: 1 the Layers panel as the app draws it today (eye, thumbnail, name, depth chip, lock) with an Animate diamond
+between the eye and the thumbnail - grey outline off, purple outline on, solid purple a key at the playhead (2x);
+2 the canvas: the selected animated layer (the Boat) at the playhead with the Move box, its pivot + at the centre of
+its drawn art, ghosts at its other keys, the dotted path with a diamond per key, a chip "Boat · key 2 of 3 · frame 14
+· Ease In-Out to key 3", the camera frame; 3 the timeline both ways at 1x over OCEAN, ISLAND BEACH and JUNGLE ENTRANCE
+(6 animated layers in panels 2, 4, 5, 7): A one LAYER row for the selected layer (dim markers where other panels have
+motion; the row again for the Crab and the Monkey) and B one folding row per animated layer (open, and folded into one
+LAYERS row), each with its pluses and minuses; 4 four questions - a) A or B (or A with B's folded row above it), b)
+Animate off on a layer with keys: keep them greyed (my choice) or remove them asking first, c) ghosts and path
+whenever selected or only with the Move tool, d) the diamond's place in the row. The user's twelve answers are in
+it. NOTHING OF BATCH I IS BUILT - it waits for the user's approval of I-1.
+HAND TEST S3, RENAME'S STEPS (session 20261124-150607, built Nov 24 2026 12:00:32, 8802c7f90+dirty; title "TEST COPY -
+small pirate, Save As and Rename S3"): 1. FAIL - the Library gone from the screen but for the renamed row, its field
+over the canvas (the user's rename_during.png; the recorder takes no screenshot while the Library is the active
+window). 2. NOT TESTED (no Esc in the name field; the session's one Esc went to the canvas, 15:11:52). 3, 4. NOT
+TESTED (skipped). 5. NOT TESTED (skipped; the recording holds Duplicate, Delete Brush answered Yes and Import cancelled
+once each, after each the SankoTV window the active one). The main window's seven hides were the user's (the pointer
+at the taskbar each time).
+
+## 2026-11-24: RENAME BRUSH - THE WINDOW NEVER GOES BEHIND ANOTHER PROGRAM, RENAME IN PLACE, AND THE LIBRARY STAYS ON SCREEN WHILE A NAME IS TYPED (NOT COMMITTED: WAITING FOR RE-TEST R1)
+THE REQUEST (2026-11-24, 09:08, after hand test S2): the SankoTV window disappeared from view when Rename Brush's box
+opened - find why, check Delete Brush, Duplicate and Import, fix any; replace the box with renaming in place (the
+name a field in the Library, all selected; Enter confirms, Esc cancels, a click anywhere else confirms; an empty
+name keeps the old one; the Library's rules for names and its look kept; the Library open while renaming).
+FILES: app/src/FloatingToolWindow.cpp / .h (LF), app/src/brushlib/BrushLibraryPanel.cpp / .h (CRLF), the test file's
+regions below. Hash list app/build/_probe/split/sha_RN_gate.txt (gate S3c). No new dependency (dwmapi.lib is Windows'
+own, linked by a #pragma in the test file only).
+1. WHY THE WINDOW WENT BEHIND ANOTHER PROGRAM (hand test S2's recording 20261123-204829): a box the Library opens is
+   owned by the Library, a floating window (Qt::Tool + WindowDoesNotAcceptFocus); Windows gives activation back to a
+   box's owner when it closes, so after a box the Library was the active window. At the next box StoryboardPage's
+   WindowBlocked hid the floating windows (suppressFloatingBars) - the active one included - and Windows activated
+   the next window it could: the SankoTV window was disabled by the box, so another program's (the Claude app) came
+   up over SankoTV and stayed. Every Library box did it (Rename Brush, Delete Brush, Reset to Stock, Rename Brush
+   Library, the import messages) and the file dialogs (Import, Export); Duplicate opens none.
+   THE FIX (FloatingToolWindow, "A FLOATING WINDOW NEVER HOLDS ACTIVATION"): suppressFloatingBars activates the box
+   (or the anchor's window) BEFORE it hides a floating window that holds activation; a floating window that becomes
+   active hands activation back to its anchor's window as soon as no box or menu is up (handBackActivation: posted,
+   looked at again every 50 ms while a box is up, at most 200 times); setHoldsActivation(true) lifts it.
+   BrushLibraryPanel::fileDialogOwner: Windows' file dialogs are owned by the app's window; the Library's own boxes
+   keep the Library as parent (a click in them is inside the Library for the click-away rule).
+2. RENAME IN PLACE (BrushLibraryPanel): NameEditor, a QLineEdit in the row's own font (Inter Bold 13) on #16161a with
+   an accent edge, the whole name selected; the Library lifts its "takes no focus" (setHoldsActivation + the
+   QWindow's WindowDoesNotAcceptFocus off) and takes the keyboard; Enter confirms, Esc cancels, a press anywhere but
+   in the field (PressWatch, an application event filter) confirms, so do the keyboard going elsewhere and the
+   Library closing; the name goes to the model's renamePreset (trimmed, never empty, disk first) after the field is
+   gone; an empty or unchanged name keeps the old one. The old box stays only for the red run (setRenameByDialogForTest).
+3. THE LIBRARY STAYS ON SCREEN (hand test S3's failure): the Library is a see-through window (WA_TranslucentBackground:
+   a LAYERED window on Windows). Changing one flag of its QWindow has Qt set all its styles again, taking the layered
+   style off and putting it back, which makes Windows forget the window's picture; Qt then sent only what changed -
+   the row whose name became a field. So the Library went, all but that row; after Enter or Esc (the flag put back)
+   its edges stayed gone. NOT the activation fix, NOT the click-away rule. THE FIX: BrushLibraryPanel::takesFocus -
+   the flag changed in one place and the whole picture sent again at once (QWidget::backingStore()->flush of the whole
+   window), then drawn again (update()). Red-run hook setWholePictureOffForTest.
+THE CHECKS (runLibraryBoxesPass, slice "libbox", in the family after runEraserLibraryPass; 12):
+ (lb) control: a second program's window (this test program, SANKO_ZWITNESS_DIR) was the active window, then
+      stands right under the SankoTV window; the reading of the order sees it on top when it is.
+ (lb1) Delete Brush (No), Import (Windows' file dialog, cancelled), Delete Brush and Import again, opened as the
+      artist opens them: SankoTV in front and holding the foreground while each is up and after; a Windows hook
+      (EVENT_SYSTEM_FOREGROUND) counts the times the foreground went to another program - 0 (a count, not a clock);
+      Duplicate opens no box and makes its copy. (lb2) after each box the SankoTV window is the active one again.
+ (rn1) Rename Brush opens no box: the name a field, all selected, with the keyboard; the Library open. Control:
+      before it the keyboard was in no name field. (rn2) typing replaces the name, Enter confirms, the field goes,
+      the Library stays open, SankoTV has the keyboard. (rn3) Esc cancels. (rn4) a click on another brush confirms,
+      a click outside confirms (the Library then closes). (rn5) emptied or only spaces: the old name; "  Ink Four  "
+      -> "Ink Four". (rn) no box opened while renaming.
+ (rn6) THE LIBRARY STAYS ON SCREEN WHILE A NAME IS TYPED, read FROM THE SCREEN (QScreen::grabWindow of the desktop,
+      after DwmFlush) against the Library's own picture (QWidget::grab) over its rows' area, the renamed brush
+      scrolled into view as the artist's is, a pixel alike within 8 levels a channel: while renaming, after Enter
+      and after Esc. Control: the same reading finds the rows on screen before Rename Brush and gone once the
+      Library is closed.
+ Instrument: menu entries are picked the pen's way (pointerTo: a window-system move onto the row before its
+ right-click, then onto the entry, press and release there; the real pointer never moved). Sent straight to the
+ menu, the picks had left Qt's replayMousePress set, and gate S3's (ct) - a later pass - had its menu-closing click
+ replayed onto the canvas (probe: 0 before the pass's first pick, 1 after, 1 at (ct)); a press with no move at the
+ very place of the pick before closed the menu instead of picking ((rn4)/(rn5) on a first try).
+RED RUNS: (a) beforeFix = true (both activation rules off, Rename the box it was): 8 of 10 FAILED - (lb1) "foreground
+handed to another program 2 time(s)", (lb2), (rn1)-(rn5), (rn); both controls passed (red_run_boxes_before_the_fix
+.txt, and again with the pen-way picks: ..._pick_as_the_pen.txt). (b) beforePictureFix = true (rename in place
+without the picture sent again): (rn6) FAILED as the user's screenshot - while renaming the other rows 1 percent on
+screen, the row with the field 99.9; after Enter and Esc 88.6 - its control passed (red_run_rn6_library_off_screen.txt,
+rn6_red_run_screen_vs_library.png). All in Documents\SankoTV-Design\rename-brush-2026-11-24\. Markers removed, grep
+"RED RUN" / "PROBE RUN" / "CONTROL RUN" 0. Against the hand test's code (rn6) failed the same before the fix.
+GATES: S3 (10:11) NOT green - its Rename-side failures (ct) (the replay flag) and (m) (six leftover test brushes of
+stopped red runs, removed); S3b (11:59, then the Lifecycle family alone, 13:13 / 14:37) green in both builds;
+S3c (15:37-16:34, with the (rn6) fix) GREEN - EVERY FAMILY IN BOTH BUILDS AT ONCE (Lifecycle 1830); exes "Nov 24 2026
+15:39:12" Release / "15:41:16" Debug, 8802c7f90+dirty; sha_S3c_exes.txt, sha_S3c_tree.txt, sha_RN_gate.txt. The
+Rename change's test file regions are only additions on top of c1acffcf1 (822 lines: the dwmapi include, the libbox
+namespace and runLibraryBoxesPass, the witness branch in main(), the "libbox" slice, the family call).
+RE-TEST R1: Documents\SankoTV-Design\handtest_R1_rename_retest.md on "TEST COPY - small pirate, Rename re-test R1"
+(made from Downloads\...\small_pirate_001.sankotv, read only; 79 files named, none missing or differing); the build
+the user's shortcut runs is the S3c build, 15:39:12. NOTE: the commits since were built in the scratch worktree;
+the main tree's exes are still S3c's (sha_S3c_exes.txt) - do not rebuild them before the re-test.
+Detailed working notes of the day (before the commits were split off): Documents\SankoTV-Design\rename-brush-2026-11-24\
+HANDOFF_working_notes_2026-11-24_before_split.md.
+
 ## 2026-11-24 (evening): SAVING STEP 3 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST S3 - SAVE AS IN THE BACKGROUND, THE DEV RECORDER'S NOTE OF EACH SAVE; NEW CHECKS (sa1)-(sa6) WITH CONTROLS AND A RED RUN; 6 OLD CHECKS' INSTRUMENT CHANGED; GATED ON THE FIXTURE COMMIT ALONE, GREEN IN BOTH BUILDS
 THE USER (2026-11-24, about 15:2x): "... If nothing else failed, commit and push the safe save's test-project retry
 and saving step 3 now, each on its own with its HANDOFF notes and matching its own hash list. If the Rename fix

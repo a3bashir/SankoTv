@@ -184,6 +184,8 @@ struct ZoomSetter
 #endif
 #include <windows.h>
 #include <dbghelp.h>
+#include <dwmapi.h> // DwmFlush: the screen as composed, before it is read ((rn6), 2026-11-24)
+#pragma comment(lib, "dwmapi.lib")
 #endif
 
 namespace {
@@ -34705,6 +34707,869 @@ void runTrackLocksPass(const QString &scratch)
     r.window.setLockMessageHookForTest({});
 }
 
+// ---- (lb) A BOX THE APP OPENS NEVER PUTS THE WINDOW BEHIND ANOTHER PROGRAM (2026-11-24) ---------
+// Hand test S2's recording, 20:54:11-20:54:55: Rename Brush, four times. The first two opened while
+// the SankoTV window was the active one, and it stayed in view. Each box's owner is the Brush
+// Library (a floating window), and Windows gives activation back to a box's owner when the box
+// closes: after the second, the LIBRARY was the active window. The third and the fourth opened so,
+// and the SankoTV window went behind the Claude app and stayed there, the box floating over it.
+// Why: while a box is up the floating windows are hidden (they used to paint across boxes), and
+// the window is disabled by the box; hiding the ACTIVE window makes Windows activate the next one
+// it can - not the disabled SankoTV window - another program's.
+// The checks: a second program's window (this test program again, SANKO_ZWITNESS_DIR) put right
+// under the SankoTV window, as the Claude app was; the boxes opened through the Library as the
+// artist opens them - the row's right-click menu, a press and a release on the entry - twice, so
+// the second opens after the first has handed activation back; the order of the two windows and
+// who holds the foreground read while each box is up and after it closes.
+namespace libbox {
+
+#ifdef Q_OS_WIN
+int runWitness()
+{
+    const QString dir = qEnvironmentVariable("SANKO_ZWITNESS_DIR");
+    QWidget w;
+    w.setWindowTitle(QStringLiteral("SankoTV check - another program's window"));
+    w.setAttribute(Qt::WA_ShowWithoutActivating);
+    w.setStyleSheet(QStringLiteral("background: #3a3a40;"));
+    const QStringList g = qEnvironmentVariable("SANKO_ZWITNESS_GEOMETRY").split(QLatin1Char(','));
+    if (g.size() == 4)
+        w.setGeometry(g[0].toInt(), g[1].toInt(), g[2].toInt(), g[3].toInt());
+    w.show();
+    pump(300);
+    {
+        QFile f(dir + QStringLiteral("/hwnd.part"));
+        f.open(QIODevice::WriteOnly);
+        f.write(QByteArray::number(qulonglong(w.winId())));
+        f.close();
+        QFile::rename(dir + QStringLiteral("/hwnd.part"), dir + QStringLiteral("/hwnd"));
+    }
+    QElapsedTimer life;
+    life.start();
+    bool activated = false;
+    while (!QFileInfo::exists(dir + QStringLiteral("/quit")) && life.elapsed() < 600000) {
+        // Asked to be the active window - as the user's other program was, just before they went
+        // back to SankoTV - and then to let SankoTV take the foreground back.
+        if (!activated && QFileInfo::exists(dir + QStringLiteral("/activate"))) {
+            activated = true;
+            SetForegroundWindow(reinterpret_cast<HWND>(w.winId()));
+            pump(200);
+            AllowSetForegroundWindow(ASFW_ANY);
+            QFile f(dir + QStringLiteral("/activated"));
+            f.open(QIODevice::WriteOnly);
+            f.close();
+        }
+        pump(20);
+    }
+    return 0;
+}
+
+HWND hwndOf(const QWidget *w)
+{
+    return reinterpret_cast<HWND>(w->winId());
+}
+
+// Whether `a` is above `b` among the desktop's top-level windows.
+bool above(HWND a, HWND b)
+{
+    for (HWND h = GetWindow(a, GW_HWNDNEXT); h; h = GetWindow(h, GW_HWNDNEXT))
+        if (h == b)
+            return true;
+    return false;
+}
+
+bool foregroundIsOurs()
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+
+// Windows' own dialogs on this thread (the file dialog is one, not Qt's): whether one is up, and
+// closing them as Windows closes a dialog.
+BOOL CALLBACK findDialog(HWND h, LPARAM found)
+{
+    wchar_t cls[64] = {};
+    GetClassNameW(h, cls, 64);
+    if (IsWindowVisible(h) && QString::fromWCharArray(cls) == QLatin1String("#32770"))
+        *reinterpret_cast<bool *>(found) = true;
+    return TRUE;
+}
+bool nativeDialogUp()
+{
+    bool found = false;
+    EnumThreadWindows(GetCurrentThreadId(), findDialog, reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+BOOL CALLBACK closeDialog(HWND h, LPARAM)
+{
+    wchar_t cls[64] = {};
+    GetClassNameW(h, cls, 64);
+    if (IsWindowVisible(h) && QString::fromWCharArray(cls) == QLatin1String("#32770"))
+        PostMessageW(h, WM_CLOSE, 0, 0);
+    return TRUE;
+}
+void closeNativeDialogs()
+{
+    EnumThreadWindows(GetCurrentThreadId(), closeDialog, 0);
+}
+
+// WHAT THE SCREEN SHOWS WHERE THE LIBRARY'S ROWS ARE, against the Library's own picture of them
+// ((rn6), hand test S3: the Library open and in place, and the screen showing the canvas through it,
+// all but the row being renamed). Read from the screen itself, as composed (DwmFlush), over the rows'
+// area (the scroll area's viewport); `leaveOut` (viewport coordinates) is left out - or, with
+// `onlyThat`, is all that is read. A pixel is alike when no channel is more than 8 levels apart: both
+// pictures are Qt's of the same moment, and the rows' dark grey is only ~35 levels from the canvas's.
+struct OnScreen
+{
+    int compared = 0, alike = 0;
+    double share() const { return compared ? double(alike) / compared : 0.0; }
+    bool shown() const { return compared > 1000 && share() >= 0.95; }
+    QString text() const
+    {
+        return QStringLiteral("%1 percent of %2 px as the Library paints them").arg(qRound(share() * 1000) / 10.0)
+            .arg(compared);
+    }
+};
+OnScreen rowsOnScreen(QWidget *library, QWidget *viewport, const QRect &leaveOut = QRect(), bool onlyThat = false)
+{
+    for (int i = 0; i < 3; ++i) {
+        QCoreApplication::processEvents();
+        DwmFlush();
+    }
+    OnScreen s;
+    QScreen *screen = library ? library->screen() : nullptr;
+    if (!screen || !viewport)
+        return s;
+    const QRect global = QRect(viewport->mapToGlobal(QPoint(0, 0)), viewport->size()) & screen->geometry();
+    if (global.isEmpty())
+        return s;
+    const QPoint rel = global.topLeft() - screen->geometry().topLeft();
+    const QImage shown = screen->grabWindow(0, rel.x(), rel.y(), global.width(), global.height())
+                             .toImage().convertToFormat(QImage::Format_RGB32);
+    QImage own = library->grab(QRect(library->mapFromGlobal(global.topLeft()), global.size()))
+                     .toImage().convertToFormat(QImage::Format_RGB32);
+    if (shown.isNull() || own.isNull())
+        return s;
+    if (own.size() != shown.size())
+        own = own.scaled(shown.size());
+    const double sx = double(shown.width()) / global.width(), sy = double(shown.height()) / global.height();
+    const QRect out = leaveOut.isNull() ? QRect() : QRect(viewport->mapToGlobal(leaveOut.topLeft()), leaveOut.size());
+    for (int y = 0; y < shown.height(); ++y)
+        for (int x = 0; x < shown.width(); ++x) {
+            const QPoint at(global.x() + int(x / sx), global.y() + int(y / sy));
+            if (out.contains(at) != onlyThat)
+                continue;
+            ++s.compared;
+            const QRgb a = shown.pixel(x, y), b = own.pixel(x, y);
+            if (qAbs(qRed(a) - qRed(b)) <= 8 && qAbs(qGreen(a) - qGreen(b)) <= 8 && qAbs(qBlue(a) - qBlue(b)) <= 8)
+                ++s.alike;
+        }
+    return s;
+}
+QWidget *viewportOf(QWidget *row)
+{
+    for (QWidget *p = row; p; p = p->parentWidget())
+        if (auto *area = qobject_cast<QAbstractScrollArea *>(p))
+            return area->viewport();
+    return nullptr;
+}
+QRect rectIn(QWidget *viewport, QWidget *row)
+{
+    return viewport && row ? QRect(row->mapTo(viewport, QPoint(0, 0)), row->size()) : QRect();
+}
+
+// Every time the foreground went to another program's window while it listens: a hook of
+// Windows' (out of context: told on this thread, as its messages are pumped).
+struct ForegroundWatch
+{
+    static ForegroundWatch *&current()
+    {
+        static ForegroundWatch *watch = nullptr;
+        return watch;
+    }
+    HWINEVENTHOOK hook = nullptr;
+    QStringList others;
+    ForegroundWatch()
+    {
+        current() = this;
+        hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, &ForegroundWatch::told, 0, 0,
+                               WINEVENT_OUTOFCONTEXT);
+    }
+    ~ForegroundWatch()
+    {
+        if (hook)
+            UnhookWinEvent(hook);
+        current() = nullptr;
+    }
+    static void CALLBACK told(HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, DWORD, DWORD)
+    {
+        ForegroundWatch *watch = current();
+        if (!watch || !hwnd)
+            return;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == GetCurrentProcessId())
+            return;
+        wchar_t title[128] = {};
+        GetWindowTextW(hwnd, title, 128);
+        watch->others << QString::fromWCharArray(title);
+    }
+};
+
+// The other program's window, put where the user's was: right under the SankoTV window.
+struct Witness
+{
+    QProcess child;
+    QString dir;
+    HWND hwnd = nullptr;
+    Witness(const QString &flags, const QRect &geometry)
+        : dir(flags)
+    {
+        QDir(dir).removeRecursively();
+        QDir().mkpath(dir);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("SANKO_ZWITNESS_DIR"), dir);
+        env.insert(QStringLiteral("SANKO_ZWITNESS_GEOMETRY"), QStringLiteral("%1,%2,%3,%4").arg(geometry.x())
+                                                                    .arg(geometry.y()).arg(geometry.width())
+                                                                    .arg(geometry.height()));
+        env.remove(QStringLiteral("SANKO_LIFECYCLE_ONLY"));
+        child.setProcessEnvironment(env);
+        child.setProgram(QCoreApplication::applicationFilePath());
+        child.setStandardErrorFile(QProcess::nullDevice());
+        child.setStandardOutputFile(QProcess::nullDevice());
+        child.start();
+        QElapsedTimer waited;
+        waited.start();
+        while (!QFileInfo::exists(dir + QStringLiteral("/hwnd")) && waited.elapsed() < 120000)
+            pump(20);
+        QFile f(dir + QStringLiteral("/hwnd"));
+        if (f.open(QIODevice::ReadOnly))
+            hwnd = reinterpret_cast<HWND>(quintptr(f.readAll().trimmed().toULongLong()));
+    }
+    void under(HWND window) const
+    {
+        SetWindowPos(hwnd, window, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    void onTop() const
+    {
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    // It becomes the active window, and lets SankoTV take the foreground back: what the user's
+    // other program was a moment before they went back to SankoTV. True when it said so.
+    bool activate() const
+    {
+        QFile f(dir + QStringLiteral("/activate"));
+        f.open(QIODevice::WriteOnly);
+        f.close();
+        QElapsedTimer waited;
+        waited.start();
+        while (!QFileInfo::exists(dir + QStringLiteral("/activated")) && waited.elapsed() < 30000)
+            pump(20);
+        return QFileInfo::exists(dir + QStringLiteral("/activated"));
+    }
+    ~Witness()
+    {
+        QFile f(dir + QStringLiteral("/quit"));
+        f.open(QIODevice::WriteOnly);
+        f.close();
+        if (!child.waitForFinished(15000))
+            child.kill();
+        child.waitForFinished(5000);
+    }
+};
+#endif
+
+// While it lives, a box nobody expected - one that would stop the run - is closed and named.
+struct StrayBoxes
+{
+    QTimer timer;
+    QStringList closed;
+    StrayBoxes()
+    {
+        timer.setInterval(400);
+        QObject::connect(&timer, &QTimer::timeout, [this] {
+            QWidget *modal = QApplication::activeModalWidget();
+            if (!modal)
+                return;
+            closed << (modal->windowTitle() + QStringLiteral(" (") + QString::fromLatin1(modal->metaObject()->className())
+                       + QStringLiteral(")"));
+            if (auto *dialog = qobject_cast<QDialog *>(modal))
+                dialog->reject();
+            else
+                modal->close();
+        });
+        timer.start();
+    }
+};
+
+// Right-clicks `row` as the artist does and chooses `entry` in the menu that opens - a press and a
+// release on it. `whileUp` runs inside the box the entry opens (or, if none opens, once the menu
+// has gone).
+struct MenuPick
+{
+    bool menu = false, entry = false;
+};
+// A mouse event at `at` in `over`, delivered as the window system delivers one (to `over`'s window,
+// at once): Qt's own idea of the pointer goes there too. The real pointer is never moved.
+void pointerTo(QWidget *over, const QPointF &at, QEvent::Type type, Qt::MouseButtons buttons,
+               Qt::MouseButton button)
+{
+    QWindow *win = over->window()->windowHandle();
+    if (!win)
+        return;
+    const QPointF global(over->mapToGlobal(at.toPoint()));
+    const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+    QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(win, local, global, buttons,
+                                                                                         button, type);
+}
+
+MenuPick pickFromRowMenu(QWidget *row, const QString &entry, const std::function<void()> &whileUp)
+{
+    MenuPick p;
+    bool looked = false;
+    QTimer::singleShot(150, row, [&p, &looked, entry, whileUp] {
+        auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+        p.menu = menu != nullptr;
+        QAction *chosen = nullptr;
+        if (menu)
+            for (QAction *a : menu->actions())
+                if (a->text() == entry)
+                    chosen = a;
+        p.entry = chosen != nullptr;
+        if (!chosen) {
+            if (menu) {
+                menu->setAttribute(Qt::WA_NoMouseReplay); // closed by the check, not by a press
+                menu->close();
+            }
+            looked = true;
+            return;
+        }
+        QTimer::singleShot(250, [&looked, whileUp] {
+            if (whileUp)
+                whileUp();
+            looked = true;
+        });
+        // THE ENTRY IS PICKED AS THE PEN PICKS IT: Qt's pointer moves onto it, presses and releases
+        // there, through the window system (gate S3, 2026-11-24). Sent straight to the menu
+        // (sendMouse), Qt's own idea of where the pointer is stayed where the real pointer rested,
+        // outside the menu; and a menu that closes while Qt thinks the pointer is outside it sets
+        // Qt's "replay the next press" (QApplicationPrivate::replayMousePress), which only the next
+        // window-system mouse event while a menu is up clears. So the next click that closed a menu
+        // over the canvas, in a later pass, was replayed to the canvas, though the canvas's guard
+        // had marked the menu "no replay": (ct) failed in both builds. Read with a probe: 0 before
+        // this pass's first pick, 1 after it, still 1 at (ct).
+        const QPointF at = menu->actionGeometry(chosen).center();
+        pointerTo(menu, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        pointerTo(menu, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        pointerTo(menu, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+    });
+    const QPointF at(row->width() / 2.0, 20);
+    // ...and Qt's pointer is on the row when it is right-clicked, as the pen is: the menu then
+    // opens with the pointer away from its entries, and the move onto one is a move. (Without it,
+    // a pick at the very place of the pick before - the same row's menu again - was a press with
+    // no move since the menu opened, which a menu takes for no click on an entry: it closed.)
+    pointerTo(row, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+    sendMouse(row, QEvent::MouseButtonPress, at, Qt::RightButton);
+    sendMouse(row, QEvent::MouseButtonRelease, at, Qt::RightButton);
+    QElapsedTimer guard;
+    guard.start();
+    while (!looked && guard.elapsed() < 30000)
+        pump(20);
+    pump(200);
+    return p;
+}
+
+} // namespace libbox
+
+void runLibraryBoxesPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace libbox;
+    out() << "--- (lb) a box the Library opens never puts the window behind another program ---" << Qt::endl;
+#ifndef Q_OS_WIN
+    Q_UNUSED(scratch);
+#else
+    // For a red run only: the floating windows as they were before this change - they hold
+    // activation and are hidden holding it.
+    const bool beforeFix = false;
+    FloatingToolWindow::setActivationGuardForTest(!beforeFix);
+    brushlib::BrushLibraryPanel::setRenameByDialogForTest(beforeFix);
+    // For (rn6)'s red run only: rename in place without its picture sent again (hand test S3).
+    const bool beforePictureFix = false;
+    brushlib::BrushLibraryPanel::setWholePictureOffForTest(beforePictureFix);
+    const QString dir = scratch + QStringLiteral("/libbox");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const quint32 seedBefore = g_seed;
+    const QString project = writeProject(dir, QStringLiteral("Lib"), QSize(960, 540), 24, 1, 2);
+    g_seed = seedBefore;
+    const QString visibleKey = QStringLiteral("storyboard/brushLibrary/v1/visible");
+    const QString geoKey = QStringLiteral("storyboard/brushLibrary/v1/geo");
+    const QVariant visibleBefore = sankoSettings().value(visibleKey);
+    const QVariant geoBefore = sankoSettings().value(geoKey);
+    auto restoreLibraryKeys = [&] {
+        QSettings s = sankoSettings();
+        if (visibleBefore.isValid())
+            s.setValue(visibleKey, visibleBefore);
+        else
+            s.remove(visibleKey);
+        if (geoBefore.isValid())
+            s.setValue(geoKey, geoBefore);
+        else
+            s.remove(geoKey);
+    };
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
+    auto *brushButton = r.storyboard ? r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    brushlib::BrushLibraryModel *model = library ? library->modelForTest() : nullptr;
+    if (!r.ok || !library || !brushButton || !model) {
+        check(QStringLiteral("(lb) found the workspace, the Library, its model and the Brush button"), false);
+        restoreLibraryKeys();
+        return;
+    }
+    // A brush of the artist's own (a copy), so Delete Brush asks before it deletes.
+    library->selectCategoryForTest(QStringLiteral("Inking"));
+    const QVector<const brushlib::BrushPreset *> inking = model->presetsIn(QStringLiteral("Inking"));
+    const QString copyId = inking.isEmpty() ? QString() : model->duplicatePreset(inking.first()->id);
+    pump(300);
+    if (!library->isVisible())
+        brushButton->click(); // the Library's door
+    pump(300);
+    library->selectCategoryForTest(QStringLiteral("Inking"));
+    pump(300);
+    if (qEnvironmentVariableIsSet("SANKO_LIBBOX_MAX"))
+        r.window.showMaximized();
+    r.window.activateWindow();
+    r.window.raise();
+    pump(400);
+    const HWND sanko = hwndOf(&r.window);
+    Witness witness(dir + QStringLiteral("/witness"), r.window.frameGeometry());
+    // The other program was the active window just before the artist went back to SankoTV.
+    const bool wasActive = witness.activate();
+    pump(200);
+    r.window.activateWindow();
+    r.window.raise();
+    pump(300);
+    witness.under(sanko);
+    pump(300);
+    // Control: the reading of the two windows' order sees the other program's window when it is on
+    // top, and the precondition - the SankoTV window active, in front of it.
+    SetWindowPos(sanko, witness.hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); // under it
+    pump(200);
+    const bool seesItOnTop = witness.hwnd && !above(sanko, witness.hwnd);
+    SetWindowPos(sanko, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    witness.under(sanko);
+    r.window.activateWindow();
+    pump(300);
+    const bool inFront = witness.hwnd && above(sanko, witness.hwnd);
+    const bool startActive = foregroundIsOurs() && QApplication::activeWindow() == &r.window;
+    check(QStringLiteral("(lb) control: the other program's window is there, and was the active window before the "
+                         "SankoTV window took the foreground back; the reading of the order sees it on top of the "
+                         "SankoTV window when it is, and under it when it is; at the start the SankoTV window is the "
+                         "active one, the Library open, the artist's copy of a brush in its list"),
+          witness.hwnd && wasActive && seesItOnTop && inFront && startActive && library->isVisible()
+              && library->rowForTest(copyId) != nullptr,
+          QStringLiteral("witness %1 (was active %8), seen on top %2, under %3, SankoTV active %4 (foreground ours %5), "
+                         "Library %6, row %7")
+              .arg(witness.hwnd != nullptr).arg(seesItOnTop).arg(inFront).arg(startActive).arg(foregroundIsOurs())
+              .arg(library->isVisible()).arg(library->rowForTest(copyId) != nullptr).arg(wasActive));
+
+    // Each box the Library opens, as the artist opens it, one after another - each after the one
+    // before has closed and Windows has handed activation back: Delete Brush (answered No), Import
+    // (its file dialog - Windows' own - cancelled), Delete Brush again, Import again; and Duplicate
+    // Brush, which opens none. A hook of Windows' counts every time the foreground went to another
+    // program meanwhile (EVENT_SYSTEM_FOREGROUND): a count, not a moment read off a clock.
+    struct Seen
+    {
+        QString name;
+        bool box = false, inFront = false, ours = false; // while it was up
+        bool afterInFront = false, afterOurs = false;    // once it had closed
+        QString active;                                  // the active window then
+        bool ok() const { return box && inFront && ours && afterInFront && afterOurs; }
+        QString text() const
+        {
+            return QStringLiteral("%1: box %2, in front %3, ours %4; after: in front %5, ours %6, active %7")
+                .arg(name).arg(box).arg(inFront).arg(ours).arg(afterInFront).arg(afterOurs).arg(active);
+        }
+    };
+    auto activeName = [&] {
+        QWidget *active = QApplication::activeWindow();
+        return active == &r.window ? QStringLiteral("the SankoTV window")
+            : active == library    ? QStringLiteral("the Library")
+            : active               ? QString::fromLatin1(active->metaObject()->className())
+                                   : QStringLiteral("none of SankoTV's");
+    };
+    auto lookAndAnswer = [&](Seen *s) {
+        QWidget *box = QApplication::activeModalWidget();
+        const bool native = nativeDialogUp();
+        s->box = (box && box->isVisible()) || native;
+        s->inFront = above(sanko, witness.hwnd);
+        s->ours = foregroundIsOurs();
+        if (native) {
+            closeNativeDialogs();
+        } else if (auto *mb = qobject_cast<QMessageBox *>(box)) {
+            if (QAbstractButton *no = mb->button(QMessageBox::No))
+                no->click();
+            else
+                mb->reject();
+        } else if (auto *dialog = qobject_cast<QDialog *>(box)) {
+            dialog->reject();
+        }
+    };
+    auto afterwards = [&](Seen *s) {
+        pump(400);
+        s->afterInFront = above(sanko, witness.hwnd);
+        s->afterOurs = foregroundIsOurs();
+        s->active = activeName();
+    };
+    auto deleteBrush = [&] {
+        Seen s;
+        s.name = QStringLiteral("Delete Brush");
+        if (QWidget *row = library->rowForTest(copyId))
+            pickFromRowMenu(row, QStringLiteral("Delete Brush"), [&] { lookAndAnswer(&s); });
+        afterwards(&s);
+        return s;
+    };
+    QPushButton *importButton = nullptr;
+    for (QPushButton *b : library->findChildren<QPushButton *>())
+        if (b->text() == QLatin1String("Import"))
+            importButton = b;
+    auto importBrushes = [&] {
+        Seen s;
+        s.name = QStringLiteral("Import");
+        // Windows' file dialog takes a moment to appear: looked for until it has, looked at a few
+        // ticks later, closed - and closed again until it has gone.
+        int ticks = 0;
+        bool answered = false;
+        QTimer poll;
+        poll.setInterval(100);
+        QObject::connect(&poll, &QTimer::timeout, [&] {
+            const bool up = nativeDialogUp()
+                || (QApplication::activeModalWidget() && QApplication::activeModalWidget()->isVisible());
+            if (!answered && up && ++ticks >= 3) {
+                answered = true;
+                lookAndAnswer(&s);
+            } else if (answered) {
+                closeNativeDialogs();
+            }
+        });
+        poll.start();
+        if (importButton)
+            importButton->click();
+        poll.stop();
+        afterwards(&s);
+        return s;
+    };
+    ForegroundWatch watch;
+    QVector<Seen> seen;
+    seen << deleteBrush() << importBrushes() << deleteBrush() << importBrushes();
+    // Duplicate Brush opens no box: it makes the copy.
+    const int countBefore = int(model->presetsIn(QStringLiteral("Inking")).size());
+    QSet<QString> idsBefore;
+    for (const brushlib::BrushPreset *p : model->presetsIn(QStringLiteral("Inking")))
+        idsBefore.insert(p->id);
+    bool duplicateBox = true;
+    if (QWidget *row = library->rowForTest(copyId))
+        pickFromRowMenu(row, QStringLiteral("Duplicate Brush"), [&] {
+            duplicateBox = QApplication::activeModalWidget() != nullptr || nativeDialogUp();
+        });
+    pump(300);
+    const int countAfter = int(model->presetsIn(QStringLiteral("Inking")).size());
+    const QStringList handedTo = watch.others;
+    bool everyBoxOk = true;
+    QStringList texts;
+    for (const Seen &s : seen) {
+        everyBoxOk = everyBoxOk && s.ok();
+        texts << s.text();
+    }
+    check(QStringLiteral("(lb1) A BOX THE LIBRARY OPENS NEVER PUTS THE SANKOTV WINDOW BEHIND ANOTHER PROGRAM: Delete "
+                         "Brush, Import (Windows' file dialog), Delete Brush and Import again, each opened as the "
+                         "artist opens it after the one before has closed; while each is up and after it has "
+                         "closed the SankoTV window is in front of the other program's and SankoTV holds the "
+                         "foreground, and not once does the foreground go to another program; Duplicate Brush "
+                         "opens no box and makes its copy"),
+          everyBoxOk && handedTo.isEmpty() && !duplicateBox && countAfter == countBefore + 1
+              && model->preset(copyId) != nullptr,
+          QStringLiteral("%1 || foreground handed to another program %2 time(s) [%3] || Duplicate: box %4, copies %5 -> "
+                         "%6")
+              .arg(texts.join(QStringLiteral(" || "))).arg(handedTo.size()).arg(handedTo.join(QStringLiteral(", ")))
+              .arg(duplicateBox).arg(countBefore).arg(countAfter));
+    bool activeAfterEach = true;
+    for (const Seen &s : seen)
+        activeAfterEach = activeAfterEach && s.active == QLatin1String("the SankoTV window");
+    check(QStringLiteral("(lb2) AFTER EACH BOX THE SANKOTV WINDOW IS THE ACTIVE ONE AGAIN - not the Library, which "
+                         "takes no keys - so the canvas has its keys back"),
+          activeAfterEach,
+          QStringLiteral("active after each: %1").arg([&] {
+              QStringList a;
+              for (const Seen &s : seen)
+                  a << s.active;
+              return a.join(QStringLiteral(", "));
+          }()));
+    // --- (rn) RENAME BRUSH IN PLACE ---------------------------------------------------------------
+    // Typed as the artist types: into the widget that has the keyboard, whatever it is.
+    // ...but only into a text field: keys sent to a button or the canvas would press it (a Space
+    // clicks a button) - with no field to type in, nothing is typed, and the checks say so.
+    auto typed = [](const QString &text) {
+        for (const QChar c : text) {
+            QWidget *to = QApplication::focusWidget();
+            if (!qobject_cast<QLineEdit *>(to))
+                return;
+            const int key = c.isLetter() ? int(c.toUpper().unicode()) : c == QLatin1Char(' ') ? int(Qt::Key_Space)
+                                                                                              : int(c.unicode());
+            QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, QString(c));
+            QCoreApplication::sendEvent(to, &press);
+            QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier, QString(c));
+            QCoreApplication::sendEvent(to, &release);
+        }
+    };
+    auto key = [](int k) {
+        QWidget *to = QApplication::focusWidget();
+        if (!qobject_cast<QLineEdit *>(to))
+            return;
+        QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier);
+        QCoreApplication::sendEvent(to, &press);
+        QKeyEvent release(QEvent::KeyRelease, k, Qt::NoModifier);
+        QCoreApplication::sendEvent(to, &release);
+    };
+    auto nameOf = [&] {
+        const brushlib::BrushPreset *p = model->preset(copyId);
+        return p ? p->name : QString();
+    };
+    struct Opened
+    {
+        bool box = false, field = false, keyboard = false, selectedAll = false, libraryOpen = false;
+        bool libraryActive = false;
+        QString fieldText;
+    };
+    // Rename Brush from the brush's right-click menu; what was there once the menu had gone.
+    auto openRename = [&] {
+        Opened o;
+        if (QWidget *row = library->rowForTest(copyId))
+            pickFromRowMenu(row, QStringLiteral("Rename Brush"), [&] {
+                QWidget *box = QApplication::activeModalWidget();
+                o.box = (box && box->isVisible()) || nativeDialogUp();
+                QLineEdit *field = library->renameFieldForTest();
+                o.field = field && field->isVisible();
+                o.keyboard = field && QApplication::focusWidget() == field;
+                o.selectedAll = field && !field->text().isEmpty() && field->selectedText() == field->text();
+                o.fieldText = field ? field->text() : QString();
+                o.libraryOpen = library->isVisible();
+                o.libraryActive = QApplication::activeWindow() == library;
+                if (auto *dialog = qobject_cast<QDialog *>(box)) // (the box it was: the red run)
+                    dialog->reject();
+            });
+        return o;
+    };
+    const QWidget *keyboardBefore = QApplication::focusWidget();
+    const QString name0 = nameOf();
+    auto strays = std::make_unique<StrayBoxes>(); // renaming in place opens no box at all
+    // (rn6) what the screen shows where the Library's rows are: before, while renaming, after. The
+    // brush renamed is in view, as the one the artist right-clicks is.
+    QWidget *rowsArea = viewportOf(library->rowForTest(copyId));
+    if (auto *area = rowsArea ? qobject_cast<QScrollArea *>(rowsArea->parentWidget()) : nullptr)
+        area->ensureWidgetVisible(library->rowForTest(copyId), 0, 0);
+    pump(100);
+    const OnScreen shownBefore = rowsOnScreen(library, rowsArea);
+    const Opened o1 = openRename();
+    const QRect renamedRow = rectIn(rowsArea, library->rowForTest(copyId));
+    const OnScreen shownRenaming = rowsOnScreen(library, rowsArea, renamedRow);
+    const OnScreen shownRenamedRow = rowsOnScreen(library, rowsArea, renamedRow, true);
+    typed(QStringLiteral("Ink One"));
+    const QString fieldTyped = library->renameFieldForTest() ? library->renameFieldForTest()->text() : QString();
+    key(Qt::Key_Return);
+    pump(300);
+    rowsArea = viewportOf(library->rowForTest(copyId));
+    const OnScreen shownAfterEnter = rowsOnScreen(library, rowsArea);
+    const QString name1 = nameOf();
+    const bool fieldGone1 = library->renameFieldForTest() == nullptr;
+    const bool open1 = library->isVisible();
+    const bool sankoActive1 = QApplication::activeWindow() == &r.window;
+    check(QStringLiteral("(rn1) RENAME BRUSH OPENS NO BOX: chosen in the brush's right-click menu, its name becomes a "
+                         "field right in the Library, the whole name selected, the field with the keyboard; the Library "
+                         "open"),
+          !o1.box && o1.field && o1.keyboard && o1.selectedAll && o1.fieldText == name0 && o1.libraryOpen,
+          QStringLiteral("box %1, field %2 ('%3' of '%4'), keyboard %5, all selected %6, Library open %7 (active %8)")
+              .arg(o1.box).arg(o1.field).arg(o1.fieldText, name0).arg(o1.keyboard).arg(o1.selectedAll)
+              .arg(o1.libraryOpen).arg(o1.libraryActive));
+    check(QStringLiteral("(rn1) control: before Rename Brush the keyboard was not in any name field"),
+          !qobject_cast<const QLineEdit *>(keyboardBefore));
+    check(QStringLiteral("(rn2) TYPING REPLACES THE NAME AND ENTER CONFIRMS: the brush is renamed through the Library's "
+                         "rules, the field goes, the Library stays open, and the SankoTV window has the keyboard back"),
+          fieldTyped == QLatin1String("Ink One") && name1 == QLatin1String("Ink One") && fieldGone1 && open1
+              && sankoActive1,
+          QStringLiteral("typed '%1', name '%2' -> '%3', field gone %4, Library open %5, SankoTV active %6")
+              .arg(fieldTyped, name0, name1).arg(fieldGone1).arg(open1).arg(sankoActive1));
+
+    // Esc cancels.
+    const quint64 revision2 = model->revision();
+    const Opened o2 = openRename();
+    typed(QStringLiteral("Nope"));
+    key(Qt::Key_Escape);
+    pump(300);
+    rowsArea = viewportOf(library->rowForTest(copyId));
+    const OnScreen shownAfterEsc = rowsOnScreen(library, rowsArea);
+    const QString name2 = nameOf();
+    check(QStringLiteral("(rn3) ESC CANCELS AND KEEPS THE OLD NAME: what was typed is dropped, nothing is renamed, the "
+                         "field goes and the Library stays open"),
+          o2.field && name2 == QLatin1String("Ink One") && model->revision() == revision2
+              && library->renameFieldForTest() == nullptr && library->isVisible(),
+          QStringLiteral("field %1, name '%2', revision %3 -> %4, field gone %5, Library open %6").arg(o2.field)
+              .arg(name2).arg(revision2).arg(model->revision()).arg(library->renameFieldForTest() == nullptr)
+              .arg(library->isVisible()));
+
+    // A click anywhere else confirms: on another brush of the Library, then outside it.
+    const Opened o3 = openRename();
+    typed(QStringLiteral("Ink Two"));
+    QWidget *otherRow = nullptr;
+    for (const brushlib::BrushPreset *p : model->presetsIn(QStringLiteral("Inking")))
+        if (p->id != copyId && !otherRow)
+            otherRow = library->rowForTest(p->id);
+    if (otherRow) {
+        sendMouse(otherRow, QEvent::MouseButtonPress, QPointF(otherRow->width() / 2.0, 20), Qt::LeftButton);
+        sendMouse(otherRow, QEvent::MouseButtonRelease, QPointF(otherRow->width() / 2.0, 20), Qt::LeftButton);
+    }
+    pump(300);
+    const QString name3 = nameOf();
+    const bool open3 = library->isVisible();
+    const Opened o4 = openRename();
+    typed(QStringLiteral("Ink Three"));
+    clickThumb(r, 0); // outside the Library: the click-away closes it, as ever
+    pump(300);
+    const QString name4 = nameOf();
+    check(QStringLiteral("(rn4) A CLICK ANYWHERE ELSE CONFIRMS: on another brush in the Library (which stays open), and "
+                         "outside the Library (which then closes, as a click outside it always closes it)"),
+          o3.field && name3 == QLatin1String("Ink Two") && open3 && o4.field && name4 == QLatin1String("Ink Three")
+              && library->renameFieldForTest() == nullptr,
+          QStringLiteral("in the Library: '%1', open %2; outside: '%3', open %4").arg(name3).arg(open3).arg(name4)
+              .arg(library->isVisible()));
+    rowsArea = viewportOf(library->rowForTest(copyId));
+    const OnScreen shownClosed = rowsOnScreen(library, rowsArea); // the Library closed by that click
+    check(QStringLiteral("(rn6) THE LIBRARY STAYS ON SCREEN WHILE A NAME IS TYPED (hand test S3: it went from the screen, "
+                         "all but the row being renamed, which floated over the canvas): with the field open, the screen "
+                         "where the Library's rows are shows them as the Library paints them, not what is under it - and "
+                         "so after Enter and after Esc. Read from the screen itself"),
+          shownRenaming.shown() && shownAfterEnter.shown() && shownAfterEsc.shown(),
+          QStringLiteral("renaming: the other rows %1, the row with the field %2; after Enter %3; after Esc %4")
+              .arg(shownRenaming.text(), shownRenamedRow.text(), shownAfterEnter.text(), shownAfterEsc.text()));
+    check(QStringLiteral("(rn6) control: the same reading finds the Library's rows on screen before Rename Brush, and "
+                         "finds them gone once the Library is closed"),
+          shownBefore.shown() && shownClosed.compared > 1000 && !shownClosed.shown(),
+          QStringLiteral("before %1; closed %2").arg(shownBefore.text(), shownClosed.text()));
+
+    // An empty name keeps the old one; spaces round a name are the model's to trim.
+    if (!library->isVisible())
+        brushButton->click();
+    pump(300);
+    library->selectCategoryForTest(QStringLiteral("Inking"));
+    pump(300);
+    const Opened o5 = openRename();
+    key(Qt::Key_Backspace);
+    const bool emptied = library->renameFieldForTest() && library->renameFieldForTest()->text().isEmpty();
+    key(Qt::Key_Return);
+    pump(300);
+    const QString name5 = nameOf();
+    const Opened o6 = openRename();
+    typed(QStringLiteral("   "));
+    key(Qt::Key_Return);
+    pump(300);
+    const QString name6 = nameOf();
+    const Opened o7 = openRename();
+    typed(QStringLiteral("  Ink Four  "));
+    key(Qt::Key_Return);
+    pump(300);
+    const QString name7 = nameOf();
+    check(QStringLiteral("(rn5) AN EMPTY NAME KEEPS THE OLD ONE: the name deleted, or only spaces, and Enter - the brush "
+                         "keeps its name; spaces round a new name are trimmed, as the Library always trimmed them"),
+          o5.field && emptied && name5 == QLatin1String("Ink Three") && o6.field && name6 == QLatin1String("Ink Three")
+              && o7.field && name7 == QLatin1String("Ink Four"),
+          QStringLiteral("emptied %1 -> '%2'; spaces -> '%3'; '  Ink Four  ' -> '%4'").arg(emptied).arg(name5)
+              .arg(name6).arg(name7));
+
+    // (rn7) THE PEN'S TAP IN THE NAME FIELD (re-test R1, 2026-11-24: four of the artist's renames
+    // ended the moment the pen tapped the field). The pen as the tablet sends it: through the
+    // window system, a press and a release, and whatever Qt makes of it after (the press handed on
+    // when no widget takes it, the mouse press made from it).
+    constexpr qint64 kRenamePen = 7024;
+    auto penTap = [](QWidget *over, const QPointF &at) {
+        QWindow *win = over->window()->windowHandle();
+        if (!win)
+            return;
+        const QPointF global = over->mapToGlobal(at);
+        const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+        for (const bool down : {true, false}) {
+            QWindowSystemInterface::handleTabletEvent(win, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                      int(QPointingDevice::PointerType::Pen),
+                                                      down ? Qt::LeftButton : Qt::NoButton, down ? 0.5 : 0.0, 0, 0,
+                                                      0, 0, 0, kRenamePen);
+            QCoreApplication::processEvents();
+        }
+    };
+    const Opened o8 = openRename();
+    if (QLineEdit *field = library->renameFieldForTest())
+        penTap(field, QPointF(field->width() * 0.75, field->height() / 2.0));
+    pump(300);
+    QLineEdit *fieldAfterTap = library->renameFieldForTest();
+    const bool tapKeptField = fieldAfterTap && fieldAfterTap->isVisible();
+    const bool tapKeptKeyboard = tapKeptField && QApplication::focusWidget() == fieldAfterTap;
+    const bool tapPlacedCaret = tapKeptField && !fieldAfterTap->hasSelectedText();
+    key(Qt::Key_End);
+    typed(QStringLiteral(" Pen"));
+    key(Qt::Key_Return);
+    pump(300);
+    const QString name8 = nameOf();
+    // Control: the same pen, tapping another brush while a name is typed, confirms it - the pen's
+    // press reaches the rename's click-away.
+    const Opened o9 = openRename();
+    typed(QStringLiteral("Ink Five"));
+    otherRow = nullptr; // (a rename rebuilds every row: found again)
+    for (const brushlib::BrushPreset *p : model->presetsIn(QStringLiteral("Inking")))
+        if (p->id != copyId && !otherRow)
+            otherRow = library->rowForTest(p->id);
+    if (otherRow)
+        penTap(otherRow, QPointF(otherRow->width() / 2.0, 20));
+    pump(300);
+    const QString name9 = nameOf();
+    const bool fieldGone9 = library->renameFieldForTest() == nullptr;
+    check(QStringLiteral("(rn7) A PEN TAP IN THE NAME FIELD KEEPS THE FIELD, as a mouse click in it does: the name being "
+                         "typed stays a field with the keyboard and the tap places the caret; typing goes on and Enter "
+                         "renames (re-test R1: the tap ended the rename)"),
+          o8.field && tapKeptField && tapKeptKeyboard && tapPlacedCaret && name8 == QLatin1String("Ink Four Pen"),
+          QStringLiteral("field %1 -> after the tap: field %2, keyboard %3, caret placed (no selection) %4; name '%5'")
+              .arg(o8.field).arg(tapKeptField).arg(tapKeptKeyboard).arg(tapPlacedCaret).arg(name8));
+    check(QStringLiteral("(rn7) control: the same pen tapping another brush while a name is typed confirms the name and "
+                         "ends the field"),
+          o9.field && otherRow && name9 == QLatin1String("Ink Five") && fieldGone9,
+          QStringLiteral("field %1, other brush %2, name '%3', field gone %4").arg(o9.field).arg(otherRow != nullptr)
+              .arg(name9).arg(fieldGone9));
+
+    const QStringList strayBoxes = strays->closed;
+    strays.reset();
+    check(QStringLiteral("(rn) no box opened while the brush was renamed, nine times over"), strayBoxes.isEmpty(),
+          QStringLiteral("%1: %2").arg(strayBoxes.size()).arg(strayBoxes.join(QStringLiteral(", "))));
+
+    // The copy Duplicate made goes (ids first: removing moves the model's presets).
+    {
+        QStringList made;
+        for (const brushlib::BrushPreset *p : model->presetsIn(QStringLiteral("Inking")))
+            if (!p->builtin && !idsBefore.contains(p->id))
+                made << p->id;
+        for (const QString &id : made)
+            model->removeUserPreset(id);
+    }
+
+    if (!copyId.isEmpty())
+        model->removeUserPreset(copyId);
+    r.window.markCleanForTest();
+    rig.reset();
+    restoreLibraryKeys();
+    FloatingToolWindow::setActivationGuardForTest(true);
+    brushlib::BrushLibraryPanel::setRenameByDialogForTest(false);
+    brushlib::BrushLibraryPanel::setWholePictureOffForTest(false);
+#endif
+}
+
 // ---- (ss) THE SAFE SAVE (saving step 1, 2026-11-23; approved by the user that day) -------------
 // Until this step a save wrote each changed picture OVER its own file and then replaced the
 // project file. Cut short between the two - a crash, the app ended, the power gone - it left the
@@ -37310,6 +38175,12 @@ int main(int argc, char **argv)
     // to hold one file open; it works in the family's scratch as the family left it.
     if (qEnvironmentVariableIsSet("SANKO_SAFESAVE_HOLDER"))
         return safesave::runHolder();
+#ifdef Q_OS_WIN
+    // THE OTHER PROGRAM'S WINDOW ((lb), 2026-11-24): this program started by the pass to stand
+    // under the SankoTV window as another application does.
+    if (qEnvironmentVariableIsSet("SANKO_ZWITNESS_DIR"))
+        return libbox::runWitness();
+#endif
     if (!victim)
         QDir(scratch).removeRecursively();
     QDir().mkpath(scratch + QStringLiteral("/settings"));
@@ -37336,6 +38207,14 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("libbox")) {
+        runLibraryBoxesPass(scratch); // the Library's boxes and Rename Brush in place (2026-11-24)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("bgsave")) {
         runBackgroundSavePass(scratch); // saving step 2 alone (2026-11-23)
         runSaveAsBackgroundPass(scratch); // ...and step 3 (2026-11-24)
@@ -37605,6 +38484,7 @@ int main(int argc, char **argv)
     runSizeCtlAgreementPass(scratch);
     runNewProjectPromptPass(a);
     runEraserLibraryPass(scratch);
+    runLibraryBoxesPass(scratch); // the Library's boxes and Rename Brush in place (2026-11-24)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

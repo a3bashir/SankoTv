@@ -143,6 +143,28 @@ public:
     void setModalSurface(bool on) { m_modalSurface = on; }
     bool isModalSurface() const { return m_modalSurface; }
 
+    // --- A FLOATING WINDOW NEVER HOLDS ACTIVATION (2026-11-24) -------------
+    // These windows take no focus (WS_EX_NOACTIVATE), but Windows still makes
+    // one the active window when a box it owned closes: activation goes back
+    // to a box's owner. The Brush Library was then the active window, and the
+    // next box it opened put the SankoTV window behind another program (hand
+    // test S2, 2026-11-23): the box is shown, the floating windows are hidden
+    // for it (suppressFloatingBars), and hiding the ACTIVE one made Windows
+    // give the foreground to the next window it could - not the SankoTV
+    // window, which the box disables - another program's. So:
+    //  - the suppression gives activation to the box BEFORE it hides a
+    //    floating window that holds it (to the anchor's window when no box is
+    //    showing), and
+    //  - a floating window that becomes the active one hands activation back
+    //    to the anchor's window as soon as it can (no box up) - which also
+    //    gives the canvas its keys back after a box of the Library's.
+    // A window that must take the keyboard for a while (the Library's rename
+    // in place) says so with setHoldsActivation(true) and false after.
+    void setHoldsActivation(bool on) { m_holdsActivation = on; }
+    bool holdsActivation() const { return m_holdsActivation; }
+    // For the checks' red run only: both rules off, as before 2026-11-24.
+    static void setActivationGuardForTest(bool on);
+
     // Place at anchor origin + (persisted or default) offset, clamped.
     // Virtual: the Brush Settings studio clamps against the WINDOW's client
     // area instead of the canvas marginRect — as a centred modal-style
@@ -237,6 +259,10 @@ private:
     bool m_wantVisible = false; // the caller's intent (tool toggles etc.)
     bool m_modalSurface = false;       // the modal-surface role (above)
     bool m_holdingSuppression = false; // this holder's push/pop parity
+    bool m_holdsActivation = false;    // may stay the active window (above)
+    bool m_handBackPending = false;    // a hand-back is posted
+    int m_handBackTries = 0;           // ...and looked at again while a box is up
+    void handBackActivation();
     bool m_dragging = false;
     QPoint m_dragStartGlobal;   // cursor at press
     QPoint m_dragStartPos;      // window pos at press
