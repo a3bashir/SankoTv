@@ -856,13 +856,13 @@ void AnimaticTimeline::refuse(const QString &why, const QPoint &globalPos)
 
 int AnimaticTimeline::tracksH() const
 {
-    return qMax(kPanelY + kPanelMinH + kCameraH + kAudioH,
+    return qMax(kPanelY + kPanelMinH + kCameraH + layerRowH() + kAudioH,
                 m_canvas ? m_canvas->height() : 0);
 }
 
 int AnimaticTimeline::panelTrackH() const
 {
-    return tracksH() - kPanelY - kCameraH - kAudioH;
+    return tracksH() - kPanelY - kCameraH - layerRowH() - kAudioH;
 }
 
 int AnimaticTimeline::cameraTrackY() const
@@ -870,9 +870,15 @@ int AnimaticTimeline::cameraTrackY() const
     return kPanelY + panelTrackH();
 }
 
-int AnimaticTimeline::audioTrackY() const
+// THE LAYER ROW (batch I-1): under CAMERA; 0 px when no layer has motion.
+int AnimaticTimeline::layerTrackY() const
 {
     return cameraTrackY() + kCameraH;
+}
+
+int AnimaticTimeline::audioTrackY() const
+{
+    return layerTrackY() + layerRowH();
 }
 
 QRect AnimaticTimeline::clipRect(int flatIndex) const
@@ -959,12 +965,274 @@ void AnimaticTimeline::setScenes(const QVector<Scene *> &scenes)
         m_camDragActive = false;
         m_camDragScene = m_camDragKey = -1;
     }
+    if (m_drag == Drag::LayerKey) { // ...nor a layer key's (batch I-1)
+        m_drag = Drag::None;
+        m_layerDragActive = false;
+        m_layerDragFlat = m_layerDragLayer = m_layerDragKey = -1;
+    }
     m_camHoverScene = m_camHoverKey = -1;
     m_easeHoverScene = m_easeHoverKey = -1; // the scenes changed: the keys may have
     rebuildBlocks();
     updateScrollRange();
+    refreshLayerRow();
     if (m_canvas)
         m_canvas->update();
+}
+
+// --- THE LAYER ROW (batch I-1, Figma I-1 693:755 option A) ------------------------------
+
+bool AnimaticTimeline::computeLayerRowShown() const
+{
+    for (const Scene *scene : m_scenes)
+        for (const Panel *panel : scene->panels)
+            if (panel)
+                for (const Layer &layer : panel->layers)
+                    if (layer.hasMotionData() && !isGroupLayer(layer)
+                        && layer.type != QLatin1String("background"))
+                        return true;
+    return false;
+}
+
+void AnimaticTimeline::refreshLayerRow()
+{
+    const bool shown = computeLayerRowShown();
+    if (shown != m_layerRowShown) {
+        m_layerRowShown = shown;
+        layoutTrackControls(); // the AUDIO row's controls move with it
+    }
+    if (m_canvas)
+        m_canvas->update();
+}
+
+QRect AnimaticTimeline::layerRowForTest() const
+{
+    return m_layerRowShown ? QRect(0, layerTrackY(), m_canvas ? m_canvas->width() : 0, kLayerRowH) : QRect();
+}
+
+QString AnimaticTimeline::layerRowLabel() const
+{
+    const QString dot = QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" ");
+    if (m_selected < 0 || m_selected >= m_blocks.size())
+        return QStringLiteral("LAYER");
+    const Block &b = m_blocks.at(m_selected);
+    const Panel *panel = b.sceneIndex < m_scenes.size() ? m_scenes.at(b.sceneIndex)->panels.value(b.panelIndex)
+                                                         : nullptr;
+    const Layer *layer = panel ? panel->activeLayer() : nullptr;
+    if (!layer || isGroupLayer(*layer) || layer->type == QLatin1String("background"))
+        return QStringLiteral("LAYER");
+    return QStringLiteral("LAYER") + dot + layer->name;
+}
+
+QVector<AnimaticTimeline::LayerMark> AnimaticTimeline::layerMarks() const
+{
+    QVector<LayerMark> marks;
+    if (!m_layerRowShown)
+        return marks;
+    const double ppf = pxPerFrame();
+    for (int flat = 0; flat < m_blocks.size(); ++flat) {
+        const Block &b = m_blocks.at(flat);
+        if (b.sceneIndex >= m_scenes.size())
+            continue;
+        const Panel *panel = m_scenes.at(b.sceneIndex)->panels.value(b.panelIndex);
+        if (!panel)
+            continue;
+        for (int li = 0; li < panel->layers.size(); ++li) {
+            const Layer &layer = panel->layers.at(li);
+            if (layer.keys.isEmpty() || isGroupLayer(layer) || layer.type == QLatin1String("background"))
+                continue;
+            const bool own = flat == m_selected && li == panel->activeLayerIndex;
+            QVector<LayerMark> mine;
+            for (int k = 0; k < layer.keys.size(); ++k) {
+                LayerMark m;
+                m.flat = flat;
+                m.layer = li;
+                m.key = k;
+                double f = layer.keys.at(k).at * b.frames;
+                if (m_drag == Drag::LayerKey && m_layerDragActive && flat == m_layerDragFlat
+                    && li == m_layerDragLayer && k == m_layerDragKey)
+                    f = m_layerDragFrame - b.startFrame; // where the drag has it
+                m.frame = b.startFrame + f;
+                m.x = contentXToScreen(m.frame * ppf);
+                m.ease = int(layer.keys.at(k).ease);
+                m.own = own;
+                m.greyed = !layer.animate;
+                mine.append(m);
+            }
+            std::stable_sort(mine.begin(), mine.end(),
+                             [](const LayerMark &a, const LayerMark &c) { return a.frame < c.frame; });
+            marks += mine;
+        }
+    }
+    return marks;
+}
+
+QVector<AnimaticTimeline::LayerSegment> AnimaticTimeline::layerSegments(const QVector<LayerMark> &marks) const
+{
+    QVector<LayerSegment> segments;
+    for (int i = 0; i + 1 < marks.size(); ++i) {
+        const LayerMark &a = marks.at(i);
+        const LayerMark &b = marks.at(i + 1);
+        if (!a.own || a.flat != b.flat || a.layer != b.layer)
+            continue; // the selected layer's moves only, within its panel
+        LayerSegment s;
+        s.flat = a.flat;
+        s.layer = a.layer;
+        s.fromKey = a.key;
+        s.toKey = b.key;
+        s.ease = a.ease;
+        s.x0 = a.x + kKeyHalf + 1.0;
+        s.x1 = b.x - kKeyHalf - 1.0;
+        s.dashed = shotcam::Ease(a.ease) == shotcam::Ease::Hold;
+        s.glyph = s.x1 - s.x0 >= kGlyphMinSegment;
+        s.smallMark = !s.glyph && s.x1 - s.x0 >= kSmallMarkMinSegment;
+        s.lineOnly = !s.glyph && !s.smallMark;
+        s.greyed = a.greyed;
+        if (s.x1 > s.x0)
+            segments.append(s);
+    }
+    return segments;
+}
+
+QRectF AnimaticTimeline::layerEaseMarkRect(const LayerSegment &s) const
+{
+    const qreal cx = (s.x0 + s.x1) / 2.0, cy = layerTrackY() + kLayerRowH / 2.0;
+    if (s.glyph)
+        return QRectF(cx - kGlyphW / 2.0, cy - kGlyphH / 2.0, kGlyphW, kGlyphH);
+    if (s.smallMark)
+        return QRectF(cx - kSmallMarkW / 2.0, cy - kSmallMarkH / 2.0, kSmallMarkW, kSmallMarkH);
+    return QRectF(s.x0, cy - 5.0, s.x1 - s.x0, 10.0);
+}
+
+bool AnimaticTimeline::inLayerRow(const QPoint &pos) const
+{
+    return m_layerRowShown && pos.x() >= kLabelCol && pos.y() >= layerTrackY()
+        && pos.y() < layerTrackY() + kLayerRowH;
+}
+
+bool AnimaticTimeline::layerKeyAt(const QPoint &pos, LayerMark *mark) const
+{
+    if (!inLayerRow(pos))
+        return false;
+    int best = kKeyHit + 1;
+    bool found = false;
+    for (const LayerMark &m : layerMarks()) {
+        const int d = qAbs(m.x - pos.x()) - (m.own ? 1 : 0); // the selected layer's wins a tie
+        if (d < best) {
+            best = d;
+            *mark = m;
+            found = true;
+        }
+    }
+    return found;
+}
+
+bool AnimaticTimeline::layerEaseMarkAt(const QPoint &pos, LayerSegment *segment, QRectF *markRect) const
+{
+    if (!inLayerRow(pos))
+        return false;
+    for (const LayerSegment &s : layerSegments(layerMarks())) {
+        const QRectF r = layerEaseMarkRect(s);
+        if (r.adjusted(-1, -2, 1, 2).contains(QPointF(pos))) {
+            *segment = s;
+            *markRect = r;
+            return true;
+        }
+    }
+    return false;
+}
+
+void AnimaticTimeline::paintLayerRow(QPainter &p)
+{
+    using namespace SankoTimelineTheme;
+    if (!m_layerRowShown || !m_canvas)
+        return;
+    const int y0 = layerTrackY();
+    const qreal cy = y0 + kLayerRowH / 2.0;
+    p.save();
+    p.setClipRect(QRect(kLabelCol, y0, m_canvas->width() - kLabelCol, kLayerRowH), Qt::IntersectClip);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QVector<LayerMark> marks = layerMarks();
+    const QColor grey(0x6f, 0x6f, 0x80);
+    for (const LayerSegment &s : layerSegments(marks)) {
+        const QColor c = s.greyed ? grey : kCameraSegment;
+        if (s.dashed) {
+            QPen pen(c, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+            pen.setDashPattern({2.5, 2.0});
+            p.setPen(pen);
+            p.drawLine(QPointF(s.x0, cy), QPointF(s.x1, cy));
+        } else {
+            p.fillRect(QRectF(s.x0, cy - 1.0, s.x1 - s.x0, 2.0), c);
+        }
+        if ((s.glyph || s.smallMark) && !s.greyed)
+            paintEaseGlyph(p, layerEaseMarkRect(s), shotcam::Ease(s.ease), false, s.smallMark);
+    }
+    const int phFrame = playheadFrame();
+    for (const LayerMark &m : marks) {
+        const QPointF c(m.x + 0.5, cy);
+        const bool atPlayhead = qAbs(m.frame - phFrame) < 0.5;
+        if (!m.own) {
+            // ANOTHER LAYER'S KEY, dim: a small hollow diamond - where the film has motion.
+            const qreal h = kKeyHalf - 2.0;
+            QPolygonF d;
+            d << QPointF(c.x(), c.y() - h) << QPointF(c.x() + h, c.y()) << QPointF(c.x(), c.y() + h)
+              << QPointF(c.x() - h, c.y());
+            QColor ink = m.greyed ? grey : kCameraKeyEdge;
+            ink.setAlphaF(0.55);
+            p.setPen(QPen(ink, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawPolygon(d);
+            continue;
+        }
+        QColor fill = m.greyed ? QColor(0x2a, 0x2a, 0x30) : kCameraKeyFill;
+        QColor edge = m.greyed ? grey : kCameraKeyEdge;
+        if (atPlayhead && !m.greyed) {
+            fill = kPlayhead;
+            edge = Qt::white;
+        }
+        QPolygonF diamond;
+        diamond << QPointF(c.x(), c.y() - kKeyHalf) << QPointF(c.x() + kKeyHalf, c.y())
+                << QPointF(c.x(), c.y() + kKeyHalf) << QPointF(c.x() - kKeyHalf, c.y());
+        p.setPen(QPen(edge, 1.5, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
+        p.setBrush(fill);
+        p.drawPolygon(diamond);
+    }
+    p.restore();
+}
+
+QVariantList AnimaticTimeline::layerKeysForTest() const
+{
+    QVariantList list;
+    const int phFrame = playheadFrame();
+    for (const LayerMark &m : layerMarks())
+        list.append(QVariantMap{{QStringLiteral("flat"), m.flat},
+                                {QStringLiteral("layer"), m.layer},
+                                {QStringLiteral("key"), m.key},
+                                {QStringLiteral("x"), m.x},
+                                {QStringLiteral("frame"), m.frame},
+                                {QStringLiteral("own"), m.own},
+                                {QStringLiteral("greyed"), m.greyed},
+                                {QStringLiteral("atPlayhead"), qAbs(m.frame - phFrame) < 0.5}});
+    return list;
+}
+
+QVariantList AnimaticTimeline::layerSegmentsForTest() const
+{
+    QVariantList list;
+    for (const LayerSegment &s : layerSegments(layerMarks()))
+        list.append(QVariantMap{{QStringLiteral("flat"), s.flat},
+                                {QStringLiteral("layer"), s.layer},
+                                {QStringLiteral("from"), s.fromKey},
+                                {QStringLiteral("to"), s.toKey},
+                                {QStringLiteral("ease"), shotcam::easeLabel(shotcam::Ease(s.ease))},
+                                {QStringLiteral("dashed"), s.dashed},
+                                {QStringLiteral("glyph"), s.glyph},
+                                {QStringLiteral("small"), s.smallMark},
+                                {QStringLiteral("lineOnly"), s.lineOnly},
+                                {QStringLiteral("greyed"), s.greyed},
+                                {QStringLiteral("markRect"), layerEaseMarkRect(s)},
+                                {QStringLiteral("x0"), s.x0},
+                                {QStringLiteral("x1"), s.x1}});
+    return list;
 }
 
 void AnimaticTimeline::setCurrentPanel(int flatIndex)
@@ -1589,6 +1857,10 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     p.fillRect(QRect(0, kPanelY, W, panelTrackH()), kPageBg);
     p.fillRect(QRect(0, cameraTrackY(), W, kCameraH), kCameraRowBg);
     p.fillRect(QRect(0, cameraTrackY(), W, 1), kHairline);
+    if (m_layerRowShown) { // the LAYER row (batch I-1), as the CAMERA row is
+        p.fillRect(QRect(0, layerTrackY(), W, kLayerRowH), kCameraRowBg);
+        p.fillRect(QRect(0, layerTrackY(), W, 1), kHairline);
+    }
     p.fillRect(QRect(0, audioTrackY(), W, kAudioH),
                m_audioLoaded ? QColor("#0d1a26") : kRulerBg);
 
@@ -1980,6 +2252,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
 
     // ----- The CAMERA row (Phase 1C) -----
     paintCameraRow(p);
+    paintLayerRow(p); // batch I-1
 
     // ----- Audio track -----
     // A PLAIN BAR, as long as the audio, with the file's name on it. This
@@ -2173,6 +2446,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             p.drawText(QRect(0, t.y, kLabelColW - 15, t.h),
                        Qt::AlignVCenter | Qt::AlignRight,
                        QString::fromLatin1(t.name));
+        // THE LAYER ROW (batch I-1): "LAYER · Boat", the selected layer's name, elided to
+        // the column.
+        if (m_layerRowShown) {
+            const QRect r(8, layerTrackY(), kLabelColW - 15 - 8, kLayerRowH);
+            p.drawText(r, Qt::AlignVCenter | Qt::AlignRight,
+                       QFontMetrics(f).elidedText(layerRowLabel(), Qt::ElideRight, r.width()));
+        }
 
         // The lock / speaker / eye controls are real buttons over this
         // column (buildTrackControls), not painted here any more.
@@ -3561,6 +3841,33 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
             return;
         }
     }
+    // THE LAYER ROW (batch I-1): a key - the selected layer's, or another's dim mark - takes
+    // the playhead (and that panel and layer); it may become a drag in its panel. An ease
+    // mark asks for the five eases. Before the playhead, as the CAMERA row's keys are.
+    if (inLayerRow(pos)) {
+        LayerMark mark;
+        if (layerKeyAt(pos, &mark)) {
+            emit layerKeyActivated(mark.flat, mark.layer, mark.key);
+            m_drag = Drag::LayerKey;
+            m_layerDragFlat = mark.flat;
+            m_layerDragLayer = mark.layer;
+            m_layerDragKey = mark.key;
+            m_layerDragFromFrame = int(std::lround(mark.frame));
+            m_layerDragFrame = m_layerDragFromFrame;
+            m_layerDragActive = false;
+            m_layerPress = pos;
+            e->accept();
+            return;
+        }
+        LayerSegment segment;
+        QRectF markRect;
+        if (layerEaseMarkAt(pos, &segment, &markRect)) {
+            const QRect onScreen(m_canvas->mapToGlobal(markRect.topLeft().toPoint()), markRect.size().toSize());
+            emit layerEaseMarkClicked(segment.flat, segment.layer, segment.fromKey, onScreen);
+            e->accept();
+            return;
+        }
+    }
     // Any other press on the timeline ends the key selection: Delete over
     // the timeline must never take a key the artist is no longer looking at
     // when they have just picked a clip.
@@ -3743,6 +4050,16 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
         e->accept();
         return;
     }
+    // THE LAYER ROW (batch I-1): on a key, the playhead goes there and its menu opens.
+    if (inLayerRow(pos)) {
+        LayerMark mark;
+        if (layerKeyAt(pos, &mark)) {
+            emit layerKeyActivated(mark.flat, mark.layer, mark.key);
+            emit layerKeyContextMenuRequested(mark.flat, mark.layer, mark.key, e->globalPos());
+        }
+        e->accept();
+        return;
+    }
     // The AUDIO row, its label included: the track's own menu. Whoever owns
     // the audio builds it; nothing is selected by asking. A hidden track
     // (Part B) takes no press, this one included.
@@ -3861,6 +4178,33 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             m_canvas->update();
         }
         followChip(e->globalPosition().toPoint(), timecode(m_camDragFrame));
+        return;
+    }
+
+    // A LAYER KEY dragged in time (batch I-1): within its own panel, from its first frame to
+    // its end.
+    if (m_drag == Drag::LayerKey) {
+        if (!(e->buttons() & Qt::LeftButton)) {
+            m_drag = Drag::None; // the release went elsewhere
+            m_layerDragActive = false;
+            m_canvas->update();
+            return;
+        }
+        if (!m_layerDragActive) {
+            if ((pos - m_layerPress).manhattanLength() < kKeyDragThreshold)
+                return;
+            m_layerDragActive = true;
+            m_canvas->setCursor(Qt::SizeHorCursor);
+        }
+        if (m_layerDragFlat < 0 || m_layerDragFlat >= m_blocks.size())
+            return;
+        const Block &b = m_blocks.at(m_layerDragFlat);
+        const int frame = qBound(b.startFrame, frameAtScreenX(pos.x()), b.startFrame + b.frames - 1);
+        if (frame != m_layerDragFrame) {
+            m_layerDragFrame = frame;
+            m_canvas->update();
+        }
+        followChip(e->globalPosition().toPoint(), timecode(m_layerDragFrame));
         return;
     }
 
@@ -4181,6 +4525,20 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         // panel it landed in, as one undo step.
         if (moved)
             emit cameraKeyMoveRequested(scene, key, sceneFrame);
+        return;
+    }
+    if (m_drag == Drag::LayerKey) { // batch I-1: one request on release, the workspace's step
+        const bool moved = m_layerDragActive && m_layerDragFrame != m_layerDragFromFrame;
+        const int flat = m_layerDragFlat, layer = m_layerDragLayer, key = m_layerDragKey;
+        const int inPanel = flat >= 0 && flat < m_blocks.size() ? m_layerDragFrame - m_blocks.at(flat).startFrame : 0;
+        m_drag = Drag::None;
+        m_layerDragActive = false;
+        m_layerDragFlat = m_layerDragLayer = m_layerDragKey = -1;
+        m_canvas->setCursor(Qt::ArrowCursor);
+        m_canvas->update();
+        hideChip();
+        if (moved)
+            emit layerKeyMoveRequested(flat, layer, key, inPanel);
         return;
     }
     if (m_drag == Drag::Move) {

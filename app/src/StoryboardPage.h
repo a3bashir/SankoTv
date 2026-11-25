@@ -284,6 +284,9 @@ public:
     void addPanelForTest() { addPanelAfterSelected(); }
     QWidget *moveModToolbarForTest() const { return m_moveModToolbar; } // batch F1's chip check
     void duplicateSelectedPanelForTest() { duplicatePanel(); }
+    // Batch I-1's checks: a Layers row pressed as the artist presses it; the footer's Merge.
+    void layerRowClickedForTest(int index) { layerRowClicked(index, Qt::NoModifier); }
+    void layerMergeSelectedForTest() { layerMergeSelected(); }
     QVariantMap stageBarStateForTest() const;
     // The project's margin (for new panels) moved, and no panel with it.
     void projectMarginMoved(const QSize &newSize, const QPoint &offset);
@@ -539,6 +542,37 @@ public:
     void applyLayerStackForUndo(Panel *panel, const QVector<Layer> &layers,
                                 int activeIndex);
 
+    // --- LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755, approved) -----------------
+    // The playhead's place in the panel on the canvas (what the canvas poses at).
+    DrawingCanvas::MotionView motionView() const;
+    // The Layers panel's Animate diamond on row `index`: on, off (its keys kept, unused).
+    void layerToggleAnimate(int index);
+    QAbstractButton *layerAnimateButtonForTest(int index) const;
+    // A key at the playhead on `layerIndex` of the panel on the canvas, with `pose` - set or
+    // replaced, one undo step `text`. The first key gives the layer its pivot (`pivot`,
+    // stage px: the centre of its art). What the Move box and the opacity slider write.
+    void setLayerKeyAtPlayhead(int layerIndex, const shotcam::LayerPose &pose, const QPointF &pivot,
+                               const QString &text);
+    // The LAYER row's requests (batch I-1): the playhead to a key (its panel and layer
+    // chosen); a key moved in its panel; its menu (Delete Key); its move's five eases.
+    void layerGoToKey(int flat, int layerIndex, int keyIndex);
+    void layerMoveKey(int flat, int layerIndex, int keyIndex, int frameInPanel);
+    void layerDeleteKey(int flat, int layerIndex, int keyIndex);
+    void layerSetKeyEase(int flat, int layerIndex, int keyIndex, shotcam::Ease ease);
+    void onLayerKeyMenu(int flat, int layerIndex, int keyIndex, const QPoint &globalPos);
+    void onLayerEaseMark(int flat, int layerIndex, int keyIndex, const QRect &globalMarkRect);
+    // Everything that shows a layer's motion, after a key or the playhead moved.
+    void refreshLayerMotionUi();
+    // The Dev Recorder's layerMotion event for a step just made on `layerIndex` of `panel`.
+    void reportLayerMotion(const QString &what, const Panel *panel, int layerIndex);
+    // The key of `layer` (of the panel on the canvas) on the playhead's frame, or -1.
+    int layerKeyAtPlayhead(const Panel &panel, const Layer &layer) const;
+    // Writes the key at the playhead in place (no undo step: the caller's).
+    bool writeLayerKeyAtPlayhead(Panel *panel, int layerIndex, const shotcam::LayerPose &pose, const QPointF &pivot);
+    // The opacity slider's value for the active layer: its keyed opacity at the playhead
+    // when it animates.
+    int activeLayerOpacityPercent(const Panel *panel) const;
+
     // Panel-level clipboard. Copy stores an owned deep copy; paste inserts a
     // fresh clone (new layer UUIDs) each time. Cut is blocked on a scene's
     // last panel, same rule as Delete.
@@ -577,6 +611,9 @@ signals:
     // A layer's depth was changed: one "Layer Depth" step (the Dev
     // Recorder's layerDepth event): the layer, its depth before and after.
     void layerDepthEdited(const QVariantMap &event);
+    // A layer's motion was changed (batch I-1): one step - its name, the layer, the panel, the
+    // playhead's frame, Animate, and every key (the Dev Recorder's layerMotion event).
+    void layerMotionEdited(const QVariantMap &event);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;

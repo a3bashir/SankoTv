@@ -350,8 +350,19 @@ signals:
     void cameraAnimateToggled(bool on);
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos); // Phase 1D
     void sceneLengthLockToggleRequested(int sceneIndex); // the lock on the SCENES row (batch F1)
+    // THE LAYER ROW's requests (batch I-1; AnimaticTimeline's of the same names).
+    void layerKeyActivated(int flatPanelIndex, int layerIndex, int keyIndex);
+    void layerKeyMoveRequested(int flatPanelIndex, int layerIndex, int keyIndex, int frameInPanel);
+    void layerKeyContextMenuRequested(int flatPanelIndex, int layerIndex, int keyIndex, const QPoint &globalPos);
+    void layerEaseMarkClicked(int flatPanelIndex, int layerIndex, int keyIndex, const QRect &globalMarkRect);
 
 public:
+    // THE LAYER ROW (batch I-1): a layer's motion or the selected layer changed - the row
+    // shows or goes, and repaints.
+    void refreshLayerRow();
+    // The preview's moving panel: the place in the panel it is posed at (batch I-1).
+    double previewAtForTest() const;
+    bool previewMovingForTest() const;
     // Test hooks. The duration one is the REAL request the timeline drag
     // makes; the rest read state, or stand in for a timer that would
     // otherwise take a panel's whole duration to fire.

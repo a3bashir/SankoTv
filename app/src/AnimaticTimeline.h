@@ -259,6 +259,26 @@ public:
     QVariantList cameraSegmentsForTest() const;
     double cameraRowOpacityForTest() const;
 
+    // THE LAYER ROW (batch I-1, 2026-11-24; Figma I-1 693:755, option A, approved): a 28 px
+    // row under CAMERA, there while any layer of the project has motion kept (no project
+    // without one changes). It shows THE SELECTED LAYER's keys - the active layer of the
+    // panel on the canvas, named in the label column ("LAYER · Boat") - as the CAMERA row
+    // shows the camera's: a diamond on each key at its frame, a bar between consecutive keys
+    // with the move's ease mark (Hold dashed); and, dim, a small mark on every key of every
+    // other animated layer, so the panels with motion are seen. Animate off: the layer's
+    // keys greyed, kept. A key pressed: the playhead goes there (and, a dim one, its panel
+    // and layer are chosen); dragged: moved in its panel, on release; its ease mark: the
+    // five eases; right-click: its menu. The edits are the workspace's, as the camera's.
+    void refreshLayerRow();
+    bool layerRowShown() const { return m_layerRowShown; }
+    QRect layerRowForTest() const;
+    QString layerRowLabelForTest() const { return layerRowLabel(); }
+    // Each key as drawn: "flat", "layer", "key", "x", "frame" (film), "own" (the selected
+    // layer's; else dim), "greyed" (Animate off), "atPlayhead"; each bar: "flat", "layer",
+    // "from", "to", "ease", "dashed", "glyph", "small", "lineOnly", "markRect", "x0", "x1".
+    QVariantList layerKeysForTest() const;
+    QVariantList layerSegmentsForTest() const;
+
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
     void setCurrentPanel(int flatIndex);  // the panel under the PLAYHEAD
@@ -308,6 +328,11 @@ signals:
     // Batch 6d: the amber chip of a clip whose art the camera leaves, pressed.
     void artExitChipClicked(int flatPanelIndex, const QPoint &globalPos);
     void cameraAnimateToggled(bool on);
+    // THE LAYER ROW (batch I-1; see refreshLayerRow).
+    void layerKeyActivated(int flatPanelIndex, int layerIndex, int keyIndex);
+    void layerKeyMoveRequested(int flatPanelIndex, int layerIndex, int keyIndex, int frameInPanel);
+    void layerKeyContextMenuRequested(int flatPanelIndex, int layerIndex, int keyIndex, const QPoint &globalPos);
+    void layerEaseMarkClicked(int flatPanelIndex, int layerIndex, int keyIndex, const QRect &globalMarkRect);
     // Right-click on the SCENES track (Phase 1D): that scene's menu.
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos);
     // A press on a scene's lock on the SCENES row (batch F1): lock or unlock its length.
@@ -424,6 +449,39 @@ private:
     QString artExitChipHoverText(int flatIndex) const;
     void paintCameraRow(QPainter &p);
     void paintPinLines(QPainter &p); // the pinned keys' dotted lines through the AUDIO row
+    // THE LAYER ROW (batch I-1).
+    int layerTrackY() const;
+    int layerRowH() const { return m_layerRowShown ? kLayerRowH : 0; }
+    static constexpr int kLayerRowH = 28;
+    struct LayerMark
+    {
+        int flat = 0, layer = 0, key = 0;
+        double frame = 0.0; // in the film
+        int x = 0;
+        int ease = 0;
+        bool own = false;    // the selected layer's
+        bool greyed = false; // its Animate is off
+    };
+    struct LayerSegment
+    {
+        int flat = 0, layer = 0, fromKey = 0, toKey = 0, ease = 0;
+        qreal x0 = 0, x1 = 0;
+        bool dashed = false, glyph = false, smallMark = false, lineOnly = false, greyed = false;
+    };
+    QVector<LayerMark> layerMarks() const;
+    QVector<LayerSegment> layerSegments(const QVector<LayerMark> &marks) const;
+    QRectF layerEaseMarkRect(const LayerSegment &s) const;
+    bool inLayerRow(const QPoint &pos) const;
+    bool layerKeyAt(const QPoint &pos, LayerMark *mark) const;
+    bool layerEaseMarkAt(const QPoint &pos, LayerSegment *segment, QRectF *markRect) const;
+    QString layerRowLabel() const;
+    void paintLayerRow(QPainter &p);
+    bool computeLayerRowShown() const;
+    bool m_layerRowShown = false;
+    int m_layerDragFlat = -1, m_layerDragLayer = -1, m_layerDragKey = -1;
+    int m_layerDragFrame = -1, m_layerDragFromFrame = -1; // film frames
+    bool m_layerDragActive = false;
+    QPoint m_layerPress;
     QRect clipRect(int flatIndex) const; // on the canvas; empty if no such clip
     int moveGapAt(int screenX) const;
 
@@ -639,7 +697,7 @@ private:
 
     // Interaction.
     int m_hoverIndex = -1;
-    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey };
+    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey, LayerKey };
     Drag m_drag = Drag::None;
     int m_scrubIndex = -1;     // last panel announced during a playhead drag
     int m_scrubFrameSent = -1; // last frame announced (playheadScrubbedTo)

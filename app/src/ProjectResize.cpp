@@ -176,6 +176,10 @@ bool resizePanel(Panel *panel, const QSize &newSize, const QPoint &offset)
         layer.image = fresh;
         layer.tiles.reset();
         layer.tilesOf = 0;
+        // A layer's pivot (batch I-1) stays on its art: the art moved by the offset, and the
+        // panel's margin - where frame space starts - did not.
+        if (layer.hasMotionData())
+            layer.pivot += QPointF(offset);
     }
 
     // SWAP. A vector move: no allocation, no I/O, nothing that can fail.

@@ -20,7 +20,9 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 
 namespace shotcam {
 
@@ -109,6 +111,28 @@ struct CameraState
 // The ease of the segment that STARTS at a key.
 enum class Ease { Linear, EaseIn, EaseOut, EaseInOut, Hold };
 
+// w(u) for u in [0, 1], the one curve of every key's ease - the camera's (shotcam::ease
+// reads it) and a layer's (batch I-1): Linear u; Ease In u^2; Ease Out 1-(1-u)^2; Ease
+// In/Out 3u^2-2u^3; Hold 0 until the next key. Here, header-only, so the model's own
+// flatten (StoryboardModel.h) poses a layer with the camera's curve, in every target.
+inline double easeCurve(Ease e, double u)
+{
+    u = u < 0.0 ? 0.0 : (u > 1.0 ? 1.0 : u);
+    switch (e) {
+    case Ease::Linear:
+        return u;
+    case Ease::EaseIn:
+        return u * u;
+    case Ease::EaseOut:
+        return 1.0 - (1.0 - u) * (1.0 - u);
+    case Ease::EaseInOut:
+        return u * u * (3.0 - 2.0 * u);
+    case Ease::Hold:
+        return u >= 1.0 ? 1.0 : 0.0;
+    }
+    return u;
+}
+
 // WHAT A MOVE DOES (2026-11-06, Figma CAM-2): a segment's end key against
 // its start key, for the canvas's movement glyphs - editing guides only,
 // never drawn by anything that renders the shot. shotcam::motionBetween /
@@ -143,6 +167,76 @@ struct SceneCamera
     QVector<CameraKey> keys; // empty = the neutral camera
     bool isEmpty() const { return keys.isEmpty(); }
 };
+
+// LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755, approved with the user's answers
+// that evening). A layer's own move over its panel, before its depth and the camera place
+// it: where it is moved from where it is drawn, turned and sized about its PIVOT (the
+// centre of its drawn art when it first animated), and its opacity. The identity pose is
+// the layer as drawn.
+struct LayerPose
+{
+    double dx = 0.0, dy = 0.0; // stage px, from where it is drawn
+    double rotation = 0.0;     // degrees, clockwise, about the pivot
+    double scale = 1.0;        // one size for both directions, about the pivot (1 = as drawn)
+    double opacity = 1.0;      // 0 .. 1, the Layers panel's slider
+    bool operator==(const LayerPose &o) const
+    {
+        return dx == o.dx && dy == o.dy && rotation == o.rotation && scale == o.scale && opacity == o.opacity;
+    }
+    bool operator!=(const LayerPose &o) const { return !(*this == o); }
+};
+
+// One key of a layer's motion. ANCHORED TO ITS PANEL as the camera's keys are (the user's
+// answer 1): `at` is where in the panel - 0 its first frame, 1 its end - so a panel made
+// longer stretches the move with it. A layer belongs to one panel, so no uid is needed.
+struct LayerKey
+{
+    double at = 0.0;
+    LayerPose pose;
+    Ease ease = Ease::EaseInOut; // the move that STARTS at this key
+    bool operator==(const LayerKey &o) const { return at == o.at && pose == o.pose && ease == o.ease; }
+    bool operator!=(const LayerKey &o) const { return !(*this == o); }
+};
+
+// A layer's pose at `at` from its keys, sorted or not: before the first key that key's,
+// after the last the last's; between two, position, turn and opacity in a straight line
+// on the ease's w, the size on a ratio scale (as the camera's zoom: 50 % - 100 % - 200 %
+// are even steps). No keys: the identity pose with `restOpacity`. Header-only (above).
+inline LayerPose poseFromKeys(const QVector<LayerKey> &keys, double at, double restOpacity)
+{
+    LayerPose rest;
+    rest.opacity = restOpacity;
+    if (keys.isEmpty())
+        return rest;
+    QVector<const LayerKey *> sorted;
+    sorted.reserve(keys.size());
+    for (const LayerKey &k : keys)
+        sorted.append(&k);
+    std::stable_sort(sorted.begin(), sorted.end(),
+                     [](const LayerKey *a, const LayerKey *b) { return a->at < b->at; });
+    if (at <= sorted.first()->at)
+        return sorted.first()->pose;
+    if (at >= sorted.last()->at)
+        return sorted.last()->pose;
+    int i = int(sorted.size()) - 2;
+    while (i > 0 && sorted.at(i)->at > at)
+        --i;
+    const LayerKey &a = *sorted.at(i);
+    const LayerKey &b = *sorted.at(i + 1);
+    const double span = b.at - a.at;
+    if (span <= 0.0)
+        return b.pose;
+    const double w = easeCurve(a.ease, (at - a.at) / span);
+    LayerPose p;
+    p.dx = a.pose.dx + (b.pose.dx - a.pose.dx) * w;
+    p.dy = a.pose.dy + (b.pose.dy - a.pose.dy) * w;
+    p.rotation = a.pose.rotation + (b.pose.rotation - a.pose.rotation) * w;
+    p.scale = a.pose.scale == b.pose.scale || a.pose.scale <= 0.0 || b.pose.scale <= 0.0
+        ? (w < 1.0 ? a.pose.scale : b.pose.scale)
+        : std::exp(std::log(a.pose.scale) + (std::log(b.pose.scale) - std::log(a.pose.scale)) * w);
+    p.opacity = a.pose.opacity + (b.pose.opacity - a.pose.opacity) * w;
+    return p;
+}
 
 // One panel of a scene's layout as an edit will leave it (batch F1): its camera uid
 // and its frames at the project's rate (shotcam::keysKeepingFrames).

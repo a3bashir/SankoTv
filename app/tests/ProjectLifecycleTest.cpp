@@ -13879,7 +13879,12 @@ void runRowPinPass(const QString &scratch)
     out() << "--- (rp) the row pins ---" << Qt::endl;
     using namespace workspace;
     const QString project = mppins::writeMovingProject(scratch + QStringLiteral("/rp_rows"), 0.0);
-    Rig r(project);
+    // THE WINDOW 12 PX WIDER (batch I-1, 2026-11-24): the Layers panel's narrowest is 12 px wider since its
+    // rows hold the Animate diamond, and in this window the panel is at its narrowest - the timeline, whose
+    // rows these pins record, came out 12 px narrower. The window gives the 12 px back, so the rows are the
+    // width they were recorded at; the control after the pins shows the width is all that moved.
+    constexpr int kAnimateDiamondPx = 12;
+    Rig r(project, QSize(1880 + kAnimateDiamondPx, 900));
     if (!r.ok) {
         check(QStringLiteral("(rp) the row-pin fixture opens"), false);
         return;
@@ -13899,6 +13904,29 @@ void runRowPinPass(const QString &scratch)
     };
     pin("the CAMERA row (two anchored keys, zoom 100)", rowpins::kCameraRow, cam);
     pin("the AUDIO row with no track (the hint)", rowpins::kAudioRowNone, none);
+    // Control (batch I-1): the Layers panel is at its narrowest here, as the passes before leave it ((dp) docks
+    // it so, and the layout is kept), so the timeline's width follows that minimum; in the 1880 px window the
+    // CAMERA row is not its pin (the same drawing, 12 px narrower), and 12 px wider again it is.
+    {
+        auto *dock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers"));
+        QWidget *column = dock ? dock->widget() : nullptr;
+        const bool narrowest = column && column->width() <= column->minimumWidth() + 4;
+        const int columnWidth = column ? column->width() : -1, columnMinimum = column ? column->minimumWidth() : -1;
+        const int timelineWide = r.surface->width();
+        r.window.resize(1880, 900);
+        pump(300);
+        const int timelineNarrow = r.surface->width();
+        const QString camNarrow = rowSha(r.timeline->cameraRowForTest());
+        r.window.resize(1880 + kAnimateDiamondPx, 900);
+        pump(300);
+        check(QStringLiteral("(rp) control: the Layers panel is at its narrowest in this pass; in the 1880 px window the "
+                             "timeline is 12 px narrower and its CAMERA row differs from the pin; 12 px wider again, "
+                             "the row is the pin"),
+              narrowest && timelineWide - timelineNarrow == kAnimateDiamondPx && camNarrow != cam
+                  && rowSha(r.timeline->cameraRowForTest()) == cam,
+              QStringLiteral("Layers column %1 px (narrowest %2); timeline %3 -> %4 px").arg(columnWidth)
+                  .arg(columnMinimum).arg(timelineWide).arg(timelineNarrow));
+    }
     // A track imported through the real menu: the plain bar.
     const QString wav = scratch + QStringLiteral("/rp_rows/beat.wav");
     audio::writeWav(wav, 6.0);
@@ -13917,7 +13945,8 @@ void runRowPinPass(const QString &scratch)
     // moved 1 px ACROSS, the strip's control, draws the same row: the row
     // shows when a key is, not where the camera looks.)
     Rig n(mppins::writeMovingProject(scratch + QStringLiteral("/rp_rows_b"), 0.0, QSize(0, 0),
-                                     true, 24));
+                                     true, 24),
+          QSize(1880 + kAnimateDiamondPx, 900)); // as the first (batch I-1)
     if (n.ok) {
         pump(300);
         const QImage surface = n.surface->grab().toImage();
@@ -35570,6 +35599,705 @@ void runLibraryBoxesPass(const QString &scratch)
 #endif
 }
 
+// ---- (lm) LAYER MOTION THROUGH THE REAL WINDOW (batch I-1, 2026-11-24; Figma I-1 693:755) ----
+// The Camera family proves the pose, the one placement and the MP4 headless; this drives the
+// workspace: the Layers panel's Animate diamond, the Move box that sets a key (and its faint
+// copies, path and chip, with the Move tool only), the opacity slider's key, the LAYER row
+// (its keys, the dim marks, the greyed keys, the eases, a drag, Delete Key), the canvas's
+// views, the preview, the strip and the clip at the first frame, the file (version 6 only
+// with motion), Duplicate, and Merge refused.
+namespace lmui {
+const QSize kSize(960, 540);
+const QColor kBoat(220, 30, 30), kGull(30, 60, 220), kGround(30, 170, 60);
+
+// Scene 1, two 24-frame panels at 24 fps. Panel 1: the paper, Ground (a green 30 px square at
+// (700, 380)) and Boat (a red 20 px square at (200, 200)); panel 2: Gull (blue, at (480, 120)).
+// `motion`: the Boat animates - 100 px right at frame 0, 300 right and 100 down at frame 12,
+// both Linear - and the Gull, 0 then 200 px right at frame 12.
+QString writeMotionProject(const QString &dir, bool motion)
+{
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/Motion.sankotv");
+    Scene *scene = new Scene;
+    scene->number = 1;
+    auto square = [](const QString &name, const QPointF &c, int side, const QColor &colour) {
+        Layer layer = makeRasterLayer(name, kSize);
+        QPainter p(&layer.image);
+        p.fillRect(QRectF(c - QPointF(side / 2.0, side / 2.0), QSizeF(side, side)), colour);
+        p.end();
+        return layer;
+    };
+    auto key = [](double at, double dx, double dy) {
+        shotcam::LayerKey k;
+        k.at = at;
+        k.pose.dx = dx;
+        k.pose.dy = dy;
+        k.ease = shotcam::Ease::Linear;
+        return k;
+    };
+    Panel *a = makeBlankPanel(kSize);
+    a->layers.removeLast();
+    a->layers.append(square(QStringLiteral("Ground"), {700, 380}, 30, kGround));
+    Layer boat = square(QStringLiteral("Boat"), {200, 200}, 20, kBoat);
+    if (motion) {
+        boat.animate = true;
+        boat.pivot = QPointF(200, 200);
+        boat.keys = {key(0.0, 100, 0), key(0.5, 300, 100)};
+    }
+    a->layers.append(boat);
+    a->activeLayerIndex = 2;
+    a->setLength(24, 24);
+    scene->panels.append(a);
+    Panel *b = makeBlankPanel(kSize);
+    b->layers.removeLast();
+    Layer gull = square(QStringLiteral("Gull"), {480, 120}, 20, kGull);
+    if (motion) {
+        gull.animate = true;
+        gull.pivot = QPointF(480, 120);
+        gull.keys = {key(0.0, 0, 0), key(0.5, 200, 0)};
+    }
+    b->layers.append(gull);
+    b->activeLayerIndex = 1;
+    b->setLength(24, 24);
+    scene->panels.append(b);
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Motion");
+    data.fps = 24;
+    data.canvasSize = kSize;
+    data.scenes = {scene};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete scene;
+    return path;
+}
+
+QPointF centroidOf(const QImage &image, const QColor &colour, int *count = nullptr, int tol = 60)
+{
+    const QImage img = image.convertToFormat(QImage::Format_ARGB32);
+    double sx = 0, sy = 0;
+    int n = 0;
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x)
+            if (qAbs(qRed(line[x]) - colour.red()) <= tol && qAbs(qGreen(line[x]) - colour.green()) <= tol
+                && qAbs(qBlue(line[x]) - colour.blue()) <= tol) {
+                sx += x + 0.5;
+                sy += y + 0.5;
+                ++n;
+            }
+    }
+    if (count)
+        *count = n;
+    return n ? QPointF(sx / n, sy / n) : QPointF(-1, -1);
+}
+
+QString pt(const QPointF &p)
+{
+    return QStringLiteral("(%1, %2)").arg(p.x(), 0, 'f', 1).arg(p.y(), 0, 'f', 1);
+}
+
+QJsonObject manifestOf(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QJsonObject();
+    return QJsonDocument::fromJson(f.readAll()).object();
+}
+
+// The layer objects of the manifest, every panel's, by name.
+QHash<QString, QJsonObject> layerObjects(const QJsonObject &root)
+{
+    QHash<QString, QJsonObject> out;
+    for (const QJsonValue &s : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &p : s.toObject().value(QStringLiteral("panels")).toArray())
+            for (const QJsonValue &l : p.toObject().value(QStringLiteral("layers")).toArray())
+                out.insert(l.toObject().value(QStringLiteral("name")).toString(), l.toObject());
+    return out;
+}
+} // namespace lmui
+
+void runLayerMotionPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lmui;
+    using camtool::mouse;
+    out() << "--- (lm) layer motion through the real window ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/motion");
+    const QString project = writeMotionProject(dir, true);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    if (!r.ok || !scene || scene->panels.size() != 2 || !stack) {
+        check(QStringLiteral("(lm) the motion fixture opens"), false);
+        return;
+    }
+    Panel *pa = scene->panels.at(0);
+    Panel *pb = scene->panels.at(1);
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(2); // the Boat
+    r.animatic->setPlayheadFrameInPanel(0, 0);
+    pump(200);
+
+    // (lm7) THE FILE LOADS THE KEYS: the Boat's two keys, Animate on, its pivot.
+    {
+        const Layer &boat = pa->layers.at(2);
+        check(QStringLiteral("(lm7) THE FILE: the Boat opens with Animate on, its pivot at its art's centre and its "
+                             "two keys - 100 px right at frame 0, 300 right and 100 down at frame 12, Linear"),
+              boat.animate && boat.pivot == QPointF(200, 200) && boat.keys.size() == 2
+                  && boat.keys.at(0).pose.dx == 100 && boat.keys.at(1).at == 0.5 && boat.keys.at(1).pose.dx == 300
+                  && boat.keys.at(1).pose.dy == 100 && boat.keys.at(0).ease == shotcam::Ease::Linear,
+              QStringLiteral("animate %1, pivot %2, keys %3").arg(boat.animate).arg(pt(boat.pivot))
+                  .arg(boat.keys.size()));
+    }
+    // Every check below works on the fixture's keys: without them, say so and go no further.
+    if (pa->layers.size() != 3 || pa->layers.at(2).keys.size() != 2 || pb->layers.size() != 2
+        || pb->layers.at(1).keys.size() != 2) {
+        check(QStringLiteral("(lm) the fixture's keys are there for the checks that follow"), false);
+        r.window.markCleanForTest();
+        return;
+    }
+
+    // (lm8) THE ANIMATE DIAMOND (Figma I-1, the user's answers 4 and d): on the Boat's row between the eye and
+    // the thumbnail - solid at a key (frame 0), outlined between keys (frame 6); the Ground's grey; a click turns it
+    // off, one undo step, and Ctrl+Z on again.
+    {
+        r.storyboard->rebuildLayerPanelForTest();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        pump(80);
+        QAbstractButton *boatDiamond = r.storyboard->layerAnimateButtonForTest(2);
+        QAbstractButton *groundDiamond = r.storyboard->layerAnimateButtonForTest(1);
+        QAbstractButton *paperDiamond = r.storyboard->layerAnimateButtonForTest(0);
+        const bool keyHereAt0 = boatDiamond && boatDiamond->property("keyHere").toBool();
+        r.animatic->setPlayheadFrameInPanel(0, 6);
+        pump(150);
+        boatDiamond = r.storyboard->layerAnimateButtonForTest(2);
+        const bool keyHereAt6 = boatDiamond && boatDiamond->property("keyHere").toBool();
+        // Between the eye and the thumbnail, in the row.
+        bool placed = false;
+        if (boatDiamond && boatDiamond->parentWidget()) {
+            QWidget *row = boatDiamond->parentWidget();
+            QToolButton *eye = row->findChild<QToolButton *>(QStringLiteral("layerEye"));
+            QLabel *thumb = row->findChild<QLabel *>(QStringLiteral("layerThumb"));
+            placed = eye && thumb && eye->geometry().right() < boatDiamond->geometry().left()
+                && boatDiamond->geometry().right() < thumb->geometry().left();
+        }
+        check(QStringLiteral("(lm8) THE ANIMATE DIAMOND sits between the eye and the thumbnail; on the Boat it is on and "
+                             "solid at frame 0 (a key there), on and outlined at frame 6 (none); the Ground's is off; "
+                             "the paper has none"),
+              boatDiamond && placed && boatDiamond->property("animate").toBool() && keyHereAt0 && !keyHereAt6
+                  && groundDiamond && !groundDiamond->property("animate").toBool() && !paperDiamond,
+              QStringLiteral("boat %1 placed %2, key at 0 %3 at 6 %4; ground %5 animate %6; paper %7")
+                  .arg(boatDiamond != nullptr).arg(placed).arg(keyHereAt0).arg(keyHereAt6)
+                  .arg(groundDiamond != nullptr)
+                  .arg(groundDiamond ? groundDiamond->property("animate").toBool() : false)
+                  .arg(paperDiamond != nullptr));
+        const int stepsBefore = stack->count();
+        QVector<QVariantMap> events; // the Dev Recorder's layerMotion events
+        const QMetaObject::Connection listen = QObject::connect(
+            r.storyboard, &StoryboardPage::layerMotionEdited, r.storyboard,
+            [&events](const QVariantMap &e) { events << e; });
+        if (boatDiamond)
+            boatDiamond->click();
+        pump(120);
+        QObject::disconnect(listen);
+        const bool offNow = !pa->layers.at(2).animate && pa->layers.at(2).keys.size() == 2;
+        const QString text = stack->count() > stepsBefore ? stack->text(stack->count() - 1) : QString();
+        stack->undo();
+        pump(120);
+        check(QStringLiteral("(lm8) A CLICK SWITCHES IT: off - its two keys kept (the user's answer b) - as the step "
+                             "\"Stop Animating Layer\"; undone, on again"),
+              offNow && text == QLatin1String("Stop Animating Layer") && pa->layers.at(2).animate,
+              QStringLiteral("off %1, step '%2', after undo animate %3").arg(offNow).arg(text)
+                  .arg(pa->layers.at(2).animate));
+        const QVariantMap e = events.value(0);
+        check(QStringLiteral("(lm8) ...and the Dev Recorder hears it: one layerMotion event naming the step, the "
+                             "layer, Animate off and its two keys"),
+              events.size() == 1 && e.value(QStringLiteral("what")).toString() == QLatin1String("Stop Animating Layer")
+                  && e.value(QStringLiteral("layer")).toString() == QLatin1String("Boat")
+                  && !e.value(QStringLiteral("animate")).toBool()
+                  && e.value(QStringLiteral("keys")).toString().split(QStringLiteral("; ")).size() == 2,
+              QStringLiteral("%1 event(s): %2").arg(events.size())
+                  .arg(QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(e)).toJson(QJsonDocument::Compact))));
+    }
+
+    // (lm9) THE LAYER ROW (Figma I-1 option A, the user's answer a).
+    {
+        r.timeline->setZoomForTest(400);
+        pump(150);
+        const QVariantList keys = r.timeline->layerKeysForTest();
+        QStringList own, dim;
+        bool xRight = true;
+        for (const QVariant &v : keys) {
+            const QVariantMap m = v.toMap();
+            const int frame = int(std::lround(m.value(QStringLiteral("frame")).toDouble()));
+            (m.value(QStringLiteral("own")).toBool() ? own : dim) << QString::number(frame);
+            xRight = xRight && qAbs(m.value(QStringLiteral("x")).toInt() - r.timeline->frameScreenXForTest(frame)) <= 1;
+        }
+        const QVariantList segs = r.timeline->layerSegmentsForTest();
+        const QString ease = segs.isEmpty() ? QString() : segs.first().toMap().value(QStringLiteral("ease")).toString();
+        check(QStringLiteral("(lm9) THE LAYER ROW, under CAMERA, names the selected layer (\"LAYER · Boat\") and shows "
+                             "its keys at frames 0 and 12, the move between them (Linear), and - dim - the Gull's keys "
+                             "in panel 2 (film frames 24 and 36), each at its frame's place"),
+              r.timeline->layerRowShown() && r.timeline->layerRowLabelForTest() == QStringLiteral("LAYER ")
+                      + QChar(0x00B7) + QStringLiteral(" Boat")
+                  && own == QStringList({QStringLiteral("0"), QStringLiteral("12")})
+                  && dim == QStringList({QStringLiteral("24"), QStringLiteral("36")}) && xRight && segs.size() == 1
+                  && ease == QLatin1String("Linear")
+                  && r.timeline->layerRowForTest().top() == r.timeline->cameraRowForTest().bottom() + 1,
+              QStringLiteral("shown %1, label '%2', own [%3], dim [%4], x right %5, segments %6 (%7)")
+                  .arg(r.timeline->layerRowShown()).arg(r.timeline->layerRowLabelForTest(), own.join(QLatin1Char(',')),
+                                                        dim.join(QLatin1Char(',')))
+                  .arg(xRight).arg(segs.size()).arg(ease));
+        // Greyed when its Animate is off; and back.
+        r.storyboard->layerToggleAnimate(2);
+        pump(100);
+        bool greyed = true;
+        for (const QVariant &v : r.timeline->layerKeysForTest())
+            if (v.toMap().value(QStringLiteral("own")).toBool())
+                greyed = greyed && v.toMap().value(QStringLiteral("greyed")).toBool();
+        stack->undo();
+        pump(100);
+        bool lit = true;
+        for (const QVariant &v : r.timeline->layerKeysForTest())
+            if (v.toMap().value(QStringLiteral("own")).toBool())
+                lit = lit && !v.toMap().value(QStringLiteral("greyed")).toBool();
+        check(QStringLiteral("(lm9) ANIMATE OFF: the layer's keys stay on the row, greyed; on again, lit"), greyed && lit);
+
+        // The ease on the line: a tap on the move's mark opens the five eases; Ease Out chosen is one step.
+        const QRectF mark = segs.isEmpty() ? QRectF() : segs.first().toMap().value(QStringLiteral("markRect")).toRectF();
+        mouse(r.surface, QEvent::MouseButtonPress, mark.center(), Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, mark.center(), Qt::LeftButton, Qt::NoButton);
+        pump(120);
+        QWidget *popover = r.storyboard->easePopoverForTest();
+        QAbstractButton *easeOut = nullptr;
+        if (popover)
+            for (QAbstractButton *b : popover->findChildren<QAbstractButton *>(QStringLiteral("easeChoice")))
+                if (b->text() == QLatin1String("Ease Out"))
+                    easeOut = b;
+        // Picked as the pen picks it - Qt's pointer moves onto the button, presses and releases there, through
+        // the window system - so that the popover (a Qt::Popup) closes with Qt's pointer inside it: closed while
+        // Qt thinks the pointer is elsewhere, Qt would replay the next press of a later pass ((ct), 2026-11-24 -
+        // see libbox::pickFromRowMenu). One the check closes itself is marked "no replay".
+        if (easeOut) {
+            const QPointF at = QRectF(easeOut->rect()).center();
+            libbox::pointerTo(easeOut, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+            libbox::pointerTo(easeOut, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+            libbox::pointerTo(easeOut, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        }
+        pump(120);
+        const shotcam::Ease chosen = pa->layers.at(2).keys.at(0).ease;
+        const QString easeStep = stack->text(stack->count() - 1);
+        if (QWidget *p = r.storyboard->easePopoverForTest()) {
+            p->setAttribute(Qt::WA_NoMouseReplay); // closed by the check, not by a press
+            p->close();
+        }
+        stack->undo();
+        pump(100);
+        check(QStringLiteral("(lm9) THE EASE ON THE LINE: a tap on the move's mark opens the five eases; Ease Out is the "
+                             "move's ease, one step (\"Layer Key Ease\"); undone, Linear again"),
+              popover && easeOut && chosen == shotcam::Ease::EaseOut && easeStep == QLatin1String("Layer Key Ease")
+                  && pa->layers.at(2).keys.at(0).ease == shotcam::Ease::Linear,
+              QStringLiteral("popover %1, Ease Out %2, ease %3, step '%4'").arg(popover != nullptr)
+                  .arg(easeOut != nullptr).arg(shotcam::easeLabel(chosen)).arg(easeStep));
+
+        // A key dragged along its panel: from frame 12 to frame 18.
+        const int y = r.timeline->layerRowForTest().center().y();
+        const QPointF from(r.timeline->frameScreenXForTest(12), y), to(r.timeline->frameScreenXForTest(18), y);
+        mouse(r.surface, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseMove, (from + to) / 2.0, Qt::NoButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+        pump(150);
+        const double movedTo = pa->layers.at(2).keys.at(1).at;
+        const QString moveStep = stack->text(stack->count() - 1);
+        stack->undo();
+        pump(100);
+        check(QStringLiteral("(lm9) A KEY DRAGGED ALONG ITS PANEL: from frame 12 to frame 18, one step (\"Move Layer "
+                             "Key\"); undone, at frame 12 again"),
+              qFuzzyCompare(movedTo, 0.75) && moveStep == QLatin1String("Move Layer Key")
+                  && pa->layers.at(2).keys.at(1).at == 0.5,
+              QStringLiteral("at %1, step '%2', after undo %3").arg(movedTo).arg(moveStep)
+                  .arg(pa->layers.at(2).keys.at(1).at));
+
+        // Delete Key from the key's menu.
+        QStringList entries;
+        r.storyboard->setClipMenuHookForTest([&entries](QMenu *menu) {
+            for (QAction *a : menu->actions()) {
+                entries << a->objectName();
+                if (a->objectName() == QLatin1String("layerKeyDelete"))
+                    a->trigger();
+            }
+        });
+        const QPoint keyAt(r.timeline->frameScreenXForTest(12), y);
+        QContextMenuEvent menuEvent(QContextMenuEvent::Mouse, keyAt, r.surface->mapToGlobal(keyAt));
+        QCoreApplication::sendEvent(r.surface, &menuEvent);
+        pump(150);
+        r.storyboard->setClipMenuHookForTest(nullptr);
+        const int keysAfterDelete = pa->layers.at(2).keys.size();
+        const QString deleteStep = stack->text(stack->count() - 1);
+        stack->undo();
+        pump(100);
+        check(QStringLiteral("(lm9) DELETE KEY in the key's menu: the key goes, one step (\"Delete Layer Key\"); undone, "
+                             "back"),
+              entries.contains(QStringLiteral("layerKeyDelete")) && keysAfterDelete == 1
+                  && deleteStep == QLatin1String("Delete Layer Key") && pa->layers.at(2).keys.size() == 2,
+              QStringLiteral("menu [%1], keys %2, step '%3'").arg(entries.join(QLatin1Char(','))).arg(keysAfterDelete)
+                  .arg(deleteStep));
+
+        // A dim mark pressed: its panel and its layer are chosen and the playhead goes to the key.
+        const QPointF gull(r.timeline->frameScreenXForTest(36), y);
+        mouse(r.surface, QEvent::MouseButtonPress, gull, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, gull, Qt::LeftButton, Qt::NoButton);
+        pump(200);
+        const bool onGull = r.storyboard->currentPanelForTest() == pb && pb->activeLayerIndex == 1
+            && r.animatic->playheadPanel() == pb && r.animatic->playheadFrameInPanel() == 12
+            && r.timeline->layerRowLabelForTest().endsWith(QStringLiteral("Gull"));
+        check(QStringLiteral("(lm9) A DIM MARK PRESSED: panel 2 on the canvas, the Gull its layer, the playhead at its "
+                             "key (frame 12), and the row now the Gull's"),
+              onGull, r.timeline->layerRowLabelForTest());
+        r.timeline->setZoomForTest(100);
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(150);
+    }
+
+    // (lm10) THE MOVE BOX SETS A KEY AT THE PLAYHEAD - and moves no pixel; with it, and only with it, the faint
+    // copies at the other keys, the dotted path and the chip (the user's answer c).
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 6);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(200);
+        const QTransform view = r.canvas->viewTransformForTest();
+        const QPolygonF box = r.canvas->poseBoxForTest();
+        const QPointF boxCentre = box.boundingRect().center();
+        // At frame 6, halfway along the first move: 200 right, 50 down from (200, 200).
+        const QPointF wantCentre = view.map(QPointF(400, 250));
+        const QString chipBefore = r.canvas->poseChipForTest();
+        const qint64 pixelsBefore = pa->layers.at(2).contentKey();
+        const QPointF press = boxCentre, release = boxCentre + QPointF(60, 30);
+        sendMouse(r.canvas, QEvent::MouseButtonPress, press, Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseMove, (press + release) / 2.0, Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseMove, release, Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, release, Qt::LeftButton);
+        pump(150);
+        const QPointF moved = view.inverted().map(release) - view.inverted().map(press);
+        const Layer &boat = pa->layers.at(2);
+        int k6 = -1;
+        for (int k = 0; k < boat.keys.size(); ++k)
+            if (layerKeyFrame(boat.keys.at(k), 24) == 6)
+                k6 = k;
+        const bool keyed = boat.keys.size() == 3 && k6 >= 0
+            && qAbs(boat.keys.at(k6).pose.dx - (200 + moved.x())) < 0.01
+            && qAbs(boat.keys.at(k6).pose.dy - (50 + moved.y())) < 0.01;
+        const QString step = stack->text(stack->count() - 1);
+        check(QStringLiteral("(lm10) THE MOVE BOX ON AN ANIMATED LAYER: its box is the Boat at the playhead (frame 6: "
+                             "200 right, 50 down); a drag sets a key there with the box's move, as one step (\"Set "
+                             "Layer Key\"), and no pixel of the layer changes"),
+              box.size() >= 4 && QLineF(boxCentre, wantCentre).length() <= 1.0 && keyed
+                  && step == QLatin1String("Set Layer Key") && boat.contentKey() == pixelsBefore,
+              QStringLiteral("box centre %1 (want %2), keys %3, key at frame 6 %4: %5, %6 (want %7, %8), step '%9', "
+                             "pixels same %10")
+                  .arg(pt(boxCentre), pt(wantCentre)).arg(boat.keys.size()).arg(k6)
+                  .arg(k6 >= 0 ? boat.keys.at(k6).pose.dx : 0).arg(k6 >= 0 ? boat.keys.at(k6).pose.dy : 0)
+                  .arg(200 + moved.x()).arg(50 + moved.y()).arg(step).arg(boat.contentKey() == pixelsBefore));
+        // The faint copies, the path, the chip - with the Move tool.
+        const int ghosts = r.canvas->poseGhostsForTest().size();
+        const int pathPoints = r.canvas->posePathForTest().size();
+        const QString chip = r.canvas->poseChipForTest();
+        const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+        check(QStringLiteral("(lm10) WITH THE MOVE TOOL: a faint copy of the Boat at each of its other keys (frames 0 "
+                             "and 12), the dotted path through its keys (frames 0 to 12), and the chip naming the key "
+                             "(\"Boat · key 2 of 3 · frame 7 · Ease In/Out to key 3\")"),
+              ghosts == 2 && pathPoints == 13
+                  && chip == QStringLiteral("Boat") + dot + QStringLiteral("key 2 of 3") + dot + QStringLiteral("frame 7")
+                         + dot + QStringLiteral("Ease In/Out to key 3")
+                  && chipBefore == QStringLiteral("Boat") + dot + QStringLiteral("frame 7") + dot
+                         + QStringLiteral("between key 1 and key 2"),
+              QStringLiteral("ghosts %1, path %2 points, chip '%3' (before the key '%4')").arg(ghosts).arg(pathPoints)
+                  .arg(chip, chipBefore));
+        stack->undo();
+        pump(100);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(100);
+        check(QStringLiteral("(lm10) control: with the Brush none of it - no box, no copies, no path - and the key "
+                             "undone"),
+              !r.canvas->poseModeForTest() && r.canvas->poseGhostsForTest().isEmpty()
+                  && r.canvas->posePathForTest().isEmpty() && pa->layers.at(2).keys.size() == 2);
+        // Control: Animate off, the same drag with the Move tool moves the drawing itself (its pixels), and sets no key.
+        r.storyboard->layerToggleAnimate(2);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(200);
+        const QPointF drawnCentre = view.map(QPointF(200, 200));
+        sendMouse(r.canvas, QEvent::MouseButtonPress, drawnCentre, Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseMove, drawnCentre + QPointF(30, 15), Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseMove, drawnCentre + QPointF(60, 30), Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, drawnCentre + QPointF(60, 30), Qt::LeftButton);
+        pump(100);
+        r.canvas->refreshTransformBox(); // the move lands in the layer
+        pump(150);
+        const bool pixelsMoved = pa->layers.at(2).contentKey() != pixelsBefore;
+        const int keysOff = pa->layers.at(2).keys.size();
+        while (stack->canUndo() && (pa->layers.at(2).contentKey() != pixelsBefore || !pa->layers.at(2).animate))
+            stack->undo();
+        pump(150);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        check(QStringLiteral("(lm10) control: Animate off, the Move tool moves the drawing itself - its pixels change - "
+                             "and no key is set"),
+              pixelsMoved && keysOff == 2 && pa->layers.at(2).animate && pa->layers.at(2).contentKey() == pixelsBefore,
+              QStringLiteral("pixels moved %1, keys %2; restored: animate %3, pixels %4").arg(pixelsMoved).arg(keysOff)
+                  .arg(pa->layers.at(2).animate).arg(pa->layers.at(2).contentKey() == pixelsBefore));
+    }
+
+    // (lm11) THE OPACITY SLIDER ON AN ANIMATED LAYER sets the key's opacity at the playhead; the layer's own is kept.
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 12);
+        pump(150);
+        QWidget *slider = r.storyboard->findChild<QWidget *>(QStringLiteral("layerOpacitySlider"));
+        const double ownBefore = pa->layers.at(2).opacity;
+        if (slider) {
+            const QPointF half(slider->width() * 0.5, slider->height() / 2.0);
+            sendMouse(slider, QEvent::MouseButtonPress, half, Qt::LeftButton);
+            sendMouse(slider, QEvent::MouseButtonRelease, half, Qt::LeftButton);
+        }
+        pump(120);
+        // (Read afresh after each step: an undo puts back a whole new layer stack.)
+        const double keyed = pa->layers.at(2).keys.size() == 2 ? pa->layers.at(2).keys.at(1).pose.opacity : -1.0;
+        const double ownAfter = pa->layers.at(2).opacity;
+        const QString step = stack->text(stack->count() - 1);
+        stack->undo();
+        pump(100);
+        const double undone = pa->layers.at(2).keys.size() == 2 ? pa->layers.at(2).keys.at(1).pose.opacity : -1.0;
+        check(QStringLiteral("(lm11) THE OPACITY SLIDER ON AN ANIMATED LAYER: at frame 12 (a key) half way sets that "
+                             "key's opacity to 50 %, one step (\"Layer Key Opacity\"); the layer's own opacity is kept; "
+                             "undone, 100 % again"),
+              slider && qAbs(keyed - 0.5) <= 0.011 && step == QLatin1String("Layer Key Opacity")
+                  && ownAfter == ownBefore && undone == 1.0,
+              QStringLiteral("slider %1, key opacity %2, step '%3', own %4 -> %5, undone %6").arg(slider != nullptr)
+                  .arg(keyed).arg(step).arg(ownBefore).arg(ownAfter).arg(undone));
+    }
+
+    // (lm12) THE CANVAS: the Drawing view shows the layers as drawn (and says where the motion is); the Camera tool
+    // shows the Boat where the playhead's frame puts it.
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 12);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(200);
+        const QTransform view = r.canvas->viewTransformForTest();
+        const QPointF wantDrawn = view.map(QPointF(200, 200)), wantShown = view.map(QPointF(500, 300));
+        // Read in a 120 px window round the place each view should have it: the Camera tool's own chip
+        // ("Soft 1.00x") has reddish pixels of its own. Elsewhere in the window, the Boat is not found.
+        auto boatNear = [&](const QPointF &want, int *n) {
+            const QRect window(want.toPoint() - QPoint(60, 60), QSize(120, 120));
+            const QPointF c = centroidOf(r.canvas->grab().toImage().copy(window), kBoat, n);
+            return *n ? c + QPointF(window.topLeft()) : c;
+        };
+        int nDraw = 0, nCam = 0, nCamAtDrawn = 0;
+        const QPointF drawn = boatNear(wantDrawn, &nDraw);
+        const QString chip = r.canvas->drawingViewChipForTest();
+        r.canvas->setTool(DrawingCanvas::Camera);
+        pump(200);
+        const QPointF shown = boatNear(wantShown, &nCam);
+        boatNear(wantDrawn, &nCamAtDrawn); // ...and nothing of it left where it is drawn
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(100);
+        check(QStringLiteral("(lm12) THE CANVAS: with the Brush (the Drawing view) the Boat is where it is drawn, and "
+                             "the chip says the motion shows with the Move tool; with the Camera tool, at frame 12, it "
+                             "is 300 px right and 100 down"),
+              nDraw > 20 && QLineF(drawn, wantDrawn).length() <= 1.5 && nCam > 20
+                  && QLineF(shown, wantShown).length() <= 1.5 && nCamAtDrawn == 0
+                  && chip.contains(QStringLiteral("motion shows with the Move tool")),
+              QStringLiteral("drawing view %1 (want %2), camera tool %3 (want %4; %5 px left where it is drawn), "
+                             "chip '%6'")
+                  .arg(pt(drawn), pt(wantDrawn), pt(shown), pt(wantShown)).arg(nCamAtDrawn).arg(chip));
+    }
+
+    // (lm13) THE PREVIEW plays the motion: paused at frame 12 it shows the Boat there; at frame 0 at its first key.
+    {
+        const bool clearOnPlay = r.storyboard->clearStageOnPlay();
+        r.storyboard->setClearStageOnPlay(false);
+        r.animatic->togglePlay();
+        pump(150);
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        QWidget *display = r.animatic->previewDisplayForTest();
+        auto boatInPreview = [&](int frame, double *at) {
+            r.animatic->scrubToForTest(0, frame);
+            pump(150);
+            *at = r.animatic->previewAtForTest();
+            const QRect pic = r.animatic->previewPictureRectForTest();
+            const QImage img = display ? display->grab().toImage().copy(pic) : QImage();
+            const QPointF c = centroidOf(img, kBoat);
+            return QPointF(c.x() * 960.0 / qMax(1, pic.width()), c.y() * 540.0 / qMax(1, pic.height()));
+        };
+        double at12 = -1, at0 = -1;
+        const QPointF p12 = boatInPreview(12, &at12);
+        const QPointF p0 = boatInPreview(0, &at0);
+        const bool moving = r.animatic->previewMovingForTest();
+        r.animatic->leavePreview();
+        r.storyboard->setClearStageOnPlay(clearOnPlay);
+        pump(100);
+        check(QStringLiteral("(lm13) THE PREVIEW plays the motion: paused at frame 12 the Boat is 300 right and 100 down "
+                             "of where it is drawn, at frame 0 100 right - each to 3 px of the frame"),
+              display && moving && qFuzzyCompare(at12, 0.5) && at0 == 0.0 && QLineF(p12, QPointF(500, 300)).length() <= 3.0
+                  && QLineF(p0, QPointF(300, 200)).length() <= 3.0,
+              QStringLiteral("moving %1, at %2 / %3, frame 12 %4, frame 0 %5").arg(moving).arg(at12).arg(at0)
+                  .arg(pt(p12), pt(p0)));
+    }
+
+    // (lm14) THE STRIP AND THE SHOTS CLIP: the panel's first frame (the user's answer 8). (The timeline at 800 %:
+    // the clip wide enough for its thumbnail to show the Boat.)
+    {
+        r.timeline->setZoomForTest(800);
+        pump(200);
+        int nStrip = 0;
+        const QImage strip = r.storyboard->stripThumbForTest(pa, 1.0).toImage();
+        const QPointF s = centroidOf(strip, kBoat, &nStrip);
+        const QPointF stripAt(s.x() * 960.0 / qMax(1, strip.width()), s.y() * 540.0 / qMax(1, strip.height()));
+        const QString thumbRect = r.timeline->clipPartsForTest(0).value(QStringLiteral("thumb")).toString();
+        // "x,y wxh"
+        const QStringList parts = thumbRect.split(QRegularExpression(QStringLiteral("[, x]")), Qt::SkipEmptyParts);
+        QRect thumb;
+        if (parts.size() == 4)
+            thumb = QRect(parts.at(0).toInt(), parts.at(1).toInt(), parts.at(2).toInt(), parts.at(3).toInt());
+        const QImage surface = r.surface->grab().toImage();
+        const qreal dpr = surface.devicePixelRatio();
+        const QImage clipImg = surface.copy(QRect((thumb.topLeft() * dpr), thumb.size() * dpr));
+        int nClip = 0;
+        const QPointF c = centroidOf(clipImg, kBoat, &nClip);
+        // Cropped to fill: the frame scaled by the larger ratio, centred.
+        const double sc = qMax(thumb.width() * dpr / 960.0, thumb.height() * dpr / 540.0);
+        const QPointF wantClip = QPointF(thumb.width() * dpr / 2.0, thumb.height() * dpr / 2.0)
+            + sc * (QPointF(300, 200) - QPointF(480, 270));
+        check(QStringLiteral("(lm14) THE STRIP AND THE SHOTS CLIP SHOW THE PANEL'S FIRST FRAME: the Boat 100 px right of "
+                             "where it is drawn"),
+              nStrip > 4 && QLineF(stripAt, QPointF(300, 200)).length() <= 8.0 && nClip > 0 && !thumb.isEmpty()
+                  && QLineF(c, wantClip).length() <= 2.0,
+              QStringLiteral("strip %1 (%2 px), clip %3 (want %4) in %5").arg(pt(stripAt)).arg(nStrip)
+                  .arg(pt(c), pt(wantClip), thumbRect));
+        r.timeline->setZoomForTest(100);
+        pump(100);
+    }
+
+    // (lm15) DUPLICATE copies a panel's keys (the user's answer 10): the copy's Boat has the same keys, its own.
+    {
+        clickThumb(r, 0);
+        r.storyboard->duplicateSelectedPanelForTest();
+        pump(250);
+        Panel *copy = scene->panels.size() == 3 ? scene->panels.at(1) : nullptr;
+        const bool same = copy && copy->layers.size() == pa->layers.size() && copy->layers.at(2).animate
+            && copy->layers.at(2).keys == pa->layers.at(2).keys && copy->layers.at(2).pivot == pa->layers.at(2).pivot
+            && copy->layers.at(2).id != pa->layers.at(2).id;
+        if (copy)
+            copy->layers[2].keys[1].pose.dx = 999;
+        const bool own = copy && pa->layers.at(2).keys.at(1).pose.dx == 300;
+        stack->undo();
+        pump(200);
+        check(QStringLiteral("(lm15) DUPLICATE PANEL copies its layers' keys: the copy's Boat animates with the same keys "
+                             "and pivot, and they are its own (a change to the copy's leaves the source's)"),
+              same && own && scene->panels.size() == 2, QStringLiteral("copy %1 same %2 own %3").arg(copy != nullptr)
+                  .arg(same).arg(own));
+    }
+
+    // (lm16) MERGE REFUSED for a layer with motion - it would lose it; the note says so. Control: without its motion
+    // the same merge is made.
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(100);
+        const int before = pa->layers.size();
+        r.storyboard->clearNoteForTest();
+        r.storyboard->layerMergeSelectedForTest();
+        pump(100);
+        const bool refused = pa->layers.size() == before
+            && r.storyboard->lastNoteForTest().contains(QStringLiteral("has motion"));
+        const QString note = r.storyboard->lastNoteForTest();
+        const QVector<Layer> keep = pa->layers;
+        pa->layers[2].animate = false;
+        pa->layers[2].keys.clear();
+        r.storyboard->layerMergeSelectedForTest();
+        pump(100);
+        const bool merged = pa->layers.size() == before - 1;
+        stack->undo();
+        pump(150);
+        pa->layers = keep;
+        r.storyboard->rebuildLayerPanelForTest();
+        pump(100);
+        check(QStringLiteral("(lm16) MERGE LAYERS on a layer with motion is refused - nothing changes - and the note "
+                             "says it would lose the motion"),
+              refused, note);
+        check(QStringLiteral("(lm16) control: the same merge without the motion is made"), merged);
+    }
+
+    // (lm17) THE FILE: saved, version 6 and the Boat's motion in it, and it opens again with its keys; a project
+    // without motion stays the version it was, with no "motion" in it.
+    {
+        const QString saved = dir + QStringLiteral("/Saved.sankotv");
+        const bool ok = r.window.saveProjectForTest(saved);
+        pump(200);
+        const QJsonObject root = manifestOf(saved);
+        const QJsonObject boatObj = layerObjects(root).value(QStringLiteral("Boat"));
+        const QJsonObject motion = boatObj.value(QStringLiteral("motion")).toObject();
+        const bool written = ok && root.value(QStringLiteral("version")).toInt() == ProjectIO::kFileVersionLayerMotion
+            && motion.value(QStringLiteral("animate")).toBool()
+            && motion.value(QStringLiteral("keys")).toArray().size() == 2
+            && !layerObjects(root).value(QStringLiteral("Ground")).contains(QStringLiteral("motion"));
+        r.window.markCleanForTest();
+        const bool reopened = r.window.loadProjectForTest(saved);
+        pump(400);
+        Scene *again = r.window.scenesForTest().value(0);
+        const Layer *boatAgain = again && !again->panels.isEmpty() && again->panels.at(0)->layers.size() > 2
+            ? &again->panels.at(0)->layers.at(2)
+            : nullptr;
+        const bool same = reopened && boatAgain && boatAgain->animate && boatAgain->keys.size() == 2
+            && boatAgain->keys.at(1).pose.dx == 300 && boatAgain->pivot == QPointF(200, 200);
+        check(QStringLiteral("(lm17) THE FILE: saved, a project with motion is version 6 - what an older build refuses - "
+                             "with the Boat's \"motion\" (Animate on, two keys) and none on the Ground; it opens again "
+                             "with the same keys and pivot"),
+              written && same && ProjectIO::kFileVersionLayerMotion > ProjectIO::kFileVersionLockedScene,
+              QStringLiteral("saved %1 version %2, motion keys %3; reopened %4 same %5").arg(ok)
+                  .arg(root.value(QStringLiteral("version")).toInt())
+                  .arg(motion.value(QStringLiteral("keys")).toArray().size()).arg(reopened).arg(same));
+        // A key the file cannot use is left out and counted.
+        Layer probe;
+        QJsonObject bad = motion;
+        QJsonArray keys = bad.value(QStringLiteral("keys")).toArray();
+        QJsonObject broken = keys.at(1).toObject();
+        broken[QStringLiteral("scale")] = -1.0;
+        keys[1] = broken;
+        bad[QStringLiteral("keys")] = keys;
+        const int dropped = ProjectIO::layerMotionFromJson(bad, &probe);
+        check(QStringLiteral("(lm17) a key the file holds that cannot be one (a size below 0) is left out and counted"),
+              dropped == 1 && probe.keys.size() == 1, QStringLiteral("dropped %1, kept %2").arg(dropped)
+                  .arg(probe.keys.size()));
+    }
+    r.window.markCleanForTest();
+    rig.reset();
+
+    // Control: the same project without motion - no LAYER row, the SHOTS track the height it was, and saved as the
+    // version it always was, with no "motion" anywhere.
+    {
+        const QString plainProject = writeMotionProject(scratch + QStringLiteral("/motion_plain"), false);
+        Rig p(plainProject);
+        const QString saved = scratch + QStringLiteral("/motion_plain/Saved.sankotv");
+        const bool ok = p.ok && p.window.saveProjectForTest(saved);
+        pump(200);
+        QFile f(saved);
+        const QByteArray bytes = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        const int version = QJsonDocument::fromJson(bytes).object().value(QStringLiteral("version")).toInt();
+        check(QStringLiteral("(lm17) control: a project without motion has no LAYER row and is saved as the version it "
+                             "always was (3), with no \"motion\" in it"),
+              ok && !p.timeline->layerRowShown() && p.timeline->layerRowForTest().isEmpty()
+                  && version == ProjectIO::kFileVersionOneMargin && !bytes.contains("\"motion\""),
+              QStringLiteral("saved %1, row %2, version %3").arg(ok).arg(p.timeline->layerRowShown()).arg(version));
+        p.window.markCleanForTest();
+    }
+}
+
 // ---- (ss) THE SAFE SAVE (saving step 1, 2026-11-23; approved by the user that day) -------------
 // Until this step a save wrote each changed picture OVER its own file and then replaced the
 // project file. Cut short between the two - a crash, the app ended, the power gone - it left the
@@ -38207,6 +38935,14 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("motion")) {
+        runLayerMotionPass(scratch); // batch I-1, layer motion (2026-11-24)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("libbox")) {
         runLibraryBoxesPass(scratch); // the Library's boxes and Rename Brush in place (2026-11-24)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -38485,6 +39221,7 @@ int main(int argc, char **argv)
     runNewProjectPromptPass(a);
     runEraserLibraryPass(scratch);
     runLibraryBoxesPass(scratch); // the Library's boxes and Rename Brush in place (2026-11-24)
+    runLayerMotionPass(scratch);  // batch I-1, layer motion (2026-11-24)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

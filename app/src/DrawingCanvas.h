@@ -788,7 +788,39 @@ public:
     void setRealPointerIgnoredForTest(bool ignored);
     void setPointerDeviceForTest(qint64 uniqueId);
 
+    // --- LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755, approved) -------------
+    // The page tells the canvas where the playhead is in the panel on it. The Drawing view
+    // shows every layer as drawn (a stroke lands where the pen is), as with depth. THE MOVE
+    // TOOL ON A LAYER WHOSE ANIMATE IS ON shows the panel's motion at the playhead, and its
+    // box is the layer's pose there: a drag moves it, a corner sizes it (one size for both
+    // directions), outside a corner turns it, about its pivot - and on release the page sets
+    // the key at the playhead (layerPoseEdited). With it, and only then (the user's answer
+    // c), the faint copies at the layer's other keys and the dotted path through them. The
+    // Camera tool shows the motion with the camera's shot.
+    struct MotionView
+    {
+        bool valid = false;
+        double at = 0.0; // the place in the panel, 0 .. 1 (shotcam::panelAt)
+        int frame = 0;   // the playhead's frame in the panel
+        int frames = 1;  // the panel's length
+    };
+    void setMotionProvider(std::function<MotionView()> provider);
+    void refreshMotion() { update(); }
+    // The centre of a layer's drawn art, stage px (its pivot when it first takes a key);
+    // the frame's centre for a layer with nothing drawn.
+    QPointF artCentreOf(const Layer &layer) const;
+    bool poseModeForTest() const { return poseMode(); }
+    QPolygonF poseBoxForTest() const;   // widget px; empty when there is none
+    QPointF posePivotForTest() const;   // widget px
+    QVector<QPolygonF> poseGhostsForTest() const; // each faint copy's box, widget px
+    QPolygonF posePathForTest() const;  // the dotted path, widget px
+    QString poseChipForTest() const { return poseChipText(); }
+    bool poseDraggingForTest() const { return m_poseDrag != PoseNone; }
+
 signals:
+    // LAYER MOTION (batch I-1): the Move box let go on an animated layer - the pose it
+    // made at the playhead, and the pivot it turned and sized about (stage px).
+    void layerPoseEdited(int layerIndex, const shotcam::LayerPose &pose, const QPointF &pivot);
     // The eraser preset changed (library selection): the Size CTL bar
     // mirrors size/opacity the way paintBrushChanged mirrors the brush.
     void eraserBrushChanged();
@@ -1586,6 +1618,26 @@ private:
     // The shot camera's tool (Phase 1B; see setShotCameraProvider).
     std::function<ShotCameraView()> m_shotCamProvider;
     ShotCameraView shotCameraView() const;
+    // LAYER MOTION (batch I-1): see setMotionProvider.
+    enum PoseDrag { PoseNone, PoseMove, PoseScale, PoseRotate };
+    std::function<MotionView()> m_motionProvider;
+    MotionView motionView() const { return m_motionProvider ? m_motionProvider() : MotionView(); }
+    bool poseMode() const;                       // the Move tool on a layer whose Animate is on
+    const Layer *poseLayer() const;              // that layer, or null
+    shotcam::LayerPose poseNow() const;          // its pose at the playhead (the drag's, live)
+    QPointF posePivot() const;                   // stage px: its pivot (its art's centre before a key)
+    QRect poseArt() const;                       // its drawn art, stage px (cached by content)
+    QPolygonF poseQuad(const shotcam::LayerPose &pose) const; // the art's box posed, stage px
+    PoseDrag poseHit(const QPointF &widgetPos) const;
+    void paintPoseGhosts(QPainter &painter) const; // canvas space: copies at the other keys, the path
+    void paintPoseBox(QPainter &painter) const;    // widget space: the box, the pivot, the chip
+    QString poseChipText() const;
+    PoseDrag m_poseDrag = PoseNone;
+    shotcam::LayerPose m_poseStart, m_poseLive;
+    QPointF m_posePressC;  // canvas px
+    QPointF m_posePivotC;  // the pivot as posed at the press, canvas px
+    mutable qint64 m_poseArtKey = 0;
+    mutable QRect m_poseArtRect;
     shotcam::CameraState shotCameraShownState(const ShotCameraView &v) const;
     QPolygonF shotCameraWidgetQuad(const shotcam::CameraState &s) const;
     // The camera guides (CAM-1 / CAM-2): is the frame drawn at all; the base

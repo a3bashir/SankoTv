@@ -90,6 +90,10 @@ private:
 // flatten is everything flattenedPixmap() reads.
 QByteArray layerContent(const Layer &layer);
 QByteArray flattenContent(const Panel &panel);
+// A layer's motion (batch I-1) in the file's form (version 6, below), and back: the keys
+// that could not be one are left out, and their number returned.
+QJsonObject layerMotionJson(const Layer &layer);
+int layerMotionFromJson(const QJsonObject &motion, Layer *layer);
 
 // THE RECOVERY COPY'S IMAGES, OFF THE UI THREAD (2026-11-05). With a plan in
 // SaveData, projectToJson composites and encodes nothing: each image that
@@ -196,11 +200,19 @@ PlanResult runSavePlan(ImagePlan &plan, QJsonObject *root);
 // project with a locked scene is written so - an older build refuses it rather than
 // drop the lock silently - and one without stays the version 3 or 4 it was. Its
 // panels' margins are read as version 4's. Reads 1 to 5.
+//
+// VERSION 6 (batch I-1, 2026-11-24): a layer may say "motion": {"animate", "pivot": [x, y]
+// in frame space, "keys": [{"at", "x", "y", "rotation", "scale", "opacity", "ease"}]} -
+// its own keys (x and y how far it is moved, stage px). Only a project with a layer that
+// has motion kept (Animate on, or keys) is written so - an older build refuses it rather
+// than drop the motion silently - and one without stays the version 3, 4 or 5 it was. Its
+// panels' margins are read as version 4's. Reads 1 to 6.
 inline constexpr int kFileVersion = 4;
 inline constexpr int kFileVersionOneMargin = 3;
 inline constexpr int kFileVersionLockedScene = 5;
+inline constexpr int kFileVersionLayerMotion = 6;
 // The newest version this build reads (MainWindow refuses a later one).
-inline constexpr int kFileVersionNewest = kFileVersionLockedScene;
+inline constexpr int kFileVersionNewest = kFileVersionLayerMotion;
 // The older form, for the checks' fixtures only: version 2, every layer's file the
 // whole stage, with no "origin" or "fill".
 void setWriteVersion2ForTest(bool on);
@@ -382,6 +394,9 @@ struct LoadedProject
     // Layers whose "parallax" (Phase 2B) could not be a depth - not a
     // number, or outside 0 .. 2: loaded on the picture plane, counted here.
     int parallaxRepaired = 0;
+    // A layer's motion keys (batch I-1) that could not be one - a number not finite, a
+    // place outside the panel, a size at or below 0: left out, counted here.
+    int motionKeysDropped = 0;
     // Panels the file gave no usable "id" (every project before 2026-11-04):
     // each got a fresh one, saved on the next save.
     int panelIdsMinted = 0;

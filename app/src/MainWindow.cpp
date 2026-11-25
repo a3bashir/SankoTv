@@ -511,6 +511,12 @@ MainWindow::MainWindow(QWidget *parent)
                     [rec](const QVariantMap &event) {
                         rec->logEvent(QStringLiteral("layerDepth"), event);
                     });
+        // One layerMotion event per step of a layer's motion (batch I-1).
+        if (m_storyboard)
+            connect(m_storyboard, &StoryboardPage::layerMotionEdited, rec,
+                    [rec](const QVariantMap &event) {
+                        rec->logEvent(QStringLiteral("layerMotion"), event);
+                    });
         rec->setCameraProvider([this]() -> QVariantMap {
             auto *canvas = m_storyboard
                 ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;

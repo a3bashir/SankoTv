@@ -123,20 +123,7 @@ CameraState toCameraSpace(const Panel &panel, const CameraState &state)
 
 double ease(Ease e, double u)
 {
-    u = qBound(0.0, u, 1.0);
-    switch (e) {
-    case Ease::Linear:
-        return u;
-    case Ease::EaseIn:
-        return u * u;
-    case Ease::EaseOut:
-        return 1.0 - (1.0 - u) * (1.0 - u);
-    case Ease::EaseInOut:
-        return u * u * (3.0 - 2.0 * u);
-    case Ease::Hold:
-        return u >= 1.0 ? 1.0 : 0.0;
-    }
-    return u;
+    return easeCurve(e, u); // the one curve, a layer's keys' too (CameraModel.h, batch I-1)
 }
 
 QString easeName(Ease e)
@@ -630,6 +617,16 @@ bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stag
     return offBaseFraming(state, stage) && panel.hasDepth();
 }
 
+bool layeredPaint(const Panel &panel, const CameraState &state, const Stage &stage)
+{
+    return layeredShot(panel, state, stage) || panel.hasMotion();
+}
+
+double panelAt(int frameInPanel, int frames)
+{
+    return frames > 0 ? qBound(0.0, double(qBound(0, frameInPanel, frames)) / frames, 1.0) : 0.0;
+}
+
 namespace {
 // THE MIP CACHE: a layer reduced to a quarter-octave level, by the image's
 // cacheKey (which changes on every edit) and the level. Shared by every
@@ -745,9 +742,13 @@ QImage layerKeptMip(const Layer &layer, double scale, QRect *extent)
 // none - as DrawingCanvas::tintPaper does in the Drawing view, so every
 // drawing stays as drawn. Only the Camera tool's canvas passes it (drawStage);
 // the film, the preview, the strip and every export pass none: white.
+// LAYER MOTION (batch I-1): a layer that moves is posed first - Panel::motionAt(`at`), in
+// stage px - and drawn with its keyed opacity; then its depth and the consumer's transform,
+// as every layer. `override`: one layer at a given pose (the canvas's Move box mid-drag).
 void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state,
                  const Stage &stage, const QTransform &canvasToTarget, const QRectF &visible,
-                 const QColor &paper = QColor())
+                 const QColor &paper = QColor(), double at = 0.0,
+                 const PoseOverride &override = PoseOverride())
 {
     painter.save();
     const QTransform base = painter.transform();
@@ -765,20 +766,38 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
         painter.restore();
         paperDone = true;
     };
-    for (const Layer &layer : panel.layers) {
+    for (int index = 0; index < panel.layers.size(); ++index) {
+        const Layer &layer = panel.layers.at(index);
         if (!paperDone && layer.type != QLatin1String("background"))
             tintPaper();
-        if (!panel.layerDrawn(layer))
+        const bool overridden = index == override.layerIndex && !isGroupLayer(layer)
+            && layer.type != QLatin1String("background") && layer.hasPixels()
+            && panel.layerEffectivelyVisible(layer);
+        if (!overridden && !panel.layerDrawn(layer))
             continue;
         const double a = panel.effectiveParallax(layer);
         if (!layerShown(a, state))
             continue;
-        const QTransform toTarget = layerToStage(a, state, stage) * canvasToTarget;
+        double opacity = panel.layerEffectiveOpacity(layer);
+        QTransform motion;
+        if (overridden) {
+            motion = layerPoseTransform(override.pivot, override.pose);
+            const Layer *group = panel.groupOf(layer);
+            opacity = qBound(0.0, override.pose.opacity, 1.0) * (group ? qBound(0.0, group->opacity, 1.0) : 1.0);
+        } else if (panel.layerMoves(layer)) {
+            motion = panel.motionAt(layer, at);
+            opacity = panel.layerOpacityAt(layer, at);
+        }
+        if (opacity <= 0.0)
+            continue;
+        const QTransform toTarget = motion * layerToStage(a, state, stage) * canvasToTarget;
         const double scale = std::sqrt(qAbs(toTarget.determinant()));
         // Off the picture plane, with its kept art (batch B2); on it, the stage's
         // image as always (its kept art lies outside the frame).
+        // A layer that moves may bring its kept art into the frame too (batch I-1).
         QRect extent(QPoint(0, 0), layer.pixelSize());
-        const QImage mip = a != 1.0 ? layerKeptMip(layer, scale, &extent) : layerMip(layer, scale);
+        const QImage mip = a != 1.0 || !motion.isIdentity() ? layerKeptMip(layer, scale, &extent)
+                                                            : layerMip(layer, scale);
         if (mip.isNull())
             continue;
         const QTransform mipToTarget =
@@ -793,7 +812,7 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
         if (src.isEmpty())
             continue;
         painter.setTransform(mipToTarget * base);
-        painter.setOpacity(panel.layerEffectiveOpacity(layer));
+        painter.setOpacity(opacity);
         painter.drawImage(QPointF(src.topLeft()), mip, src);
     }
     if (!paperDone) // only the Background layer (or none)
@@ -803,7 +822,7 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
 
 // Everything a cached layered picture depends on.
 QVector<quint64> depthKey(const Panel &panel, const CameraState &state, const Stage &stage,
-                          const QSize &size, int kind)
+                          const QSize &size, int kind, double at = 0.0)
 {
     QVector<quint64> key = panel.flattenFingerprint();
     auto bits = [](double v) {
@@ -819,6 +838,10 @@ QVector<quint64> depthKey(const Panel &panel, const CameraState &state, const St
         << quint64(stage.origin.x()) << quint64(stage.origin.y())
         << quint64(size.width()) << quint64(size.height()) << quint64(kind)
         << panel.uid.value();
+    // The keys themselves are in the fingerprint (Panel::appendMotion); the time only
+    // where a layer moves, so a still panel's pictures are one entry whatever `at`.
+    if (panel.hasMotion())
+        key << bits(at) << quint64(0x414bull); // "AK": the time asked
     return key;
 }
 
@@ -855,7 +878,7 @@ QImage cachedThumb(const QVector<quint64> &key, const std::function<QImage()> &m
 } // namespace
 
 QImage renderShot(const Panel &panel, const CameraState &state, const Stage &stage,
-                  const QSize &out)
+                  const QSize &out, double at)
 {
     QImage frame(out, QImage::Format_RGBX8888);
     frame.fill(Qt::black);
@@ -863,7 +886,7 @@ QImage renderShot(const Panel &panel, const CameraState &state, const Stage &sta
         return frame;
     const QRectF target(QPointF(0, 0), out);
     QPainter p(&frame);
-    paintLayers(p, panel, state, stage, shotTransform(state, stage, target), target);
+    paintLayers(p, panel, state, stage, shotTransform(state, stage, target), target, QColor(), at);
     if (!g_filmBarsOpenForTest) // as the flat paint's
         fillOutsideFrame(p, stage, frame.rect());
     p.end();
@@ -871,7 +894,7 @@ QImage renderShot(const Panel &panel, const CameraState &state, const Stage &sta
 }
 
 void drawShot(QPainter &painter, const Panel &panel, const Stage &stage,
-              const CameraState &state, const QRectF &target, bool cover)
+              const CameraState &state, const QRectF &target, bool cover, double at)
 {
     if (stage.canvas.isEmpty())
         return;
@@ -879,11 +902,11 @@ void drawShot(QPainter &painter, const Panel &panel, const Stage &stage,
     if (painter.hasClipping())
         visible &= painter.clipBoundingRect();
     paintLayers(painter, panel, state, stage, shotTransform(state, stage, target, cover),
-                visible);
+                visible, QColor(), at);
 }
 
 QImage stageImage(const Panel &panel, const CameraState &state, const Stage &stage,
-                  const QSize &target)
+                  const QSize &target, double at)
 {
     QImage image(target, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::white);
@@ -893,37 +916,38 @@ QImage stageImage(const Panel &panel, const CameraState &state, const Stage &sta
     paintLayers(p, panel, state, stage,
                 QTransform::fromScale(target.width() / double(stage.canvas.width()),
                                       target.height() / double(stage.canvas.height())),
-                QRectF(QPointF(0, 0), target));
+                QRectF(QPointF(0, 0), target), QColor(), at);
     p.end();
     return image;
 }
 
 void drawStage(QPainter &painter, const Panel &panel, const CameraState &state,
-               const Stage &stage, const QRectF &visible, const QColor &paper)
+               const Stage &stage, const QRectF &visible, const QColor &paper, double at,
+               const PoseOverride &override)
 {
     if (stage.canvas.isEmpty())
         return;
-    paintLayers(painter, panel, state, stage, QTransform(), visible, paper);
+    paintLayers(painter, panel, state, stage, QTransform(), visible, paper, at, override);
 }
 
 QImage shotThumb(const Panel &panel, const CameraState &state, const Stage &stage,
-                 const QSize &size, bool cover)
+                 const QSize &size, bool cover, double at)
 {
-    return cachedThumb(depthKey(panel, state, stage, size, cover ? 1 : 0), [&] {
+    return cachedThumb(depthKey(panel, state, stage, size, cover ? 1 : 0, at), [&] {
         QImage image(size, QImage::Format_ARGB32_Premultiplied);
         image.fill(Qt::black);
         QPainter p(&image);
-        drawShot(p, panel, stage, state, QRectF(QPointF(0, 0), size), cover);
+        drawShot(p, panel, stage, state, QRectF(QPointF(0, 0), size), cover, at);
         p.end();
         return image;
     });
 }
 
 QImage stageThumb(const Panel &panel, const CameraState &state, const Stage &stage,
-                  const QSize &size)
+                  const QSize &size, double at)
 {
-    return cachedThumb(depthKey(panel, state, stage, size, 2),
-                       [&] { return stageImage(panel, state, stage, size); });
+    return cachedThumb(depthKey(panel, state, stage, size, 2, at),
+                       [&] { return stageImage(panel, state, stage, size, at); });
 }
 
 int layerMipCountForTest()

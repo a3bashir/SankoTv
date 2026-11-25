@@ -218,6 +218,22 @@ bool offBaseFraming(const CameraState &state, const Stage &stage);
 // The layered path draws this shot: the panel has depth and the camera is
 // off its base framing.
 bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stage);
+// LAYER MOTION (batch I-1): the layered path also draws a panel with a layer that moves,
+// whatever the camera does - each layer posed first (Panel::motionAt), then placed for
+// its depth and the camera. Every consumer that chose its path by layeredShot chooses by
+// this, and passes the place in the panel `at` (panelAt): a panel without a moving layer
+// takes exactly the path it took before.
+bool layeredPaint(const Panel &panel, const CameraState &state, const Stage &stage);
+// The place in a panel of `frameInPanel` of its `frames`: 0 at its first frame.
+double panelAt(int frameInPanel, int frames);
+// A layer drawn at another pose than its keys say: the canvas's Move box while it is
+// dragged (no index: none).
+struct PoseOverride
+{
+    int layerIndex = -1;
+    LayerPose pose;
+    QPointF pivot; // stage px: the pivot the box turns and sizes about
+};
 // THE LAYERED PATH. The paper is white on the picture plane's stage, then
 // every drawn layer bottom to top with its opacity through layerToStage and
 // the consumer's own transform, each resampled ONCE into its target (never
@@ -228,12 +244,14 @@ bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stag
 // renderShot / drawShot are the Phase 1 functions' layered twins (the MP4
 // and stills; the preview); stageImage is the stage as the camera sees it,
 // in stage px scaled to `target` (the strip).
+// `at` (batch I-1): the place in the panel its moving layers are posed at; 0, the first
+// frame, for every caller that shows a panel as one picture.
 QImage renderShot(const Panel &panel, const CameraState &state, const Stage &stage,
-                  const QSize &out);
+                  const QSize &out, double at = 0.0);
 void drawShot(QPainter &painter, const Panel &panel, const Stage &stage,
-              const CameraState &state, const QRectF &target, bool cover);
+              const CameraState &state, const QRectF &target, bool cover, double at = 0.0);
 QImage stageImage(const Panel &panel, const CameraState &state, const Stage &stage,
-                  const QSize &target);
+                  const QSize &target, double at = 0.0);
 // stageImage's painter twin, in STAGE px through the painter's own
 // transform (the Camera tool's canvas: the view transform); only what falls
 // inside `visible` (stage px) is drawn. `paper` is the canvas's stage
@@ -241,15 +259,16 @@ QImage stageImage(const Panel &panel, const CameraState &state, const Stage &sta
 // before the first other layer, as the Drawing view does. Only the canvas
 // passes one; none (or white) leaves the paper white.
 void drawStage(QPainter &painter, const Panel &panel, const CameraState &state,
-               const Stage &stage, const QRectF &visible, const QColor &paper = QColor());
+               const Stage &stage, const QRectF &visible, const QColor &paper = QColor(),
+               double at = 0.0, const PoseOverride &override = PoseOverride());
 // The layered pictures the small, often-repainted consumers show, cached by
 // everything that shapes them (the layers' pixels, visibility, opacity and
 // depth, the camera, the stage and the size): the SHOTS clip (drawShot into
 // a `size` image) and the strip (stageImage). Worker-thread safe.
 QImage shotThumb(const Panel &panel, const CameraState &state, const Stage &stage,
-                 const QSize &size, bool cover);
+                 const QSize &size, bool cover, double at = 0.0);
 QImage stageThumb(const Panel &panel, const CameraState &state, const Stage &stage,
-                  const QSize &size);
+                  const QSize &size, double at = 0.0);
 // Test hooks: the mip cache's entries, and emptying both caches.
 int layerMipCountForTest();
 void clearDepthCachesForTest();

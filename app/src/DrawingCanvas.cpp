@@ -1043,6 +1043,7 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     // short publication before the host changes panel ownership so the
     // completion callback can never observe a detached/deleted panel.
     flushPaintCommit();
+    m_poseDrag = PoseNone; // the Move box's drag on an animated layer ends (batch I-1)
 
     // Leaving a panel (or re-clicking it) with live canvas-side state: bake
     // everything into the CURRENT panel's own layers FIRST. A floating paste
@@ -2129,6 +2130,15 @@ QString DrawingCanvas::drawingViewChipText() const
     if (depthOutline(&quad, &depth, &name))
         return QStringLiteral("Drawing view  ") + QChar(0x00B7) + QStringLiteral("  dashed: ") + name
             + QStringLiteral(" in the shot");
+    // LAYER MOTION (batch I-1): a panel with a layer that moves - its motion is not on the
+    // Drawing view either (a stroke lands where the pen is), and the chip says where it is.
+    const ShotCameraView v = shotCameraView();
+    const bool depthToo = v.valid && m_panel && shotcam::layeredShot(*m_panel, shotCameraShownState(v), stage());
+    if (m_panel && m_panel->hasMotion())
+        return QStringLiteral("Drawing view  ") + QChar(0x00B7)
+            + (depthToo ? QStringLiteral("  depth shows with the Camera tool, motion with the Move tool on an "
+                                      "animated layer")
+                     : QStringLiteral("  motion shows with the Move tool on an animated layer"));
     return QStringLiteral("Drawing view  ") + QChar(0x00B7)
         + QStringLiteral("  depth shows with the Camera tool");
 }
@@ -2208,13 +2218,285 @@ void DrawingCanvas::setChipObstacles(const QVector<QWidget *> &bars)
     update();
 }
 
+// --- LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755) ------------------------------
+// See setMotionProvider in the header. The pose box is the layer's drawn art posed at the
+// playhead; nothing of the layer's pixels changes - the page writes a key.
+
+void DrawingCanvas::setMotionProvider(std::function<MotionView()> provider)
+{
+    m_motionProvider = std::move(provider);
+    update();
+}
+
+QPointF DrawingCanvas::artCentreOf(const Layer &layer) const
+{
+    const QRect art = m_panel ? layerArtBounds(layer) : QRect();
+    return art.isEmpty() ? QPointF(stage().frameCentre()) : QRectF(art).center();
+}
+
+const Layer *DrawingCanvas::poseLayer() const
+{
+    if (m_tool != Move || m_stageMode || !m_panel)
+        return nullptr;
+    const Layer *layer = editableActiveLayer();
+    if (!layer || !layer->animate || isGroupLayer(*layer) || layer->type == QLatin1String("background")
+        || layer->image.isNull())
+        return nullptr;
+    return motionView().valid ? layer : nullptr;
+}
+
+bool DrawingCanvas::poseMode() const
+{
+    return poseLayer() != nullptr;
+}
+
+shotcam::LayerPose DrawingCanvas::poseNow() const
+{
+    const Layer *layer = poseLayer();
+    if (!layer)
+        return shotcam::LayerPose();
+    if (m_poseDrag != PoseNone)
+        return m_poseLive;
+    return m_panel->layerPoseAt(*layer, motionView().at);
+}
+
+QPointF DrawingCanvas::posePivot() const
+{
+    const Layer *layer = poseLayer();
+    if (!layer)
+        return QPointF();
+    // Its pivot once it has a key; before, the centre of its art as it is now - the pivot
+    // the first key gives it (the user's answer 2).
+    return layer->keys.isEmpty() ? artCentreOf(*layer) : m_panel->pivotOnStage(*layer);
+}
+
+QRect DrawingCanvas::poseArt() const
+{
+    const Layer *layer = poseLayer();
+    if (!layer)
+        return QRect();
+    const qint64 key = layer->contentKey() ^ qint64(qHash(layer->id)) ^ (qint64(m_panel->frameAt().x()) << 40);
+    if (key != m_poseArtKey) {
+        m_poseArtRect = layerArtBounds(*layer);
+        m_poseArtKey = key;
+    }
+    return m_poseArtRect;
+}
+
+QPolygonF DrawingCanvas::poseQuad(const shotcam::LayerPose &pose) const
+{
+    const QRect art = poseArt();
+    if (art.isEmpty())
+        return QPolygonF();
+    return layerPoseTransform(posePivot(), pose).map(QPolygonF(QRectF(art)));
+}
+
+DrawingCanvas::PoseDrag DrawingCanvas::poseHit(const QPointF &widgetPos) const
+{
+    const QPolygonF quadC = poseQuad(poseNow());
+    if (quadC.size() < 4)
+        return PoseNone;
+    const QPolygonF quad = viewTransform().map(quadC);
+    for (int i = 0; i < 4; ++i)
+        if (QLineF(quad.at(i), widgetPos).length() <= 7.0)
+            return PoseScale;
+    if (quad.containsPoint(widgetPos, Qt::OddEvenFill))
+        return PoseMove;
+    // Just outside the box: a turn (the transform box's rule, a band of 28 px).
+    for (int i = 0; i < 4; ++i) {
+        const QLineF edge(quad.at(i), quad.at((i + 1) % 4));
+        const QPointF d = edge.p2() - edge.p1();
+        const double len2 = d.x() * d.x() + d.y() * d.y();
+        const double t = len2 > 0 ? qBound(0.0, QPointF::dotProduct(widgetPos - edge.p1(), d) / len2, 1.0) : 0.0;
+        if (QLineF(edge.p1() + d * t, widgetPos).length() <= 28.0)
+            return PoseRotate;
+    }
+    return PoseNone;
+}
+
+QString DrawingCanvas::poseChipText() const
+{
+    const Layer *layer = poseLayer();
+    if (!layer)
+        return QString();
+    const MotionView mv = motionView();
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    const QString frame = QStringLiteral("frame %1").arg(mv.frame + 1);
+    if (layer->keys.isEmpty())
+        return layer->name + dot + QStringLiteral("no keys yet") + dot + QStringLiteral("drag to set one at ") + frame;
+    QVector<shotcam::LayerKey> keys = layer->keys;
+    std::stable_sort(keys.begin(), keys.end(),
+                     [](const shotcam::LayerKey &a, const shotcam::LayerKey &b) { return a.at < b.at; });
+    const double here = double(mv.frame);
+    const double frames = qMax(1, mv.frames);
+    const int n = int(keys.size());
+    for (int i = 0; i < n; ++i)
+        if (layerKeyFrame(keys.at(i), mv.frames) == mv.frame) {
+            QString t = layer->name + dot + QStringLiteral("key %1 of %2").arg(i + 1).arg(n) + dot + frame;
+            if (i + 1 < n)
+                t += dot + shotcam::easeLabel(keys.at(i).ease) + QStringLiteral(" to key %1").arg(i + 2);
+            return t;
+        }
+    if (here < keys.first().at * frames)
+        return layer->name + dot + frame + dot + QStringLiteral("before key 1");
+    if (here > keys.last().at * frames)
+        return layer->name + dot + frame + dot + QStringLiteral("after key %1").arg(n);
+    int i = 0;
+    while (i + 1 < n && keys.at(i + 1).at * frames < here)
+        ++i;
+    return layer->name + dot + frame + dot + QStringLiteral("between key %1 and key %2").arg(i + 1).arg(i + 2);
+}
+
+// The faint copies of the layer at its other keys (canvas space), with the Move tool only
+// (the user's answer c).
+void DrawingCanvas::paintPoseGhosts(QPainter &painter) const
+{
+    const Layer *layer = poseLayer();
+    if (!layer || layer->keys.isEmpty())
+        return;
+    const MotionView mv = motionView();
+    const QPointF pivot = posePivot();
+    painter.save();
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    const QTransform base = painter.worldTransform();
+    for (const shotcam::LayerKey &key : layer->keys) {
+        if (layerKeyFrame(key, mv.frames) == mv.frame)
+            continue; // the key at the playhead is the layer itself
+        painter.setWorldTransform(layerPoseTransform(pivot, key.pose) * base);
+        painter.setOpacity(0.22 * qBound(0.0, key.pose.opacity, 1.0) + 0.06);
+        painter.drawImage(0, 0, layer->image);
+    }
+    painter.restore();
+}
+
+QVector<QPolygonF> DrawingCanvas::poseGhostsForTest() const
+{
+    QVector<QPolygonF> out;
+    const Layer *layer = poseLayer();
+    if (!layer)
+        return out;
+    const MotionView mv = motionView();
+    for (const shotcam::LayerKey &key : layer->keys)
+        if (layerKeyFrame(key, mv.frames) != mv.frame)
+            out.append(viewTransform().map(poseQuad(key.pose)));
+    return out;
+}
+
+QPolygonF DrawingCanvas::posePathForTest() const
+{
+    const Layer *layer = poseLayer();
+    if (!layer || layer->keys.size() < 2)
+        return QPolygonF();
+    const MotionView mv = motionView();
+    const int frames = qMax(1, mv.frames);
+    double first = 2.0, last = -1.0;
+    for (const shotcam::LayerKey &k : layer->keys) {
+        first = qMin(first, k.at);
+        last = qMax(last, k.at);
+    }
+    QPolygonF path;
+    const QPointF pivot = posePivot();
+    for (int f = qFloor(first * frames); f <= qCeil(last * frames); ++f) {
+        const shotcam::LayerPose p = m_panel->layerPoseAt(*layer, shotcam::panelAt(f, frames));
+        path << viewTransform().map(pivot + QPointF(p.dx, p.dy));
+    }
+    return path;
+}
+
+QPolygonF DrawingCanvas::poseBoxForTest() const
+{
+    return poseMode() ? viewTransform().map(poseQuad(poseNow())) : QPolygonF();
+}
+
+QPointF DrawingCanvas::posePivotForTest() const
+{
+    if (!poseMode())
+        return QPointF();
+    const shotcam::LayerPose p = poseNow();
+    return viewTransform().map(posePivot() + QPointF(p.dx, p.dy));
+}
+
+// The box, its four corners, the pivot, the dotted path with a diamond at each key, and
+// the chip naming the key (widget space).
+void DrawingCanvas::paintPoseBox(QPainter &painter) const
+{
+    const Layer *layer = poseLayer();
+    if (!layer)
+        return;
+    const QColor accent(0x7c, 0x6e, 0xf6);
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    // The path through the keys, dotted, with a diamond at each key's place.
+    const QPolygonF path = posePathForTest();
+    if (path.size() >= 2) {
+        QPen dots(QColor(0xd9, 0xd4, 0xff, 200), 1.4, Qt::CustomDashLine, Qt::RoundCap);
+        dots.setDashPattern({1.0, 3.0});
+        painter.setPen(dots);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolyline(path);
+    }
+    const MotionView mv = motionView();
+    const QPointF pivot = posePivot();
+    for (const shotcam::LayerKey &k : layer->keys) {
+        const QPointF c = viewTransform().map(pivot + QPointF(k.pose.dx, k.pose.dy));
+        const bool here = layerKeyFrame(k, mv.frames) == mv.frame;
+        QPolygonF d;
+        d << c + QPointF(0, -5) << c + QPointF(5, 0) << c + QPointF(0, 5) << c + QPointF(-5, 0);
+        painter.setPen(QPen(Qt::white, 1.2));
+        painter.setBrush(here ? accent : QColor(0x2a, 0x24, 0x56));
+        painter.drawPolygon(d);
+    }
+    // The box and its corners.
+    const shotcam::LayerPose pose = poseNow();
+    const QPolygonF quad = viewTransform().map(poseQuad(pose));
+    if (quad.size() >= 4) {
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(accent, 1.5));
+        painter.drawPolygon(quad);
+        for (int i = 0; i < 4; ++i) {
+            const QPointF p = quad.at(i);
+            painter.setBrush(Qt::white);
+            painter.setPen(QPen(accent, 1.5));
+            painter.drawRect(QRectF(p.x() - 4, p.y() - 4, 8, 8));
+        }
+    }
+    // The pivot: a ringed cross, where the turn and the size are about.
+    const QPointF pw = viewTransform().map(pivot + QPointF(pose.dx, pose.dy));
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(0, 0, 0, 150), 3.0));
+    painter.drawEllipse(pw, 5.5, 5.5);
+    painter.setPen(QPen(Qt::white, 1.4));
+    painter.drawEllipse(pw, 5.5, 5.5);
+    painter.drawLine(QPointF(pw.x() - 9, pw.y()), QPointF(pw.x() - 3, pw.y()));
+    painter.drawLine(QPointF(pw.x() + 3, pw.y()), QPointF(pw.x() + 9, pw.y()));
+    painter.drawLine(QPointF(pw.x(), pw.y() - 9), QPointF(pw.x(), pw.y() - 3));
+    painter.drawLine(QPointF(pw.x(), pw.y() + 3), QPointF(pw.x(), pw.y() + 9));
+    // The chip, above the box.
+    const QString text = poseChipText();
+    if (!text.isEmpty()) {
+        painter.setFont(camChipFont(font()));
+        const QFontMetricsF fm(painter.font());
+        const double w = qCeil(fm.horizontalAdvance(text) + 20.0);
+        const QRectF bounds = quad.size() >= 4 ? quad.boundingRect() : QRectF(pw, QSizeF(1, 1));
+        QRectF r(bounds.center().x() - w / 2.0, bounds.top() - 34.0, w, 24.0);
+        r.moveLeft(qBound(4.0, r.left(), width() - w - 4.0));
+        r.moveTop(qBound(4.0, r.top(), height() - 28.0));
+        paintCamChip(painter, r, text, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a),
+                     QColor(0xdd, 0xdd, 0xdd), false);
+    }
+    painter.restore();
+}
+
 bool DrawingCanvas::shotCameraDrawingViewChip() const
 {
     // View > Drawing Overlays > Depth Note (2026-11-21): on by default.
     if (m_tool == Camera || !m_panel || !m_drawingOverlays[OverlayDepthNote])
         return false;
+    if (poseMode()) // the Move tool on an animated layer shows the motion (batch I-1)
+        return false;
     const ShotCameraView v = shotCameraView();
-    return v.valid && shotcam::layeredShot(*m_panel, shotCameraShownState(v), stage());
+    return (v.valid && shotcam::layeredShot(*m_panel, shotCameraShownState(v), stage()))
+        || (m_panel->hasMotion() && motionView().valid);
 }
 
 QString DrawingCanvas::drawingViewChipForTest() const
@@ -2506,6 +2788,7 @@ void DrawingCanvas::paintStageAndKept(QPainter &painter, const QRectF &bounds,
 void DrawingCanvas::setTool(Tool tool)
 {
     clearPenUiLatch(); // a latched pen tap does not survive a tool change
+    m_poseDrag = PoseNone; // ...nor the Move box's drag on an animated layer (batch I-1)
 
     // A pick waiting or under way ends with a tool change, taking nothing (batch D).
     if (tool != m_tool) {
@@ -2908,6 +3191,12 @@ void DrawingCanvas::liftDefaultTransformBox()
 {
     if (m_xformActive)
         return;
+    // A layer whose Animate is on (batch I-1): its box is its pose, not its pixels - none
+    // are lifted. (Animate off: the Move tool changes the drawing, as it always has.)
+    if (poseMode()) {
+        update();
+        return;
+    }
     // A selected GROUP folder gets one box around all of its members.
     if (m_panel) {
         Layer *active = m_panel->activeLayer();
@@ -8655,16 +8944,33 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // below, so a stroke lands where the pen is.
     const ShotCameraView depthCam =
         m_tool == Camera && !m_stageMode ? shotCameraView() : ShotCameraView();
+    // LAYER MOTION (batch I-1): the Camera tool shows a panel's moving layers at the
+    // playhead with the shot (the layered paint, posed first); the Move tool on a layer
+    // whose Animate is on shows the panel's motion at the playhead on the stage itself,
+    // its layer at the box's pose while the box is dragged.
+    const MotionView motionNow = motionView();
+    const double motionAt = motionNow.valid ? motionNow.at : 0.0;
     const bool depthView = depthCam.valid
-        && shotcam::layeredShot(*m_panel, shotCameraShownState(depthCam), stage());
+        && shotcam::layeredPaint(*m_panel, shotCameraShownState(depthCam), stage());
+    const bool poseView = !depthView && poseMode();
     const int activeIdx = m_panel->activeLayerIndex;
-    if (depthView) {
+    if (depthView || poseView) {
         painter.save();
         painter.setClipRect(canvasR);
+        shotcam::PoseOverride override;
+        if (poseView && m_poseDrag != PoseNone) {
+            override.layerIndex = activeIdx;
+            override.pose = m_poseLive;
+            override.pivot = posePivot();
+        }
         // The stage background too (2026-11-17, batch E's hand test: Dark Grey left this view
         // white), after the Background layer as below; drawStage takes it from the canvas alone.
-        shotcam::drawStage(painter, *m_panel, shotCameraShownState(depthCam), stage(),
-                           T.inverted().mapRect(QRectF(event->rect())) & canvasR, m_paperColor);
+        shotcam::drawStage(painter, *m_panel,
+                           depthView ? shotCameraShownState(depthCam) : shotcam::neutral(stage()), stage(),
+                           T.inverted().mapRect(QRectF(event->rect())) & canvasR, m_paperColor, motionAt,
+                           override);
+        if (poseView)
+            paintPoseGhosts(painter);
         painter.restore();
     } else if (!m_xformActive && !m_lightTable && activeIdx >= 0
         && activeIdx < m_panel->layers.size()) {
@@ -9141,6 +9447,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.restore();
     }
 
+    // LAYER MOTION (batch I-1): the Move box on an animated layer, its pivot, the dotted path
+    // through its keys and the chip naming the key (widget space).
+    if (poseMode())
+        paintPoseBox(painter);
+
     // Marching ants: selection outline / in-progress drag / floating bounds,
     // drawn in canvas space through T (rotate/flip with the view). Cosmetic
     // pens keep them 1px on screen.
@@ -9504,6 +9815,12 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
             m_quickShape.requestCommit();
             return;
         }
+    }
+    // Esc: the Move box's drag on an animated layer goes back where it was (batch I-1).
+    if (event->key() == Qt::Key_Escape && m_poseDrag != PoseNone) {
+        m_poseDrag = PoseNone;
+        update();
+        return;
     }
     // Esc: a pick waiting or under way goes, taking nothing (batch D).
     if (event->key() == Qt::Key_Escape && (m_pickArmed || m_picking)) {
@@ -9890,6 +10207,21 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return; // the pick click never draws and never starts a box drag
     }
 
+    // LAYER MOTION (batch I-1): the Move box on an animated layer - a press inside moves it,
+    // on a corner sizes it, just outside turns it; nothing anywhere else.
+    if (event->button() == Qt::LeftButton && poseMode()) {
+        const PoseDrag hit = poseHit(event->position());
+        if (hit != PoseNone) {
+            m_poseStart = poseNow(); // the keys' pose at the playhead: read before the drag begins
+            m_poseLive = m_poseStart;
+            m_poseDrag = hit;
+            m_posePressC = toCanvasF(event->position());
+            m_posePivotC = posePivot() + QPointF(m_poseStart.dx, m_poseStart.dy);
+            update();
+        }
+        return;
+    }
+
     // Transform box intercepts every left-click while Move is active, so its
     // handles/rotation zones work even where they fall outside the canvas
     // rect. A press on empty space (XNone) is swallowed but keeps the box.
@@ -10206,6 +10538,30 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         }
         return;
     }
+    // LAYER MOTION (batch I-1): the Move box's drag on an animated layer, live.
+    if (m_poseDrag != PoseNone) {
+        const QPointF p = toCanvasF(event->position());
+        shotcam::LayerPose live = m_poseStart;
+        if (m_poseDrag == PoseMove) {
+            live.dx = m_poseStart.dx + (p.x() - m_posePressC.x());
+            live.dy = m_poseStart.dy + (p.y() - m_posePressC.y());
+        } else if (m_poseDrag == PoseScale) {
+            const double r0 = QLineF(m_posePivotC, m_posePressC).length();
+            const double r1 = QLineF(m_posePivotC, p).length();
+            if (r0 > 1e-3)
+                live.scale = qBound(0.01, m_poseStart.scale * r1 / r0, 100.0);
+        } else if (m_poseDrag == PoseRotate) {
+            const QPointF a = m_posePressC - m_posePivotC, b = p - m_posePivotC;
+            double turn = qRadiansToDegrees(std::atan2(b.y(), b.x()) - std::atan2(a.y(), a.x()));
+            turn = shotcam::normalisedAngle(turn);
+            if (event->modifiers() & Qt::ShiftModifier)
+                turn = std::round(turn / 15.0) * 15.0;
+            live.rotation = m_poseStart.rotation + turn;
+        }
+        m_poseLive = live;
+        update();
+        return;
+    }
     if (m_xformActive && m_tool == Move) {
         if ((event->buttons() & Qt::LeftButton) && m_xformMode == XWarpBox) {
             m_marqueeEndW = event->position(); // rubber band follows
@@ -10350,6 +10706,18 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
             pushPerspectiveCommand(m_perspBefore, m_perspGestureText);
         }
         m_perspHandle = -1;
+        return;
+    }
+    // LAYER MOTION (batch I-1): the Move box let go - the pose it made is the key at the
+    // playhead, which the page writes (one undo step). Unchanged: nothing.
+    if (m_poseDrag != PoseNone && event->button() == Qt::LeftButton) {
+        m_poseDrag = PoseNone;
+        const shotcam::LayerPose made = m_poseLive;
+        const QPointF pivot = posePivot();
+        const int layerIndex = m_panel ? m_panel->activeLayerIndex : -1;
+        if (made != m_poseStart && layerIndex >= 0)
+            emit layerPoseEdited(layerIndex, made, pivot);
+        update();
         return;
     }
     if (m_quickShape.hasActiveShape() && event->button() == Qt::LeftButton

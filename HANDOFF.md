@@ -1,5 +1,81 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-25: BATCH I-1 (LAYER MOTION) COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1, ON TOP OF RENAME BRUSH (e73460ff6); THE USER'S EIGHT FOLLOW-UP NOTES (I-1b) DRAWN IN FIGMA I-1b (701:755) - WAITING FOR APPROVAL, NOTHING OF I-1b BUILT
+THE USER (2026-11-25, about 08:5x, pasted): "Hand test I1 done. Read every Dev Recorder session made after 22:36 on 24
+November, oldest first. Confirm from system.txt that it ran the Nov 24 2026 22:36:56 build (git c1acffcf1+dirty) and
+that the title bar named "TEST COPY - small pirate, layer motion I1", then report pass, fail or "not tested" per step
+of handtest_I1_layer_motion.md. If it ran the right build and nothing failed, commit and push Rename Brush first, gated
+on its own in a scratch worktree, then batch I-1 on top of it, each with its HANDOFF notes and matching its own hash
+list, git status clean. Mark I-1 BUILT in Figma. My notes below are follow-up changes, not reasons to hold I-1 back."
+Then eight notes (I-1b, below), and: "Before building, make a Figma frame I-1b in the area labelled "Claude Code please
+Start new design here 002", using SankoTV's existing UI. ... Add a short written plan for 1, 6 and 8. Screenshot it and
+stop for my approval before building any of I-1b."
+HAND TEST I1 READ: two sessions after 22:36 on 24 November - 20261125-064635 (steps 1-12) and 20261125-082030 (the
+reopen of step 12, steps 13-14). Both system.txt: built "Nov 24 2026 22:36:56", git "c1acffcf1+dirty"; the title bar
+"SANKO TV — TEST COPY - small pirate, layer motion I1"; no issue markers, no warnings. Times below are seconds into
+session 064635 unless marked.
+ 1 PASS - Layer 6's purple diamond, the LAYER row "LAYER · Layer 6" on clicking its row, Play.
+ 2 PASS - the Drawing-view note showed (half under the Zoom bar: I-1b note 2); strokes made and undone.
+ 3 PASS - the Move box, the faint copies, the path, the chip "Layer 6 · key 2 of 4 · frame 39 · Ease In/Out to key 3";
+   size and turn keys made.
+ 4 PASS - with the Brush no box (2660 s).
+ 5 PASS for animating layers (OCEAN panel 2 Layer 6, JUNGLE Layer 6, ISLAND BEACH panel 1 Layer 5 - the crab - and
+   Layer 4 in flat panel 6); the opacity key NOT TESTED (no "Layer Key Opacity" in the recording).
+ 6 PASS - an ease chosen (2 x Layer Key Ease), a key dragged (Move Layer Key), Delete Key (6 x); the tap on a dim mark
+   NOT SEEN.
+ 7 PASS (by the events) - Animate off and on with the keys kept (Layer 6 of panel 0, Layer 4).
+ 8 PASS - a key at frame 8 of 12 became frame 72 of 108 when the panel was made longer.
+ 9 NOT TESTED as written (Duplicate not used); Copy Panel / Paste Panel (3266-3284 s) carried the crab's keys (the
+   chip "Layer 5 · key 1 of 2" in the pasted panel), then undone.
+10 PASS for the MP4 (exported, complete at 5195 s); the strip and the clips plausible; PNG stills NOT TESTED.
+11 NOT TESTED (no merge in the recording).
+12 PASS - saved at 5564 s (228 ms); session 082030 reopened the copy with the keys and the LAYER row.
+13 PASS - four pen taps in the name field kept it (Rename Brush's re-test R2; see the Rename block below).
+14 HALF - a canvas tap confirmed the name and closed the Library (082030, 137.3 s) PASS; a tap on another brush NOT
+   TESTED (the checks (rn4)/(rn7) cover it).
+Nothing failed, so both commits went ahead.
+THIS COMMIT: batch I-1 as built on 24 November (the night section below): app/src/camera/CameraModel.h,
+StoryboardModel.h, camera/ShotCamera.cpp/.h, AnimaticPage.cpp/.h, AnimaticTimeline.cpp/.h, DrawingCanvas.cpp/.h,
+ProjectIO.cpp/.h, export/ProjectExport.cpp/.h, ProjectResize.cpp, StoryboardPage.cpp/.h, MainWindow.cpp,
+app/tests/CameraTest.cpp and the I-1 parts of app/tests/ProjectLifecycleTest.cpp ((lm7)-(lm17), the "motion" slice,
+runLayerMotionPass in the full run, the (rp) windows 12 px wider with their control). Its tree is the main tree that
+gate I1 ran on (Rename + I-1): every source and test file was hashed again against
+app/build/_probe/split/sha_I1_gate.txt before committing and matched. HASH LIST: app/build/_probe/split/
+sha_I1_commit.txt (the 20 files this commit changes, and this HANDOFF). The commit was made in the scratch worktree
+C:/SankoTV_split on top of e73460ff6 (Rename Brush, gate RN); master was moved to it and the main tree's index reset,
+so the main tree is clean; the two commits are pushed together right after this one. FIGMA: I-1 (693:755) is renamed
+"BUILT 2026-11-25 I-1 ..." with this commit's hash once the commit exists.
+I-1b - THE USER'S EIGHT NOTES, FOLLOW-UP CHANGES TO I-1 (NOT BUILT; FIGMA "PROPOSAL 2026-11-25 I-1b" 701:755, in area
+002 under I-1; screenshot Documents\SankoTV-Design\figma-I1b\I-1b_full.png; nothing to build until the user approves):
+ 1 Scrubbing: dragging or clicking the playhead never opens the full-screen preview; only Play (button and key) does.
+   The canvas follows the playhead in the workspace; Move and Camera tools show the motion there, drawing tools show
+   layers as drawn. (Today AnimaticPage::onScrubbed calls enterPreview() unless m_scrubShowsCanvas, set only for the
+   Camera tool. Plan: the exception becomes the rule; panels become current as the playhead crosses them; the 4K
+   crossing cost measured on a scratch copy of the song project first.)
+ 2 Every canvas note at the top centre, just below the floating toolbar at the top (Floating Toolbar Layers, 173:36),
+   never over the art's middle nor under a bar. (Today four places: the pose chip above its box, the Drawing-view chip
+   at the bottom (clear of the Move/Selection bars, not of the Zoom bar), sayNote/sayEditRefused beside the pointer,
+   the Camera chip at y 12 - under that toolbar.)
+ 3 The Move bar: on an animated layer with Animate on, Pivot Point, Skew, Distort, Perspective, Warp, Flip H, Flip V
+   hide - that is all seven, so the bar hides.
+ 4 The diamond: a click on a grey diamond turns it solid purple and makes a key at the playhead at once (the layer as
+   drawn, pivot at its art's centre).
+ 5 Keys: Copy / Cut / Paste (at the playhead) from the LAYER row's right-click and Ctrl+C/X/V while the LAYER row was
+   the last thing pressed, across panels and scenes. Art drawn elsewhere in the target panel: paste keeps the PLACE -
+   d2 = (pivot1 + d1) - pivot2 - turn, size, opacity, ease copied. (Today editCopy/editCut/editPaste act on the
+   canvas selection, else the panel; a key focus goes first, any other press hands them back.)
+ 6 Notes go the moment the pen or the mouse presses on the canvas and stay gone until that stroke's release.
+ 7 Edit > Preferences > Keyframes: camera-key and layer-key colours, presets and Custom... (SankoColorPicker); purple
+   #7C6EF6 the default.
+ 8 Timeline panning: Ctrl + left drag (mouse or pen) or a middle drag pans left/right only. CLASH CHECK (read in
+   AnimaticTimeline.cpp): Ctrl is read once - Ctrl+wheel zoom; a press reads only Alt (the roll on a panel's edge);
+   non-left presses are ignored; there is no multi-select. So Ctrl+click/drag today equal a plain click/drag; no clash
+   takes anything away.
+QUESTIONS IN THE FRAME (section 7): 1 notes made away from the canvas - in the slot too? 2 hide the Move bar whole?
+3 the diamond on a layer with kept keys - bring them back, add no key? 4 paste across different camera framings - the
+canvas place or the screen place? 5 the Move and Camera chips during a drag, and the refusal note on a refused press?
+6 a slow 4K crossing - the panel's picture while dragging, its layers at rest?
+
 ## 2026-11-25 (morning): RENAME BRUSH COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1 (ITS STEPS 13-14 WERE RE-TEST R2) - THE WINDOW NEVER GOES BEHIND ANOTHER PROGRAM, RENAME IN PLACE, THE LIBRARY STAYS ON SCREEN, A PEN TAP IN THE NAME FIELD KEEPS THE FIELD; GATED ALONE IN A SCRATCH WORKTREE (GATE RN), GREEN IN BOTH BUILDS
 THE USER (2026-11-25, about 08:5x, pasted): "Hand test I1 done. Read every Dev Recorder session made after 22:36 on 24
 November, oldest first. ... If it ran the right build and nothing failed, commit and push Rename Brush first, gated
@@ -32,6 +108,144 @@ a script that edits the PATCH TEXT only (drops the (rp) hunks, the (lm) block in
 "motion" slice and runLayerMotionPass's call; recounts the headers), applied with git apply --cached (every context
 line checked). The result is 38745 lines - the count the file had right after (rn7), before any I-1 code. The other
 four files whole. HASH LIST: app/build/_probe/split/sha_RN_commit.txt.
+
+## STATUS 2026-11-24 (night, 23:3x): RE-TEST R1 READ - A PEN TAP IN THE NAME FIELD ENDED FOUR RENAMES, STEP 3 NOT IN THE RECORDING: RENAME BRUSH NOT COMMITTED, THE PEN FIX MADE (rn7); BATCH I PART I-1 BUILT - GATE I1 GREEN IN BOTH BUILDS; NOTHING COMMITTED - WAITING FOR HAND TEST I1 (WITH RENAME RE-TEST R2 IN IT)
+GATE I1 (app/build/_probe/split/fullgate_I1.log, normal mode, 3399 s): every family GREEN in both builds -
+Lifecycle 1857/1857, Camera 348/348, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46,
+QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3. EXE STAMP: Release SankoTV.exe built "Nov 24 2026
+22:36:56", "c1acffcf1+dirty" (22:37:15 on disk), sha256 97193cd1...; Debug 45d0752f... HASH LISTS:
+app/build/_probe/split/sha_I1_gate.txt (the 24 changed source/test files + HANDOFF as it was at 23:31 - HANDOFF
+changed after, by these notes) and sha_I1_exes.txt. THE MAIN TREE HOLDS BOTH CHANGES: Rename Brush (5 files:
+BrushLibraryPanel.cpp/.h, FloatingToolWindow.cpp/.h, and its parts of ProjectLifecycleTest.cpp) and I-1 (the rest,
+and its parts of ProjectLifecycleTest.cpp and CameraTest.cpp). When they are committed: Rename first, alone, gated
+alone in a scratch worktree (copy the main tree's bytes for unchanged files first - autocrlf); then I-1 on it.
+RESUME: read hand test I1's recordings (built 22:36:56); do not rebuild before it.
+THE USER (2026-11-24, about 20:5x, pasted): "Re-test R1 done: all steps looked right; the whole Library stayed on
+screen while renaming, and SankoTV stayed in front. Read every Dev Recorder session made after 15:39 on 24 November,
+oldest first. Confirm from system.txt that it ran the Nov 24 2026 15:39:12 build (git 8802c7f90+dirty) and that the
+title bar named "TEST COPY - small pirate, Rename re-test R1", then report pass, fail or "not tested" per step of
+handtest_R1_rename_retest.md. If it ran the right build and nothing failed, commit and push Rename Brush with its
+HANDOFF notes, matching its hash list, git status clean. Then batch I, part I-1. I-1 (693:755) is approved, with my
+answers: a) The timeline: A, one LAYER row for the selected layer, with the dim marks where other panels have animated
+layers. b) Animate switched off on a layer with keys: keep its keys, unused and greyed, until it is switched on again.
+c) The faint copies at the other keys and the dotted path: only while the Move tool is out, so the canvas stays clean
+while I draw. d) The diamond between the eye and the thumbnail, as drawn. Build I-1 as shown in I-1 and as in your
+proposal: - keys on a layer's position, rotation, size and opacity, timed and eased like the camera's, stretching with
+the panel; - the pivot at the centre of the drawn art, and one size for both directions; - the layer's motion first,
+then its depth and the camera, the same everywhere a layer is shown (canvas, preview, SHOTS clips, thumbnails at the
+panel's first frame, MP4 and stills); - Duplicate copies the keys; - the file's version goes to 6 only for projects
+with animated layers. Measure the playback cost on a scratch copy of my 4K song project (never the original) and
+report it. Checks with controls and red runs, none judged by the clock, quick check, full gate before stopping (every
+family green in both builds), a fresh TEST COPY with an animated layer ready to try, the exe stamp and a hand-test
+list. Don't commit until my hand test passes. If anything failed or the build is wrong, commit nothing and report.
+ALL DONE when finished, and send a notification."
+RE-TEST R1 (session 20261124-204550, the only one after 15:39; system.txt: built Nov 24 2026 15:39:12, git
+8802c7f90+dirty, Release; title bar "SANKO TV — TEST COPY - small pirate, Rename re-test R1", read off the screenshot
+at 56.5 s). The recorder takes no screenshot while the Library has the keyboard, so the field itself is not in the
+screenshots; names before and after are. Eleven renames (65.1 s ... 248.1 s):
+- FOUR ENDED THE MOMENT THE PEN TAPPED THE NAME FIELD (65.1->66.2 s, 79.2->79.9, 96.0->96.7, 97.7->98.7): the tablet
+  press lands on brushNameEditor, the field goes 2 ms later, the name unchanged; each time the user renamed again.
+  CAUSE (code): PressWatch (BrushLibraryPanel.cpp, the rename's click-away, an application event filter) walked the
+  receiver's parents to see if a press was in the field. A QLineEdit takes no tablet press, so Qt hands the same
+  TabletPress on to the row, and on up - and the filter saw it again with receiver = the row: "elsewhere" -> confirm,
+  field gone; the mouse press Qt then makes from the pen went to the row. A mouse click in the field is taken by the
+  field, so the mouse checks (rn4) never saw it. FIX: where the press is decides (the field's rect at the press's
+  global position), not which widget it is handed to. CHECK (rn7) with the pen through the window system
+  (handleTabletEvent, press and release): the tap keeps the field, the keyboard, places the caret; End, " Pen", Enter
+  -> "Ink Four Pen"; control: the same pen on another brush confirms "Ink Five" and ends the field. RED RUN (the
+  check `if (false && ...) // RED RUN`, Release, libbox): (rn7) FAIL "after the tap: field 0, keyboard 0, caret 0;
+  name 'Ink Four'" - what the recording shows - control PASS; saved Documents\SankoTV-Design\rename-brush-2026-11-24\
+  red_run_rn7_pen_tap_in_field.txt. With the fix libbox 14/14 (app/build/_probe/rn7/). Markers removed, grep 0;
+  BrushLibraryPanel.cpp 1455 lines, 1455 CRs.
+- Per step: 1 PASS (69.5->76.4 s "Calligraphy Copy" -> "Calligraphy_01" by keyboard; E and B at 141.2/143.5 s fired
+  at once). 2 PASS as far as the recording shows (81.7->92.8 s: 11 s in the field, ended by the keyboard, the name
+  unchanged; keys are not logged, so Esc itself is not seen). 3 NOT TESTED - no rename ended by a click on another
+  brush or on the canvas (every one ended by the keyboard or by the pen tap in the field). 4 NOT SEEN (an empty name
+  and Enter cannot be told from Esc without key logs; 100.9->103.3 and 248.1->249.8 s ended by the keyboard with the
+  name unchanged). 5 PASS (Duplicate x4, Delete No once and Yes x5, Import cancelled twice; every time SankoTV lost
+  the foreground it was the user's: minimise/restore of all windows together (115, 153, 244, 252, 287, 301, 335 s),
+  the pointer leaving to the other screen (200.6 s), and Windows' own file dialogs). 6 PASS (Save As 325.7 s into
+  "TEST COPY - small pirate, Rename re-test R2", saved 546 ms / UI 41 ms, the bar "Saved 20:51"). End: closed by X.
+- SO RENAME BRUSH IS NOT COMMITTED (the user: "If anything failed ... commit nothing"); it waits for re-test R2 with
+  the pen fix (the re-test list is in the I-1 hand-test list).
+I-1 BUILD (in progress, 2026-11-24 night; nothing committed): DATA - CameraModel.h: easeCurve (the one ease curve,
+shotcam::ease calls it), LayerPose, LayerKey (at 0..1 of the panel), poseFromKeys (header-only, scale geometric);
+StoryboardModel.h: Layer::animate/keys/pivot (frame space), moves(), hasMotionData(); layerPoseTransform, layerKeyFrame;
+Panel::layerMoves/hasMotion/layerPoseAt/pivotOnStage/motionOf/motionAt/layerOpacityAt; layerDrawn ignores the slider
+for a moving layer; flattenedImage poses moving layers AT FRAME 0 (thumbnails, clips, strip, stills, onion, saved
+flatten = the first frame, answer 8); fingerprints include motion (appendMotion). PAINT - ShotCamera: layeredPaint =
+layeredShot || hasMotion; paintLayers poses first (motion * layerToStage * consumer), keyed opacity, kept art for a
+moving layer, PoseOverride (the canvas drag); `at` on renderShot/drawShot/stageImage/drawStage/shotThumb/stageThumb;
+depthKey has `at` only for moving panels. CONSUMERS - preview (PanelDisplay::setAt from updatePreviewCamera, the
+layered path even with a neutral camera, black outside the frame), MP4 (renderMovieFrameAt per frame for a moving
+panel), stills/clips/strip (frame 0 via the flatten or at=0), canvas Camera tool (layeredPaint, at). CANVAS - Drawing
+view as drawn + chip "motion shows with the Move tool on an animated layer"; MOVE TOOL ON A LAYER WITH ANIMATE ON =
+pose mode (no pixel lift): drawStage with the live pose, ghosts at other keys (0.22), dotted path + key diamonds, box
+(move inside / scale corners / turn outside within 28 px, Shift 15 deg), pivot cross, chip "Boat · key 2 of 3 ·
+frame 14 · Ease In/Out to key 3"; release -> layerPoseEdited(layer, pose, pivot); Esc cancels. FILE - "motion" object
+per layer, version 6 only with motion (kFileVersionLayerMotion, Newest = 6), motionKeysDropped, flattenContent has
+motion. PAGE - LayerAnimateDiamond (objectName layerAnimate) between eye and thumb; layerToggleAnimate ("Animate
+Layer"/"Stop Animating Layer"); setLayerKeyAtPlayhead ("Set Layer Key"; first key sets the pivot); opacity slider keys
+("Layer Key Opacity"); layerGoToKey/MoveKey/DeleteKey/SetKeyEase + menu + ease popover; refreshLayerMotionUi on
+playheadMoved; merge refuses a layer with motion (sayNote); resize moves pivots by the offset. TIMELINE - LAYER row
+under CAMERA only while a layer has motion (layerRowShown), "LAYER · name", own keys + segments + ease marks, dim
+hollow marks for other layers' keys, greyed when Animate off, press/drag/right-click/ease mark signals relayed by
+AnimaticPage. RECORDER - StoryboardPage::layerMotionEdited -> "layerMotion" event (what, layer, panel, frame,
+frames, animate, keys "f12 300.0,100.0 0.0deg x1.000 op1.00 linear; ...") per step.
+CHECKS - Camera family (lm1)-(lm6), headless: (lm1) pose = the camera's evaluate at every frame, five eases (control:
+ratio-scale size 150 % not 187.5 %); (lm2) keys stretch with the panel (control: frame-held key); (lm3) motion first,
+then 60 % depth and a 1.5x camera, in renderMovieFrameAt, positions worked out BY HAND at frames 0/6/12/20 (control:
+the wrong order and no motion >= 20 px off); (lm4) the REAL MovieExportJob's frames 0/6/12 = those renders (control:
+all differ); (lm5) still/clip/strip/flatten at frame 0 (control: still == MP4 frame 0, != frame 12); (lm6) Animate
+off: keys kept, no motion, flatten byte-identical to no keys (control: on -> moves). Camera 348/348 Release.
+Lifecycle slice "motion" (runLayerMotionPass, also in the full run after runLibraryBoxesPass): (lm7) file loads keys;
+(lm8) the diamond (between eye and thumb, solid at a key), click = "Stop Animating Layer", undo; recorder event;
+(lm9) LAYER row (label, own keys 0/12 at their x, dim Gull 24/36, under CAMERA), greyed when off, the ease mark ->
+popover -> Ease Out ("Layer Key Ease"), key drag 12 -> 18 ("Move Layer Key"), Delete Key via menu hook, a dim mark
+-> panel 2 / Gull / frame 12; (lm10) Move box at frame 6 = the pose, drag -> key at frame 6 = start + drag ("Set
+Layer Key"), pixels unchanged; ghosts 2, path 13 points, chip text; control Brush: none; control Animate off: pixels
+move, no key; (lm11) opacity slider -> key opacity 0.5, own kept ("Layer Key Opacity"); (lm12) Drawing view as drawn
++ chip, Camera tool at frame 12 posed (read in a 120 px window: the Camera tool's chip has reddish pixels); (lm13)
+preview paused at 12 and 0; (lm14) strip + clip at frame 0 (timeline 800 % for the clip); (lm15) Duplicate copies
+keys; (lm16) merge refused + control; (lm17) saved version 6 + reopen, a bad key dropped and counted; control: a
+project without motion has no LAYER row and saves version 3 with no "motion". 23/23 Release before the recorder
+check was added (lm8's event check is new since).
+BUG FOUND BY (lm10): the press read the pose after marking the drag (poseNow returned the drag's empty pose) - the
+key was the drag alone; fixed (read before). Check errors fixed (not the code's): a rect polygon has 5 points; the
+clip rect text is "x,y wxh"; (lm11) read through a reference an undo replaced.
+RED RUNS (Documents\SankoTV-Design\batch-I1-2026-11-24\): (a) depth before motion in paintLayers -> (lm3) x2 and (lm5)
+FAIL, at exactly the hand-worked wrong-order places (580, 332.5 at f12); (b) flatten not posed -> (lm5) flatten (200,
+200) and (lm6) control FAIL; (c+d+e, one build) pose mode off, version not raised, LAYER row never shown -> (lm9)
+x5, (lm10) x3, (lm17) FAIL (and knock-ons (lm12)-(lm14) from steps left on the stack). A first (d) that wrote no
+"motion" at all also stripped the FIXTURE (same writer) and crashed the pass on missing keys: the pass now stops
+with "(lm) the fixture's keys are there" failing. Markers removed: 0 in the diff.
+TEST COPY: "TEST COPY - small pirate, layer motion I1" (C:\SankoTV-TestCopies; from the original read only, its 94
+files hashed the same before and after; 93 copied (not the mp4), the project file and assets folder named for the
+copy, 79 paths rewritten, none missing; OCEAN panel 1 "Layer 6" (the two seagulls, depth 116 %) animated: pivot
+(1454, 335) frame space, keys at 0 / 0.5 / 0.98: as drawn; -420,-90 -8 deg 90 %; -900,-40 +4 deg 75 % (Ease
+In/Out); version 6). HAND-TEST LIST: Documents\SankoTV-Design\handtest_I1_layer_motion.md (12 motion steps + Rename
+R2 steps 13-14).
+MEASURE COPY: C:\SankoTV-TestCopies\MEASURE COPY - Mansour song, layer motion\pristine (the song, 24 files, copied
+read only; original hashed before: c2f35047...). Program: Documents\SankoTV-Design\batch-I1-2026-11-24\motioncost\.
+PLAYBACK COST (results_motion_cost.txt, 3 runs, each on a fresh copy; the originals - song and pirate - hash the same
+before and after): the busiest panel (scene 1 panel 2, 3840 x 2160, 3 layers), its top layer moving: PREVIEW 1600 x
+900 - still panel today 0.6 ms a frame (+ its flatten 14 ms once); moving 1.7-1.9 ms a frame median, 2.0-2.3 90 %,
+8.9 max, and the first frame 24 ms (the layers' reduced copies, once). MP4 1920 x 1080 - still panel 12 ms once;
+moving 2.8-3.1 ms a frame median, 12.7 max, first 24-26 ms. A frame at 24 fps has 41.7 ms.
+QUICK CHECK (Lifecycle Release, full): run 1 was on the RED-RUN exe (not rebuilt after restoring - my slip): its
+(lm) failures were the red run's; besides them (aw) window minimum 1369 > 1366 and 3 (rp) pins. The diamond made
+12 px (against the eye, no gap of its own; it was 14 + a 6 gap): run 2 (real build) - (aw) PASS; (rp) 3 pins and
+(ct) FAIL, 1852 others PASS. (ct): my (lm9) clicked Ease Out with click() and closed the ease popover (a Qt::Popup)
+while Qt's pointer was elsewhere - Qt's "replay the next press" flag (QApplication closePopup), which a later
+pass's menu-closing click reached the canvas with - the instrument fault libbox::pickFromRowMenu fixed in S3; now
+picked the pen's way (libbox::pointerTo move/press/release) and a popover the check closes is WA_NoMouseReplay.
+(rp) CHANGED CHECK: the (dp) pass docks the Layers panel at its narrowest and the layout is kept, so in the full run
+the timeline's width follows the panel's minimum, which the diamond made 12 px wider (run alone the panel is at its
+default and the COMMITTED code fails the pins too - proven in a scratch worktree at c1acffcf1, removed). OLD:
+"Rig r(project);" and "Rig n(mppins::writeMovingProject(...));" (1880 x 900). NEW: both "QSize(1880 +
+kAnimateDiamondPx, 900)" (kAnimateDiamondPx = 12), the pins unchanged, and a new control: the Layers column at its
+narrowest in this pass, the 1880 window 12 px narrower with a CAMERA row that is not the pin, and back at 1892 the
+pin.
 
 ## STATUS 2026-11-24 (evening): RENAME BRUSH NOT COMMITTED - WAITING FOR RE-TEST R1; THE FIXTURE RETRY (68cee2f13) AND SAVING STEP 3 (c1acffcf1) COMMITTED AND PUSHED; BATCH I ANSWERED - FIGMA I-1 FOR APPROVAL, NOTHING OF BATCH I BUILT
 THE USER (2026-11-24, about 15:2x, pasted): "Hand test S3: Rename Brush failed. When I choose Rename Brush, the whole

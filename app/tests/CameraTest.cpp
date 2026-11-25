@@ -527,6 +527,68 @@ bool near(double a, double b, double tol = 1e-9)
     return qAbs(a - b) <= tol * qMax(1.0, qMax(qAbs(a), qAbs(b)));
 }
 
+// ---- LAYER MOTION's fixture (batch I-1, 2026-11-24) -------------------------------------------
+// A 960 x 540 panel of 24 frames: the paper and the Boat, a red 20 px square drawn at
+// (200, 200), its pivot there. Its keys: frame 0 - 100 px right; frame 12 - 300 right and 100
+// down (both Linear). `depth`: the Boat at 60 % and a camera key at frame 0, zoom 1.5 about the
+// frame's centre. `animate` false: the keys kept, unused.
+const QColor kLmBoat(220, 30, 30);
+Panel *lmBoatPanel(bool depth, bool animate = true)
+{
+    Panel *panel = makeBlankPanel(QSize(960, 540));
+    panel->layers.removeLast();
+    Layer boat = makeRasterLayer(QStringLiteral("Boat"), QSize(960, 540));
+    {
+        QPainter p(&boat.image);
+        p.fillRect(QRectF(190, 190, 20, 20), kLmBoat);
+    }
+    boat.animate = animate;
+    boat.pivot = QPointF(200, 200);
+    shotcam::LayerKey k0, k1;
+    k0.at = 0.0;
+    k0.pose.dx = 100;
+    k0.ease = shotcam::Ease::Linear;
+    k1.at = 0.5;
+    k1.pose.dx = 300;
+    k1.pose.dy = 100;
+    k1.ease = shotcam::Ease::Linear;
+    boat.keys = {k0, k1};
+    if (depth)
+        boat.parallax = 0.6;
+    panel->layers.append(boat);
+    panel->activeLayerIndex = 1;
+    panel->setLength(24, 24);
+    return panel;
+}
+
+// Where a colour is: the centroid of the pixels within `tol` of it, and how many (none: -1, -1).
+QPointF centroidOf(const QImage &image, const QColor &colour, int tol = 60, int *count = nullptr)
+{
+    const QImage img = image.convertToFormat(QImage::Format_ARGB32);
+    double sx = 0, sy = 0;
+    int n = 0;
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x) {
+            const QRgb c = line[x];
+            if (qAbs(qRed(c) - colour.red()) <= tol && qAbs(qGreen(c) - colour.green()) <= tol
+                && qAbs(qBlue(c) - colour.blue()) <= tol) {
+                sx += x + 0.5;
+                sy += y + 0.5;
+                ++n;
+            }
+        }
+    }
+    if (count)
+        *count = n;
+    return n ? QPointF(sx / n, sy / n) : QPointF(-1, -1);
+}
+
+QString pointText(const QPointF &p)
+{
+    return QStringLiteral("(%1, %2)").arg(p.x(), 0, 'f', 1).arg(p.y(), 0, 'f', 1);
+}
+
 bool sameState(const shotcam::CameraState &a, const shotcam::CameraState &b,
                double tol = 1e-9)
 {
@@ -4324,6 +4386,222 @@ int main(int argc, char **argv)
                   && !shotcam::artExit(across, 1, 24, 0,
                                        shotcam::stageWithMargins(QSize(2400, 1080), QMargins(0, 0, 480, 0)))
                           .leaves());
+    }
+
+    // ---- (lm) LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755, approved) ------------
+    // A layer's own keys - position, turn, size, opacity - timed and eased like the camera's,
+    // stretching with the panel; its motion first, then its depth and the camera, the same in
+    // every consumer. Here, headless: the pose itself, the one placement in the MP4 frame,
+    // the frames the real export job wrote, and the one-picture consumers at the first frame.
+    ts << "--- (lm) layer motion ---\n";
+    {
+        // (lm1) TIMED AND EASED LIKE THE CAMERA'S: for each of the five eases, a layer's keys at
+        // frames 0 and 24 of a 48-frame panel and the camera's at the same frames, holding the
+        // same numbers (the camera's centre as the layer's position, its zoom as the size, its
+        // turn as the turn): at every frame of the panel the layer's pose is the camera's.
+        bool same = true;
+        QString why;
+        for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn, shotcam::Ease::EaseOut,
+                                shotcam::Ease::EaseInOut, shotcam::Ease::Hold}) {
+            Scene s;
+            Panel *p = makeBlankPanel(QSize(960, 540));
+            p->setLength(48, 24);
+            s.panels.append(p);
+            shotcam::CameraState a, b;
+            a.cx = 480;
+            a.cy = 270;
+            a.zoom = 0.75;
+            a.rotation = -20;
+            b.cx = 480 + 350;
+            b.cy = 270 - 90;
+            b.zoom = 3.0;
+            b.rotation = 200;
+            s.camera.keys = {shotcam::makeKey(s, 0, 0, 24, a, e), shotcam::makeKey(s, 0, 24, 24, b)};
+            shotcam::LayerKey ka, kb;
+            ka.at = 0.0;
+            ka.pose.dx = 0;
+            ka.pose.dy = 0;
+            ka.pose.scale = 0.75;
+            ka.pose.rotation = -20;
+            ka.pose.opacity = 0.2;
+            ka.ease = e;
+            kb.at = 0.5;
+            kb.pose.dx = 350;
+            kb.pose.dy = -90;
+            kb.pose.scale = 3.0;
+            kb.pose.rotation = 200;
+            kb.pose.opacity = 1.0;
+            for (int f = 0; f < 48; ++f) {
+                const shotcam::CameraState c = shotcam::evaluate(s, f, 24, QSize(960, 540));
+                const shotcam::LayerPose l = shotcam::poseFromKeys({kb, ka}, shotcam::panelAt(f, 48), 1.0);
+                const double w = shotcam::ease(e, qBound(0.0, f / 24.0, 1.0));
+                if (!near(l.dx, c.cx - 480) || !near(l.dy, c.cy - 270) || !near(l.scale, c.zoom)
+                    || !near(l.rotation, c.rotation) || !near(l.opacity, 0.2 + 0.8 * w)) {
+                    same = false;
+                    why += QStringLiteral(" %1@%2: layer %3,%4 x%5 %6 deg / camera %7,%8 x%9 %10 deg")
+                               .arg(shotcam::easeLabel(e)).arg(f).arg(l.dx).arg(l.dy).arg(l.scale).arg(l.rotation)
+                               .arg(c.cx - 480).arg(c.cy - 270).arg(c.zoom).arg(c.rotation);
+                }
+            }
+        }
+        check(QStringLiteral("(lm1) TIMED AND EASED LIKE THE CAMERA'S: with each of the five eases, a layer's keys and "
+                             "the camera's holding the same numbers give, at every frame of the panel, its position as "
+                             "the camera's centre, its size as the camera's zoom (a ratio scale), its turn as the "
+                             "camera's turn (200 degrees past -20: turned as typed), its opacity on the same curve"),
+              same, why.left(300));
+        // Control: the middle of a 0.75 -> 3.0 size is the ratio scale's 1.5, not the straight line's 1.875, so the
+        // comparison above tells the two apart.
+        shotcam::LayerKey s0, s1;
+        s0.at = 0.0;
+        s0.pose.scale = 0.75;
+        s0.ease = shotcam::Ease::Linear;
+        s1.at = 1.0;
+        s1.pose.scale = 3.0;
+        const double mid = shotcam::poseFromKeys({s0, s1}, 0.5, 1.0).scale;
+        check(QStringLiteral("(lm1) control: the size halfway between 75 % and 300 % is 150 % (the ratio scale), not "
+                             "187.5 % (a straight line)"),
+              near(mid, 1.5) && !near(mid, 1.875), QString::number(mid));
+
+        // (lm2) STRETCHING WITH THE PANEL (the user's answer 1): the Boat's second key at frame 12 of 24; the panel
+        // made 48 frames long, the key is at frame 24, and frame 12 is halfway along the move.
+        Panel *stretched = lmBoatPanel(false);
+        const Layer &boat = stretched->layers.at(1);
+        const int keyAt24 = layerKeyFrame(boat.keys.at(1), 24);
+        stretched->setLength(48, 24);
+        const int keyAt48 = layerKeyFrame(boat.keys.at(1), 48);
+        const shotcam::LayerPose half = stretched->layerPoseAt(boat, shotcam::panelAt(12, 48));
+        const shotcam::LayerPose end = stretched->layerPoseAt(boat, shotcam::panelAt(24, 48));
+        check(QStringLiteral("(lm2) A LAYER'S KEYS STRETCH WITH ITS PANEL: its key at frame 12 of a 24-frame panel is at "
+                             "frame 24 once the panel is 48 frames; frame 12 is then halfway along the move (200 px "
+                             "right, 50 down) and frame 24 the key's pose"),
+              keyAt24 == 12 && keyAt48 == 24 && near(half.dx, 200) && near(half.dy, 50) && near(end.dx, 300)
+                  && near(end.dy, 100),
+              QStringLiteral("key frame %1 -> %2; frame 12: %3, %4; frame 24: %5, %6").arg(keyAt24).arg(keyAt48)
+                  .arg(half.dx).arg(half.dy).arg(end.dx).arg(end.dy));
+        // Control: held as frames, the key would still be at frame 12, and frame 12 would be its pose.
+        check(QStringLiteral("(lm2) control: a key held at frame 12 would make frame 12 the key's pose (300, 100) - "
+                             "not what the stretched panel shows there"),
+              !near(half.dx, 300) || !near(half.dy, 100));
+        delete stretched;
+
+        // (lm3) THE LAYER'S MOTION FIRST, THEN ITS DEPTH AND THE CAMERA, in the MP4's frame: the Boat at 60 %, the
+        // camera at 1.5x about the frame's centre. Worked out here by hand, not by the app's functions: posed at
+        // (200 + dx, 200 + dy); at depth 60 % under a 1.5x camera it is c0 + (p - c0) / 1.2 on the stage, and the
+        // shot fits 640 x 360 of it into 960 x 540: the frame's px are c0 + 1.25 (p - c0).
+        Scene placed;
+        placed.number = 1;
+        Panel *boatPanel = lmBoatPanel(true);
+        placed.panels.append(boatPanel);
+        shotcam::CameraState zoomIn;
+        zoomIn.cx = 480;
+        zoomIn.cy = 270;
+        zoomIn.zoom = 1.5;
+        placed.camera.keys = {shotcam::makeKey(placed, 0, 0, 24, zoomIn)};
+        const QVector<sankoexport::ExportPanel> rows = sankoexport::collectPanels({&placed}, 24);
+        auto expected = [](int f, bool wrongOrder, bool still) {
+            const double t = qMin(1.0, f / 12.0);
+            const QPointF d = still ? QPointF() : QPointF(100 + 200 * t, 100 * t);
+            const QPointF c0(480, 270), drawn(200, 200);
+            if (wrongOrder) // depth first, then the motion on the stage
+                return c0 + 1.5 * ((c0 + (drawn - c0) / 1.2 + d) - c0);
+            return c0 + 1.25 * (drawn + d - c0);
+        };
+        QString seen;
+        bool placedRight = true, wrongFar = true, stillFar = true;
+        for (int f : {0, 6, 12, 20}) {
+            int n = 0;
+            const QPointF at = centroidOf(sankoexport::renderMovieFrameAt(rows.first(), f, QSize(960, 540)), kLmBoat,
+                                          60, &n);
+            const QPointF want = expected(f, false, false);
+            placedRight = placedRight && n > 300 && QLineF(at, want).length() <= 1.5;
+            wrongFar = wrongFar && QLineF(at, expected(f, true, false)).length() >= 20.0;
+            stillFar = stillFar && QLineF(at, expected(f, false, true)).length() >= 20.0;
+            seen += QStringLiteral(" f%1 %2 (want %3, %4 px)").arg(f).arg(pointText(at), pointText(want)).arg(n);
+        }
+        check(QStringLiteral("(lm3) THE LAYER'S MOTION FIRST, THEN ITS DEPTH AND THE CAMERA: in the MP4's frame, at "
+                             "frames 0, 6, 12 and 20, the Boat is where its pose, then its 60 % depth, then the 1.5x "
+                             "camera put it, worked out by hand - to 1.5 px"),
+              placedRight, seen);
+        check(QStringLiteral("(lm3) control: depth first and the motion after would put it 20 px or more away, and "
+                             "no motion at all (the layer as drawn) as far"),
+              wrongFar && stillFar, seen);
+
+        // (lm4) THE MP4 THE REAL EXPORT JOB WROTE: frames 0, 6 and 12 are that rendering, frame for frame.
+        {
+            sankoexport::MovieRequest request;
+            request.outPath = scratch + QStringLiteral("/motion.mp4");
+            request.panels = rows;
+            request.fps = 24;
+            auto *encoder = new CaptureEncoder({0, 6, 12});
+            sankoexport::MovieExportJob job(request, encoder);
+            job.start();
+            QElapsedTimer guard;
+            guard.start();
+            while (!job.isDone() && guard.elapsed() < 120000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            bool same = job.result().ok;
+            QString why = job.result().ok ? QString() : job.result().error;
+            for (int f : {0, 6, 12})
+                if (encoder->shas.value(f)
+                    != shaOf(sankoexport::renderMovieFrameAt(rows.first(), f, sankoexport::kMovieFrameSize))) {
+                    same = false;
+                    why += QStringLiteral(" frame %1").arg(f);
+                }
+            check(QStringLiteral("(lm4) THE MP4 THE REAL EXPORT JOB WROTE: its frames 0, 6 and 12 of the moving panel "
+                                 "are the layered rendering of those frames, each its own"),
+                  same, why);
+            const QSet<QString> distinct(encoder->shas.cbegin(), encoder->shas.cend());
+            check(QStringLiteral("(lm4) control: the three frames differ - the Boat moved between them"),
+                  distinct.size() == 3, QString::number(distinct.size()));
+        }
+
+        // (lm5) ONE PICTURE OF A PANEL IS ITS FIRST FRAME (the user's answer 8): the still, the SHOTS clip's layered
+        // picture, the strip's stage picture and the saved flatten show the Boat as frame 0 places it.
+        const shotcam::Stage stage(QSize(960, 540));
+        const shotcam::CameraState at0 = shotcam::evaluateAtPanel(placed, 0, 0, 24);
+        int nStill = 0, nClip = 0, nStrip = 0, nFlat = 0;
+        const QPointF still = centroidOf(sankoexport::stillImage(rows.first()), kLmBoat, 60, &nStill);
+        const QPointF clip =
+            centroidOf(shotcam::shotThumb(*boatPanel, at0, stage, QSize(192, 108), false), kLmBoat, 60, &nClip);
+        const QPointF strip =
+            centroidOf(shotcam::stageThumb(*boatPanel, at0, stage, QSize(480, 270)), kLmBoat, 60, &nStrip);
+        const QPointF flat = centroidOf(boatPanel->flattenedImage(), kLmBoat, 60, &nFlat);
+        const QPointF frame0 = expected(0, false, false);
+        const QPointF strip0 = (QPointF(480, 270) + (QPointF(300, 200) - QPointF(480, 270)) / 1.2) * 0.5;
+        check(QStringLiteral("(lm5) ONE PICTURE OF A PANEL IS ITS FIRST FRAME: the still, the SHOTS clip's picture, the "
+                             "strip's stage picture and the saved flatten put the Boat where frame 0 does - its first "
+                             "key's 100 px right (depth and camera where they apply)"),
+              nStill > 300 && QLineF(still, frame0).length() <= 1.5 && nClip > 5
+                  && QLineF(clip, frame0 / 5.0).length() <= 1.0 && nStrip > 50 && QLineF(strip, strip0).length() <= 1.0
+                  && nFlat > 300 && QLineF(flat, QPointF(300, 200)).length() <= 0.6,
+              QStringLiteral("still %1 (want %2), clip %3 (want %4), strip %5 (want %6), flatten %7 (want (300, 200))")
+                  .arg(pointText(still), pointText(frame0), pointText(clip), pointText(frame0 / 5.0),
+                       pointText(strip), pointText(strip0), pointText(flat)));
+        check(QStringLiteral("(lm5) control: the still IS the MP4's frame 0, byte for byte, and not its frame 12"),
+              shaOf(sankoexport::stillImage(rows.first())) == shaOf(sankoexport::renderMovieFrameAt(rows.first(), 0,
+                                                                                                    QSize(960, 540)))
+                  && shaOf(sankoexport::stillImage(rows.first()))
+                      != shaOf(sankoexport::renderMovieFrameAt(rows.first(), 12, QSize(960, 540))));
+
+        // (lm6) ANIMATE OFF: THE KEYS KEPT, UNUSED (the user's answer b) - the panel has no motion, takes the layered
+        // path only for its depth, and its flatten is the flatten of the same panel without keys.
+        Panel *off = lmBoatPanel(false, false);
+        Panel *bare = lmBoatPanel(false, false);
+        bare->layers[1].keys.clear();
+        const shotcam::CameraState plain = shotcam::neutral(stage);
+        check(QStringLiteral("(lm6) ANIMATE OFF KEEPS THE KEYS, UNUSED: no motion, the plain path, and the flatten of "
+                             "the panel without them, byte for byte"),
+              off->layers.at(1).keys.size() == 2 && !off->hasMotion()
+                  && !shotcam::layeredPaint(*off, plain, stage)
+                  && shaOf(off->flattenedImage()) == shaOf(bare->flattenedImage()));
+        check(QStringLiteral("(lm6) control: switched on, the same panel has motion and its flatten moves"),
+              [&] {
+                  off->layers[1].animate = true;
+                  return off->hasMotion() && shotcam::layeredPaint(*off, plain, stage)
+                      && shaOf(off->flattenedImage()) != shaOf(bare->flattenedImage());
+              }());
+        delete off;
+        delete bare;
     }
 
     delete scene;

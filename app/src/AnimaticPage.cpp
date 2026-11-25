@@ -135,10 +135,23 @@ public:
     // repaints, nothing is re-flattened). Dropped by clear(), which every
     // load or structure change reaches through leavePreview().
     void setPanel(const Panel *panel) { m_panel = panel; }
+    // LAYER MOTION (batch I-1): the place in the panel its moving layers are posed at - the
+    // playhead's frame, live while the film plays. A panel without one ignores it.
+    void setAt(double at)
+    {
+        if (m_at == at)
+            return;
+        m_at = at;
+        if (m_panel && m_panel->hasMotion())
+            update();
+    }
+    double atForTest() const { return m_at; }
+    bool movingForTest() const { return !m_pixmap.isNull() && m_panel && m_panel->hasMotion(); }
 
     void clear()
     {
         m_panel = nullptr;
+        m_at = 0.0;
         m_pixmap = QPixmap();
         m_framePixmap = QPixmap();
         m_stage = shotcam::Stage();
@@ -219,9 +232,13 @@ protected:
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
         const QRect area = pictureArea(); // the widget, or its share while the stage is clear
-        if (!m_pixmap.isNull() && !m_neutral && m_panel
-            && shotcam::layeredShot(*m_panel, m_camera, m_stage)) {
-            shotcam::drawShot(painter, *m_panel, m_stage, m_camera, QRectF(area), false);
+        // A panel with a layer that moves (batch I-1) is drawn layer by layer at the
+        // playhead's frame, whatever the camera does - neutral, at its base framing.
+        const bool moving = !m_pixmap.isNull() && m_panel && m_panel->hasMotion();
+        if (moving || (!m_pixmap.isNull() && !m_neutral && m_panel
+                       && shotcam::layeredShot(*m_panel, m_camera, m_stage))) {
+            shotcam::drawShot(painter, *m_panel, m_stage, m_neutral ? shotcam::neutral(m_stage) : m_camera,
+                              QRectF(area), false, m_at);
         } else if (!m_pixmap.isNull() && !m_neutral) {
             // The flatten is canvas-sized, so its size IS the stage.
             shotcam::drawShot(painter, m_pixmap, m_stage, m_camera,
@@ -242,7 +259,7 @@ protected:
         // afterwards and not clipped beforehand: a clip changes the scaled
         // paint inside the frame too (127 to 1347 pixels of a 712 x 400
         // picture, Camera pb1-pb3), and this changes none of them.
-        if (!m_pixmap.isNull() && !m_neutral && !m_barsOpenForTest)
+        if (!m_pixmap.isNull() && (!m_neutral || moving) && !m_barsOpenForTest)
             shotcam::fillOutsideFrame(painter, m_stage, area);
         // Around a fitted share, black too: the moving shot paints past it.
         if (area != rect())
@@ -308,6 +325,7 @@ private:
     }
 
     const Panel *m_panel = nullptr; // depth's layered path (setPanel)
+    double m_at = 0.0;              // the playhead's place in the panel (setAt, batch I-1)
     QPixmap m_pixmap;      // the whole stage
     QPixmap m_framePixmap; // the base framing's picture (the pixmap without a margin)
     shotcam::Stage m_stage;
@@ -691,6 +709,24 @@ void AnimaticPage::setPreviewBarsOpenForTest(bool open)
         m_display->setBarsOpenForTest(open);
 }
 
+void AnimaticPage::refreshLayerRow()
+{
+    if (m_timeline)
+        m_timeline->refreshLayerRow();
+    if (m_display && m_previewShown)
+        m_display->update(); // a key changed under the preview (batch I-1)
+}
+
+double AnimaticPage::previewAtForTest() const
+{
+    return m_display ? m_display->atForTest() : 0.0;
+}
+
+bool AnimaticPage::previewMovingForTest() const
+{
+    return m_display && m_display->movingForTest();
+}
+
 QRect AnimaticPage::previewCaptionRectForTest() const
 {
     if (!m_display || !m_previewShown || !m_display->chromeShown())
@@ -763,6 +799,13 @@ void AnimaticPage::updatePreviewCamera()
     if (!m_display || !m_previewShown || m_current < 0 || m_current >= m_items.size())
         return;
     const Item &it = m_items.at(m_current);
+    // LAYER MOTION (batch I-1): the playhead's frame in the panel, for its moving layers.
+    {
+        const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+        const int frames = shotcam::panelFrames(*it.panel, fps);
+        const int frame = qBound(0, shotcam::frameInPanelFromMs(liveElapsedMsInCurrentPanel(), fps), frames - 1);
+        m_display->setAt(shotcam::panelAt(frame, frames));
+    }
     // No move in the scene, or the CAMERA track hidden (Phase 1C: the eye
     // turns the camera off everywhere): the old paint, the whole panel.
     if (it.scene->camera.isEmpty() || !m_tracks.cameraVisible) {
@@ -1302,6 +1345,12 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::cameraRowContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::cameraEaseMarkClicked,
             this, &AnimaticPage::cameraEaseMarkClicked);
+    // The LAYER row (batch I-1): every key edit is the workspace's too.
+    connect(m_timeline, &AnimaticTimeline::layerKeyActivated, this, &AnimaticPage::layerKeyActivated);
+    connect(m_timeline, &AnimaticTimeline::layerKeyMoveRequested, this, &AnimaticPage::layerKeyMoveRequested);
+    connect(m_timeline, &AnimaticTimeline::layerKeyContextMenuRequested, this,
+            &AnimaticPage::layerKeyContextMenuRequested);
+    connect(m_timeline, &AnimaticTimeline::layerEaseMarkClicked, this, &AnimaticPage::layerEaseMarkClicked);
     connect(m_timeline, &AnimaticTimeline::artExitChipClicked,
             this, &AnimaticPage::artExitChipClicked);
     connect(m_timeline, &AnimaticTimeline::cameraAnimateToggled,

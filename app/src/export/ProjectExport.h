@@ -96,6 +96,10 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
 // the frame's size gives; any other camera renders shotcam::renderShot.
 QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
                         const shotcam::CameraState &camera, const shotcam::Stage &stage);
+// LAYER MOTION (batch I-1): frame `frameInPanel` of a row whose panel has a layer that
+// moves - the layered paint, the layers posed at that frame, the camera at it (neutral
+// without a move or with the camera off). What the MP4 writes for such a panel's frames.
+QImage renderMovieFrameAt(const ExportPanel &row, int frameInPanel, const QSize &frameSize);
 // The camera of movie frame `frame` (0-based over the whole film): the one
 // question MovieExportJob asks, so a test can ask it too.
 shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,

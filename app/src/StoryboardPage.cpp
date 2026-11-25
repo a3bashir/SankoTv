@@ -1594,6 +1594,70 @@ protected:
     }
 };
 
+// THE ANIMATE DIAMOND (batch I-1, Figma I-1 693:755; the user's answers 4 and d): on each
+// layer's row between the eye and the thumbnail. Grey outline: Animate off (its keys, if
+// any, kept and unused). Purple outline: on. Solid purple: on, with a key at the playhead.
+// A click switches it - an undo step. A folder or the paper has none: a blank of its size
+// keeps the thumbnails in line.
+class LayerAnimateDiamond : public QAbstractButton
+{
+public:
+    explicit LayerAnimateDiamond(QWidget *parent = nullptr) : QAbstractButton(parent)
+    {
+        setObjectName(QStringLiteral("layerAnimate"));
+        setFixedSize(12, 22); // tight against the eye: the row grows by its 12 px alone
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+    }
+    void setState(bool animate, bool keyHere, bool hasKeys)
+    {
+        m_animate = animate;
+        m_keyHere = keyHere;
+        m_hasKeys = hasKeys;
+        setProperty("animate", animate);
+        setProperty("keyHere", animate && keyHere);
+        setProperty("hasKeys", hasKeys);
+        setToolTip(animate ? (keyHere ? QStringLiteral("Animate on - a key at the playhead. Click to turn it off")
+                                      : QStringLiteral("Animate on - the Move tool and the opacity set keys at "
+                                                       "the playhead. Click to turn it off"))
+                           : (hasKeys ? QStringLiteral("Animate off - its keys are kept, unused. Click to "
+                                                       "turn it on")
+                                      : QStringLiteral("Animate: click to give this layer keys")));
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QPointF c(width() / 2.0, height() / 2.0);
+        const qreal h = 5.0;
+        QPolygonF d;
+        d << c + QPointF(0, -h) << c + QPointF(h, 0) << c + QPointF(0, h) << c + QPointF(-h, 0);
+        const QColor accent(0x7c, 0x6e, 0xf6);
+        const QColor grey(0x6f, 0x6f, 0x80);
+        p.setPen(QPen(m_animate ? accent : grey, 1.3, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+        p.setBrush(m_animate && m_keyHere ? QBrush(accent) : Qt::NoBrush);
+        if (underMouse() && !(m_animate && m_keyHere))
+            p.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 50));
+        p.drawPolygon(d);
+    }
+    void enterEvent(QEnterEvent *e) override
+    {
+        QAbstractButton::enterEvent(e);
+        update();
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        QAbstractButton::leaveEvent(e);
+        update();
+    }
+
+private:
+    bool m_animate = false, m_keyHere = false, m_hasKeys = false;
+};
+
 // One layer row: Photoshop-style selection on PRESS (immediately for a fresh
 // row or with modifiers; deferred for a press inside the current selection,
 // so a drag keeps the multi-selection and a plain release collapses to the
@@ -5521,6 +5585,12 @@ QWidget *StoryboardPage::createCameraPanel()
     // The canvas asks for the camera through the provider; its drags and
     // refusals come back here.
     m_canvas->setShotCameraProvider([this] { return shotCameraView(); });
+    // LAYER MOTION (batch I-1): where the playhead is in the panel; the Move box's key.
+    m_canvas->setMotionProvider([this] { return motionView(); });
+    connect(m_canvas, &DrawingCanvas::layerPoseEdited, this,
+            [this](int layerIndex, const shotcam::LayerPose &pose, const QPointF &pivot) {
+                setLayerKeyAtPlayhead(layerIndex, pose, pivot, QStringLiteral("Set Layer Key"));
+            });
     connect(m_canvas, &DrawingCanvas::shotCameraEditRequested, this,
             &StoryboardPage::onShotCameraEdit);
     connect(m_canvas, &DrawingCanvas::shotCameraEditRefused, this, [this] {
@@ -9595,6 +9665,9 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             m_syncCameraBar();
         if (m_canvas && !m_animatic->previewVisible())
             m_canvas->refreshShotCamera();
+        // Layer motion (batch I-1): the diamonds' key at the playhead, the slider, the row.
+        if (!m_animatic->previewVisible())
+            refreshLayerMotionUi();
     });
     // The Camera bar is disabled while the preview covers the canvas.
     connect(m_animatic, &AnimaticPage::previewShownChanged, this, [this] {
@@ -9663,6 +9736,11 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::onCameraRowMenu);
     connect(m_animatic, &AnimaticPage::cameraEaseMarkClicked, this,
             &StoryboardPage::onCameraEaseMark); // batch E: the five eases on a move's mark
+    // THE LAYER ROW (batch I-1): its requests are layer edits made here.
+    connect(m_animatic, &AnimaticPage::layerKeyActivated, this, &StoryboardPage::layerGoToKey);
+    connect(m_animatic, &AnimaticPage::layerKeyMoveRequested, this, &StoryboardPage::layerMoveKey);
+    connect(m_animatic, &AnimaticPage::layerKeyContextMenuRequested, this, &StoryboardPage::onLayerKeyMenu);
+    connect(m_animatic, &AnimaticPage::layerEaseMarkClicked, this, &StoryboardPage::onLayerEaseMark);
     // A clip's amber chip (batch 6d): the one thing to do about it.
     connect(m_animatic, &AnimaticPage::artExitChipClicked, this, [this](int flat, const QPoint &at) {
         int si = -1, pi = -1;
@@ -13101,6 +13179,7 @@ QWidget *StoryboardPage::createLayerPanel()
     opacityRow->addSpacing(14); // Figma gap 14
 
     LayerOpacitySlider *slider = new LayerOpacitySlider;
+    slider->setObjectName(QStringLiteral("layerOpacitySlider")); // batch I-1's checks press it
     opacityRow->addWidget(slider, 1);
     opacityRow->addSpacing(14); // Figma gap 14
 
@@ -13119,6 +13198,17 @@ QWidget *StoryboardPage::createLayerPanel()
         Layer *layer = panel ? panel->activeLayer() : nullptr;
         if (!layer)
             return;
+        if (layer->animate && !isGroupLayer(*layer) && layer->type != QLatin1String("background")) {
+            // LAYER MOTION (batch I-1): Animate on - the opacity is the key's at the playhead,
+            // set or changed there (the undo step is the drag's, below).
+            shotcam::LayerPose pose = panel->layerPoseAt(*layer, motionView().at);
+            pose.opacity = v / 100.0;
+            const QPointF pivot = layer->keys.isEmpty() ? m_canvas->artCentreOf(*layer) : panel->pivotOnStage(*layer);
+            writeLayerKeyAtPlayhead(panel, panel->activeLayerIndex, pose, pivot);
+            refreshLayerCanvas();
+            refreshLayerMotionUi();
+            return;
+        }
         layer->opacity = v / 100.0;
         refreshLayerCanvas(); // live: canvas composite + panel thumbnail
     };
@@ -13140,8 +13230,12 @@ QWidget *StoryboardPage::createLayerPanel()
         if (!p || *opacityStartValue < 0
             || slider->value() == *opacityStartValue)
             return;
+        const Layer *active = p->activeLayer();
+        const bool keyed = active && active->animate;
         pushLayerCommand(p, *opacityBefore, *opacityBeforeActive,
-                         QStringLiteral("Layer Opacity"));
+                         keyed ? QStringLiteral("Layer Key Opacity") : QStringLiteral("Layer Opacity"));
+        if (keyed)
+            reportLayerMotion(QStringLiteral("Layer Key Opacity"), p, p->activeLayerIndex);
         *opacityStartValue = -1;
     };
 
@@ -13200,7 +13294,8 @@ QWidget *StoryboardPage::createLayerPanel()
         const int nameMin = QFontMetrics(nameFont).horizontalAdvance(QChar(0x2026)) + 2;
         const int badgeMax =
             QFontMetrics(badgeFont).horizontalAdvance(layerdepth::percentText(kMaxParallax)) + 14;
-        const int rowMin = 2 + 5 + 6 + 14 + SankoToggleControls::kButtonSize + kLayerThumbFloor
+        // ...and the Animate diamond, 12, against the eye with no gap of its own (batch I-1).
+        const int rowMin = 2 + 5 + 6 + 14 + SankoToggleControls::kButtonSize + 12 + kLayerThumbFloor
             + nameMin + badgeMax + SankoToggleControls::kButtonSize + 5 * 6;
         const int scrollBar = qMax(10, scroll->verticalScrollBar()->sizeHint().width());
         column->setMinimumWidth(qMax(170, rowMin + 8 + 8 + scrollBar));
@@ -13322,13 +13417,16 @@ void StoryboardPage::rebuildLayerPanel()
         m_layerSelection.clear();
     }
 
-    // Sync the opacity slider to the active layer (guarded — no feedback loop).
+    // Sync the opacity slider to the active layer (guarded — no feedback loop). An animated
+    // layer's is its keyed opacity at the playhead (batch I-1).
     m_updatingLayerUi = true;
     const Layer *active = hasPanel ? panel->activeLayer() : nullptr;
-    const int pct = active ? qRound(qBound(0.0, active->opacity, 1.0) * 100.0) : 100;
+    const int pct = active ? activeLayerOpacityPercent(panel) : 100;
     if (m_syncLayerOpacity)
         m_syncLayerOpacity(active ? pct : -1); // <0 => disabled
     m_updatingLayerUi = false;
+    if (m_animatic)
+        m_animatic->refreshLayerRow(); // the LAYER row: shown or not, the selected layer (batch I-1)
 
     const QVector<int> sel = selectedLayers();
     if (m_layerDeleteButton)
@@ -13384,6 +13482,11 @@ void StoryboardPage::rebuildLayerPanel()
         // Visibility (eye) toggle - the Timeline's eye in the Timeline's
         // button (one lock and one eye across SankoTV, 2026-10-30): checked =
         // hidden, the eye at 35 %. Still an Undo step.
+        // The eye and the Animate diamond (batch I-1) side by side, no gap between them: the
+        // diamond adds its own 12 px to the row and nothing more.
+        auto *eyeAndDiamond = new QHBoxLayout;
+        eyeAndDiamond->setContentsMargins(0, 0, 0, 0);
+        eyeAndDiamond->setSpacing(0);
         QToolButton *eye = SankoToggleControls::makeToggle(
             nullptr, QStringLiteral("layerEye"), SankoToggleControls::eyeIcon());
         eye->setToolTip(QStringLiteral("Show / hide layer"));
@@ -13403,7 +13506,21 @@ void StoryboardPage::rebuildLayerPanel()
             // members) is stale — drop and re-lift around what IS visible.
             m_canvas->resetTransformBox();
         });
-        rowLayout->addWidget(eye, 0, Qt::AlignVCenter);
+        eyeAndDiamond->addWidget(eye, 0, Qt::AlignVCenter);
+
+        // THE ANIMATE DIAMOND (batch I-1): between the eye and the thumbnail. A folder's
+        // chevron takes its place; the paper keeps a blank of its width.
+        if (!isGroup && layer.type != QLatin1String("background")) {
+            auto *animate = new LayerAnimateDiamond;
+            animate->setProperty("layerIndex", i);
+            animate->setState(layer.animate, layer.animate && layerKeyAtPlayhead(*panel, layer) >= 0,
+                              !layer.keys.isEmpty());
+            connect(animate, &QAbstractButton::clicked, this, [this, i] { layerToggleAnimate(i); });
+            eyeAndDiamond->addWidget(animate, 0, Qt::AlignVCenter);
+        } else if (!isGroup) {
+            eyeAndDiamond->addSpacing(12);
+        }
+        rowLayout->addLayout(eyeAndDiamond);
 
         // Folder rows: expand/collapse chevron AFTER the eye (eye first),
         // ~10% larger for visibility.
@@ -13586,11 +13703,12 @@ void StoryboardPage::updateLayerSelectionUi()
     // footer button enables, and the canvas's multi-selection mirror.
     m_updatingLayerUi = true;
     const Layer *active = panel->activeLayer();
-    const int pct =
-        active ? qRound(qBound(0.0, active->opacity, 1.0) * 100.0) : 100;
+    const int pct = active ? activeLayerOpacityPercent(panel) : 100; // keyed when animated (batch I-1)
     if (m_syncLayerOpacity)
         m_syncLayerOpacity(active ? pct : -1);
     m_updatingLayerUi = false;
+    if (m_animatic)
+        m_animatic->refreshLayerRow(); // the LAYER row shows the selected layer (batch I-1)
 
     const QVector<int> sel = selectedLayers();
     if (m_layerDeleteButton)
@@ -14291,6 +14409,18 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
             indices.append(idx);
     if (!panel || indices.size() < 2)
         return;
+    // LAYER MOTION (batch I-1): a merge flattens pixels as drawn, and a layer's motion is not
+    // in them - so a layer with motion (Animate on, or keys kept) is not merged; the note
+    // says which, and how. Nothing changes.
+    for (int idx : indices) {
+        const Layer &layer = panel->layers.at(idx);
+        if (layer.hasMotionData() && layer.type != QLatin1String("background")) {
+            sayNote(QStringLiteral("Merge Layers: “%1” has motion, which a merge would lose. "
+                                   "Delete its keys and switch its Animate off first, or keep the layers apart.")
+                        .arg(layer.name));
+            return;
+        }
+    }
     m_canvas->commitQuickShape();
     // An in-flight Move drag lands in the pre-merge layers BEFORE the merge
     // snapshot; the session left lifted here goes stale below and is dropped.
@@ -14633,9 +14763,14 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
         m_canvas->flushPaintCommit();
         m_canvas->commitQuickShape();
     }
+    // Batch I-1: a step that switches the active layer's Animate changes what the Move box is.
+    const Layer *activeBefore = panel->activeLayer();
+    const bool animateBefore = activeBefore && activeBefore->animate;
     panel->layers = layers;
     panel->activeLayerIndex =
         qBound(0, activeIndex, qMax(0, panel->layers.size() - 1));
+    const bool animateChanged =
+        panel == currentPanel() && (panel->activeLayer() && panel->activeLayer()->animate) != animateBefore;
     if (panel == currentPanel())
         panel->unfoldNow(); // a snapshot can hold layers at rest (batch 6b-V)
     if (panel == currentPanel()) {
@@ -14646,6 +14781,8 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
     if (panel == currentPanel()) {
         refreshLayerCanvas();
         rebuildLayerPanel();
+        if (animateChanged && m_canvas)
+            m_canvas->resetTransformBox(); // the session's buffers are another stack's now
     } else if (Scene *scene = currentScene()) {
         const int idx = scene->panels.indexOf(panel);
         if (idx >= 0 && idx < m_panelThumbImages.size())
@@ -14653,6 +14790,7 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
     }
     if (m_animatic)
         m_animatic->refreshThumbnails(); // whichever panel it was
+    refreshLayerMotionUi(); // batch I-1: the keys, the diamonds, the LAYER row
 }
 
 void StoryboardPage::pushLayerCommand(Panel *panel,
@@ -14664,6 +14802,319 @@ void StoryboardPage::pushLayerCommand(Panel *panel,
     m_undoStack->push(new LayerStackCommand(this, panel, before, beforeActive,
                                             panel->layers,
                                             panel->activeLayerIndex, text));
+}
+
+// --- LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755, approved) ----------------------
+// Every edit of a layer's motion is a layer-stack step (LayerStackCommand: the whole stack
+// before and after), so undo puts back the keys, the switch and the pivot together.
+
+DrawingCanvas::MotionView StoryboardPage::motionView() const
+{
+    DrawingCanvas::MotionView v;
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (!cameraTarget(&scene, &pi, &frame))
+        return v;
+    const Panel *panel = scene->panels.at(pi);
+    v.valid = true;
+    v.frames = qMax(1, shotcam::panelFrames(*panel, cameraFps()));
+    v.frame = qBound(0, frame, v.frames - 1);
+    v.at = shotcam::panelAt(v.frame, v.frames);
+    return v;
+}
+
+int StoryboardPage::layerKeyAtPlayhead(const Panel &panel, const Layer &layer) const
+{
+    if (&panel != currentPanel())
+        return -1;
+    const DrawingCanvas::MotionView v = motionView();
+    if (!v.valid)
+        return -1;
+    for (int k = 0; k < layer.keys.size(); ++k)
+        if (layerKeyFrame(layer.keys.at(k), v.frames) == v.frame)
+            return k;
+    return -1;
+}
+
+int StoryboardPage::activeLayerOpacityPercent(const Panel *panel) const
+{
+    const Layer *active = panel ? panel->activeLayer() : nullptr;
+    if (!active)
+        return 100;
+    double opacity = active->opacity;
+    if (active->animate && !active->keys.isEmpty() && panel == currentPanel())
+        opacity = panel->layerPoseAt(*active, motionView().at).opacity;
+    return qRound(qBound(0.0, opacity, 1.0) * 100.0);
+}
+
+bool StoryboardPage::writeLayerKeyAtPlayhead(Panel *panel, int layerIndex, const shotcam::LayerPose &pose,
+                                             const QPointF &pivot)
+{
+    if (!panel || panel != currentPanel() || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return false;
+    const DrawingCanvas::MotionView v = motionView();
+    if (!v.valid)
+        return false;
+    Layer &layer = panel->layers[layerIndex];
+    if (isGroupLayer(layer) || layer.type == QLatin1String("background"))
+        return false;
+    // The first key gives the layer its pivot: the centre of its art (the user's answer 2),
+    // kept in frame space so a margin change leaves it on the art.
+    if (layer.keys.isEmpty())
+        layer.pivot = pivot - QPointF(panel->frameAt());
+    const int k = layerKeyAtPlayhead(*panel, layer);
+    if (k >= 0) {
+        layer.keys[k].pose = pose;
+    } else {
+        shotcam::LayerKey key;
+        key.at = v.at;
+        key.pose = pose;
+        layer.keys.append(key);
+        std::stable_sort(layer.keys.begin(), layer.keys.end(),
+                         [](const shotcam::LayerKey &a, const shotcam::LayerKey &b) { return a.at < b.at; });
+    }
+    return true;
+}
+
+void StoryboardPage::reportLayerMotion(const QString &what, const Panel *panel, int layerIndex)
+{
+    if (!panel || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return;
+    const Layer &layer = panel->layers.at(layerIndex);
+    int flat = 0;
+    for (const Scene *s : m_scenes) {
+        const int at = s->panels.indexOf(const_cast<Panel *>(panel));
+        if (at >= 0) {
+            flat += at;
+            break;
+        }
+        flat += s->panels.size();
+    }
+    const int frames = shotcam::panelFrames(*panel, cameraFps());
+    QStringList keys;
+    for (const shotcam::LayerKey &k : layer.keys)
+        keys << QStringLiteral("f%1 %2,%3 %4deg x%5 op%6 %7")
+                    .arg(layerKeyFrame(k, frames))
+                    .arg(k.pose.dx, 0, 'f', 1).arg(k.pose.dy, 0, 'f', 1).arg(k.pose.rotation, 0, 'f', 1)
+                    .arg(k.pose.scale, 0, 'f', 3).arg(k.pose.opacity, 0, 'f', 2).arg(shotcam::easeName(k.ease));
+    const DrawingCanvas::MotionView v = motionView();
+    emit layerMotionEdited({{QStringLiteral("what"), what},
+                            {QStringLiteral("layer"), layer.name},
+                            {QStringLiteral("panel"), flat},
+                            {QStringLiteral("frame"), panel == currentPanel() && v.valid ? v.frame : -1},
+                            {QStringLiteral("frames"), frames},
+                            {QStringLiteral("animate"), layer.animate},
+                            {QStringLiteral("keys"), keys.join(QStringLiteral("; "))}});
+}
+
+void StoryboardPage::setLayerKeyAtPlayhead(int layerIndex, const shotcam::LayerPose &pose, const QPointF &pivot,
+                                           const QString &text)
+{
+    Panel *p = currentPanel();
+    if (!p)
+        return;
+    const QVector<Layer> before = p->layers;
+    const int beforeActive = p->activeLayerIndex;
+    if (!writeLayerKeyAtPlayhead(p, layerIndex, pose, pivot))
+        return;
+    pushLayerCommand(p, before, beforeActive, text);
+    refreshLayerCanvas(); // the canvas and the thumbnails (the first frame may have moved)
+    refreshLayerMotionUi();
+    reportLayerMotion(text, p, layerIndex);
+}
+
+void StoryboardPage::layerToggleAnimate(int index)
+{
+    Panel *p = currentPanel();
+    if (!p || index < 0 || index >= p->layers.size())
+        return;
+    if (isGroupLayer(p->layers.at(index)) || p->layers.at(index).type == QLatin1String("background"))
+        return;
+    m_canvas->commitQuickShape();
+    const QVector<Layer> before = p->layers;
+    const int beforeActive = p->activeLayerIndex;
+    Layer &layer = p->layers[index];
+    layer.animate = !layer.animate;
+    const QString text = layer.animate ? QStringLiteral("Animate Layer") : QStringLiteral("Stop Animating Layer");
+    pushLayerCommand(p, before, beforeActive, text);
+    // The Move tool's box: the layer's pose when it animates, its pixels when not - a
+    // pixel move under way lands first.
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+    refreshLayerMotionUi();
+    reportLayerMotion(text, p, index);
+}
+
+QAbstractButton *StoryboardPage::layerAnimateButtonForTest(int index) const
+{
+    for (QWidget *row : m_layerRows)
+        for (QAbstractButton *b : row->findChildren<QAbstractButton *>(QStringLiteral("layerAnimate")))
+            if (b->property("layerIndex").toInt() == index)
+                return b;
+    return nullptr;
+}
+
+void StoryboardPage::refreshLayerMotionUi()
+{
+    Panel *panel = currentPanel();
+    for (QWidget *row : m_layerRows)
+        for (QAbstractButton *b : row->findChildren<QAbstractButton *>(QStringLiteral("layerAnimate"))) {
+            const int i = b->property("layerIndex").toInt();
+            if (!panel || i < 0 || i >= panel->layers.size())
+                continue;
+            const Layer &layer = panel->layers.at(i);
+            static_cast<LayerAnimateDiamond *>(b)->setState(layer.animate,
+                                                            layer.animate && layerKeyAtPlayhead(*panel, layer) >= 0,
+                                                            !layer.keys.isEmpty());
+        }
+    // The opacity slider follows an animated layer's keyed opacity at the playhead.
+    const Layer *active = panel ? panel->activeLayer() : nullptr;
+    if (active && active->animate && m_syncLayerOpacity) {
+        m_updatingLayerUi = true;
+        m_syncLayerOpacity(activeLayerOpacityPercent(panel));
+        m_updatingLayerUi = false;
+    }
+    if (m_canvas)
+        m_canvas->refreshMotion();
+    if (m_animatic)
+        m_animatic->refreshLayerRow();
+}
+
+void StoryboardPage::layerGoToKey(int flat, int layerIndex, int keyIndex)
+{
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(flat, &si, &pi) || !m_animatic)
+        return;
+    Panel *panel = m_scenes.at(si)->panels.at(pi);
+    if (layerIndex < 0 || layerIndex >= panel->layers.size() || keyIndex < 0
+        || keyIndex >= panel->layers.at(layerIndex).keys.size())
+        return;
+    if (flat != currentFlatIndex())
+        selectFlatPanel(flat);
+    if (currentPanel() != panel)
+        return;
+    if (panel->activeLayerIndex != layerIndex)
+        setActiveLayer(layerIndex);
+    const int frames = shotcam::panelFrames(*panel, cameraFps());
+    m_animatic->setPlayheadFrameInPanel(flat, layerKeyFrame(panel->layers.at(layerIndex).keys.at(keyIndex), frames));
+    refreshLayerMotionUi();
+}
+
+void StoryboardPage::layerMoveKey(int flat, int layerIndex, int keyIndex, int frameInPanel)
+{
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(flat, &si, &pi))
+        return;
+    Panel *panel = m_scenes.at(si)->panels.at(pi);
+    if (layerIndex < 0 || layerIndex >= panel->layers.size() || keyIndex < 0
+        || keyIndex >= panel->layers.at(layerIndex).keys.size())
+        return;
+    const int frames = shotcam::panelFrames(*panel, cameraFps());
+    const int frame = qBound(0, frameInPanel, frames - 1);
+    const QVector<shotcam::LayerKey> &keys = panel->layers.at(layerIndex).keys;
+    for (int k = 0; k < keys.size(); ++k)
+        if (k != keyIndex && layerKeyFrame(keys.at(k), frames) == frame)
+            return; // never onto another key: two keys on one frame would be a move of no length
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[layerIndex];
+    layer.keys[keyIndex].at = shotcam::panelAt(frame, frames);
+    std::stable_sort(layer.keys.begin(), layer.keys.end(),
+                     [](const shotcam::LayerKey &a, const shotcam::LayerKey &b) { return a.at < b.at; });
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Move Layer Key"));
+    refreshLayerCanvas();
+    refreshLayerMotionUi();
+    reportLayerMotion(QStringLiteral("Move Layer Key"), panel, layerIndex);
+}
+
+void StoryboardPage::layerDeleteKey(int flat, int layerIndex, int keyIndex)
+{
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(flat, &si, &pi))
+        return;
+    Panel *panel = m_scenes.at(si)->panels.at(pi);
+    if (layerIndex < 0 || layerIndex >= panel->layers.size() || keyIndex < 0
+        || keyIndex >= panel->layers.at(layerIndex).keys.size())
+        return;
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    panel->layers[layerIndex].keys.removeAt(keyIndex);
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Delete Layer Key"));
+    refreshLayerCanvas();
+    refreshLayerMotionUi();
+    reportLayerMotion(QStringLiteral("Delete Layer Key"), panel, layerIndex);
+}
+
+void StoryboardPage::layerSetKeyEase(int flat, int layerIndex, int keyIndex, shotcam::Ease ease)
+{
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(flat, &si, &pi))
+        return;
+    Panel *panel = m_scenes.at(si)->panels.at(pi);
+    if (layerIndex < 0 || layerIndex >= panel->layers.size() || keyIndex < 0
+        || keyIndex >= panel->layers.at(layerIndex).keys.size()
+        || panel->layers.at(layerIndex).keys.at(keyIndex).ease == ease)
+        return;
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    panel->layers[layerIndex].keys[keyIndex].ease = ease;
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Layer Key Ease"));
+    refreshLayerCanvas();
+    refreshLayerMotionUi();
+    reportLayerMotion(QStringLiteral("Layer Key Ease"), panel, layerIndex);
+}
+
+void StoryboardPage::onLayerKeyMenu(int flat, int layerIndex, int keyIndex, const QPoint &globalPos)
+{
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("layerKeyMenu"));
+    menu.setStyleSheet(SankoTimelineTheme::kSpeedMenuSheet);
+    QAction *del = menu.addAction(QStringLiteral("Delete Key"));
+    del->setObjectName(QStringLiteral("layerKeyDelete"));
+    connect(del, &QAction::triggered, this,
+            [this, flat, layerIndex, keyIndex] { layerDeleteKey(flat, layerIndex, keyIndex); });
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
+}
+
+void StoryboardPage::onLayerEaseMark(int flat, int layerIndex, int keyIndex, const QRect &globalMarkRect)
+{
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(flat, &si, &pi))
+        return;
+    const Panel *panel = m_scenes.at(si)->panels.at(pi);
+    if (layerIndex < 0 || layerIndex >= panel->layers.size() || keyIndex < 0
+        || keyIndex >= panel->layers.at(layerIndex).keys.size())
+        return;
+    if (m_easePopover)
+        m_easePopover->close();
+    auto *popover = new EasePopover(this);
+    auto *v = new QVBoxLayout(popover);
+    v->setContentsMargins(0, 0, 0, 0);
+    auto *row = new EaseChoiceRow(panel->layers.at(layerIndex).keys.at(keyIndex).ease,
+                                  QStringLiteral("The move after key %1 of %2").arg(keyIndex + 1)
+                                      .arg(panel->layers.at(layerIndex).name),
+                                  false, true, QSize(36, 28), 4, QMargins(6, 6, 6, 6),
+                                  [this, flat, layerIndex, keyIndex](shotcam::Ease e) {
+                                      layerSetKeyEase(flat, layerIndex, keyIndex, e);
+                                  },
+                                  popover);
+    v->addWidget(row);
+    popover->adjustSize();
+    const QRect area = (QGuiApplication::screenAt(globalMarkRect.center())
+                            ? QGuiApplication::screenAt(globalMarkRect.center())
+                            : QGuiApplication::primaryScreen())->availableGeometry();
+    QPoint at(globalMarkRect.center().x() - popover->width() / 2, globalMarkRect.top() - popover->height() - 4);
+    if (at.y() < area.top())
+        at.setY(globalMarkRect.bottom() + 5);
+    at.setX(qBound(area.left(), at.x(), qMax(area.left(), area.right() - popover->width())));
+    popover->move(at);
+    m_easePopover = popover;
+    popover->show();
 }
 
 // Any selected group row pulls its whole member block into the operation

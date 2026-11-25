@@ -164,6 +164,20 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
                                frameSize);
 }
 
+QImage renderMovieFrameAt(const ExportPanel &row, int frameInPanel, const QSize &frameSize)
+{
+    if (!row.panel)
+        return fitMovieFrame(QImage(), frameSize);
+    const shotcam::Stage stage =
+        row.stage.canvas.isEmpty() ? shotcam::Stage(row.panel->canvasSize()) : row.stage;
+    const int frames = qMax(1, row.frames);
+    const int frame = qBound(0, frameInPanel, frames - 1);
+    const shotcam::CameraState camera = row.scene && !row.scene->camera.isEmpty()
+        ? shotcam::evaluateAtPanel(*row.scene, row.panelIndex, frame, qMax(1, row.fps), row.sceneFilmStart)
+        : shotcam::neutral(stage);
+    return shotcam::renderShot(*row.panel, camera, stage, frameSize, shotcam::panelAt(frame, frames));
+}
+
 QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
                         const shotcam::CameraState &camera, const shotcam::Stage &stage)
 {
@@ -703,7 +717,17 @@ void MovieExportJob::pumpVideo()
         while (panel < m_endFrame.size() - 1 && m_frame >= m_endFrame.at(panel))
             ++panel;
         const ExportPanel &row = m_request.panels.at(panel);
-        if (!row.scene || row.scene->camera.isEmpty()) {
+        if (row.panel && row.panel->hasMotion()) {
+            // LAYER MOTION (batch I-1): a panel with a layer that moves, drawn layer by
+            // layer at every one of its frames - each layer posed at the frame, then
+            // placed for its depth and the camera there: the one paint the preview, the
+            // canvas and the stills draw.
+            const int start = panel > 0 ? m_endFrame.at(panel - 1) : 0;
+            m_image = renderMovieFrameAt(row, m_frame - start, m_request.frameSize);
+            m_panelOfImage = panel;
+            m_imageMoving = true;
+            m_imageCamera = shotcam::CameraState();
+        } else if (!row.scene || row.scene->camera.isEmpty()) {
             // No camera move in this scene: the old path exactly - rendered
             // once per panel, however many frames it is held for. With a
             // margin, the base framing: the frame cropped, the same path.

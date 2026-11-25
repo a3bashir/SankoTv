@@ -11,6 +11,7 @@
 #include <QPixmap>
 #include <QString>
 #include <QStringList>
+#include <QTransform>
 #include <QUuid>
 #include <QVector>
 
@@ -66,6 +67,23 @@ struct Layer
     // far, 1.5 = a near layer; 0 .. 2. A folder's value is its members';
     // a member's own is kept for when it leaves (Panel::effectiveParallax).
     double parallax = 1.0;
+    // LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755). The layer's own keys and
+    // whether they are used: the Animate diamond in the Layers panel. Switched off, the keys
+    // are kept, unused (greyed on the LAYER row), until it is on again (the user's answer
+    // b). `pivot`: the centre of the layer's drawn art when it first animated (answer 2),
+    // in FRAME space - stage px less the panel's frameAt() - so a margin change leaves it on
+    // the art. Copied with the layer: a duplicated panel or layer has the same move.
+    bool animate = false;
+    QVector<shotcam::LayerKey> keys;
+    QPointF pivot;
+    // The keys are in use: Animate on, at least one key, a layer that has pixels to move.
+    bool moves() const
+    {
+        return animate && !keys.isEmpty() && type != QLatin1String("group")
+            && type != QLatin1String("background");
+    }
+    // What the file and the version follow: a layer with motion of any kind kept.
+    bool hasMotionData() const { return animate || !keys.isEmpty(); }
 
     bool atRest() const { return image.isNull() && tiles; }
     bool hasPixels() const { return !image.isNull() || tiles; }
@@ -114,6 +132,27 @@ struct Layer
             layertiles::paint(painter, *tiles, stageRect);
     }
 };
+
+// LAYER MOTION (batch I-1): a pose as a transform of stage px about `pivot` (stage px):
+// sized and turned about it, then moved. Panel::motionOf, and the canvas's Move box.
+inline QTransform layerPoseTransform(const QPointF &pivot, const shotcam::LayerPose &pose)
+{
+    QTransform t;
+    t.translate(pivot.x() + pose.dx, pivot.y() + pose.dy);
+    t.rotate(pose.rotation);
+    t.scale(pose.scale, pose.scale);
+    t.translate(-pivot.x(), -pivot.y());
+    return t;
+}
+
+// The frame of a panel of `frames` a layer key sits on: its place, to the nearest frame, on
+// one of the panel's frames (batch I-1). "A key at the playhead" is a key on its frame.
+inline int layerKeyFrame(const shotcam::LayerKey &key, int frames)
+{
+    frames = frames < 1 ? 1 : frames;
+    const int f = int(std::floor(key.at * frames + 0.5));
+    return f < 0 ? 0 : (f > frames - 1 ? frames - 1 : f);
+}
 
 // The depth range and the picture plane (Phase 2B).
 inline constexpr double kMinParallax = 0.0;
@@ -328,11 +367,55 @@ struct Panel
         const Layer *group = groupOf(layer);
         return qBound(kMinParallax, group ? group->parallax : layer.parallax, kMaxParallax);
     }
-    // A layer that is drawn: not a folder, has pixels, visible and not clear.
+    // A layer that is drawn: not a folder, has pixels, visible and not clear. A layer that
+    // moves (batch I-1) has its opacity in its keys, so its slider's value does not hide it.
     bool layerDrawn(const Layer &layer) const
     {
         return !isGroupLayer(layer) && layer.hasPixels() && layerEffectivelyVisible(layer)
-            && layerEffectiveOpacity(layer) > 0.0;
+            && (layer.moves() || layerEffectiveOpacity(layer) > 0.0);
+    }
+
+    // --- LAYER MOTION (batch I-1) ------------------------------------------------------
+    // THE LAYER'S MOTION FIRST, THEN ITS DEPTH AND THE CAMERA (the user's words): every
+    // consumer that draws a panel at a time - the canvas, the preview, the SHOTS clips, the
+    // strip, the MP4 and the stills - poses a moving layer with motionOf(layerPoseAt) in
+    // stage px, and only then places it for its depth (shotcam::layerToStage) and the
+    // camera. `at` is the place in the panel: 0 its first frame, 1 its end.
+    bool layerMoves(const Layer &layer) const { return layer.moves() && layerDrawn(layer); }
+    bool hasMotion() const
+    {
+        for (const Layer &layer : layers)
+            if (layerMoves(layer))
+                return true;
+        return false;
+    }
+    shotcam::LayerPose layerPoseAt(const Layer &layer, double at) const
+    {
+        if (!layer.moves()) {
+            shotcam::LayerPose rest;
+            rest.opacity = layer.opacity;
+            return rest;
+        }
+        return shotcam::poseFromKeys(layer.keys, at, layer.opacity);
+    }
+    QPointF pivotOnStage(const Layer &layer) const { return layer.pivot + QPointF(frameAt()); }
+    // Stage px to stage px: sized and turned about the pivot, then moved.
+    QTransform motionOf(const Layer &layer, const shotcam::LayerPose &pose) const
+    {
+        return layerPoseTransform(pivotOnStage(layer), pose);
+    }
+    QTransform motionAt(const Layer &layer, double at) const
+    {
+        return layer.moves() ? motionOf(layer, layerPoseAt(layer, at)) : QTransform();
+    }
+    // What it is drawn with at `at`: its keyed opacity when it moves, times its folder's.
+    double layerOpacityAt(const Layer &layer, double at) const
+    {
+        if (!layer.moves())
+            return layerEffectiveOpacity(layer);
+        const double own = qBound(0.0, layerPoseAt(layer, at).opacity, 1.0);
+        const Layer *group = groupOf(layer);
+        return group ? own * qBound(0.0, group->opacity, 1.0) : own;
     }
     // True when any drawn layer is off the picture plane: only then does
     // the camera place the layers one by one (shotcam's layered path).
@@ -402,6 +485,21 @@ struct Panel
                 continue;
             if (!layerEffectivelyVisible(layer) || !layer.hasPixels())
                 continue;
+            // A layer that moves (batch I-1): AT THE PANEL'S FIRST FRAME (the user's answer
+            // 8: the strip's thumbnails and the SHOTS clips show the first frame), its
+            // whole image through its pose - never tile by tile, which would seam when
+            // turned or sized.
+            if (layerMoves(layer)) {
+                const double posed = layerOpacityAt(layer, 0.0);
+                if (posed <= 0.0)
+                    continue;
+                painter.save();
+                painter.setOpacity(posed);
+                painter.setTransform(motionAt(layer, 0.0));
+                painter.drawImage(0, 0, layer.pixels());
+                painter.restore();
+                continue;
+            }
             const double opacity = layerEffectiveOpacity(layer);
             if (opacity <= 0.0)
                 continue;
@@ -410,6 +508,24 @@ struct Panel
         }
         painter.end();
         return out;
+    }
+    // Everything of a layer's motion that shapes a picture (batch I-1), for the
+    // fingerprints: nothing for a layer without motion, so theirs read as before.
+    static void appendMotion(QVector<quint64> &fp, const Layer &layer)
+    {
+        if (!layer.hasMotionData())
+            return;
+        auto bits = [](double v) {
+            quint64 b = 0;
+            memcpy(&b, &v, sizeof(b));
+            return b;
+        };
+        fp.append(0x4d4f54494f4eull ^ quint64(layer.animate)); // "MOTION"
+        fp.append(bits(layer.pivot.x()));
+        fp.append(bits(layer.pivot.y()));
+        for (const shotcam::LayerKey &k : layer.keys)
+            fp << bits(k.at) << bits(k.pose.dx) << bits(k.pose.dy) << bits(k.pose.rotation)
+               << bits(k.pose.scale) << bits(k.pose.opacity) << quint64(k.ease);
     }
 
     // --- Flattened-THUMBNAIL cache (performance pass 3b) --------------------
@@ -446,6 +562,7 @@ struct Panel
             fp.append(quint64(layer.visible)
                       | (quint64(isGroupLayer(layer)) << 1)
                       | (quint64(qHash(layer.groupId)) << 2));
+            appendMotion(fp, layer); // batch I-1: a key moved is another picture
         }
         // The stage they are read at (batch 6c): a margin moves no pixel, and the
         // flatten is another picture.

@@ -263,10 +263,69 @@ QByteArray flattenContent(const Panel &panel)
     QByteArray id;
     QDataStream s(&id, QIODevice::WriteOnly);
     s << quint8('F') << panel.frameAt();
-    for (const Layer &layer : panel.layers)
+    for (const Layer &layer : panel.layers) {
         s << layer.contentKey() << layer.pixelSize() << layer.opacity << layer.visible
           << layer.type << layer.groupId;
+        // A layer's motion (batch I-1): the flatten is its first frame, so a key moved is
+        // another flatten. Nothing for a layer without motion, whose id reads as before.
+        if (layer.hasMotionData())
+            s << quint8('M') << QJsonDocument(layerMotionJson(layer)).toJson(QJsonDocument::Compact);
+    }
     return id;
+}
+
+QJsonObject layerMotionJson(const Layer &layer)
+{
+    QJsonObject motion;
+    motion[QStringLiteral("animate")] = layer.animate;
+    motion[QStringLiteral("pivot")] = QJsonArray{layer.pivot.x(), layer.pivot.y()};
+    QJsonArray keys;
+    for (const shotcam::LayerKey &key : layer.keys) {
+        QJsonObject k;
+        k[QStringLiteral("at")] = key.at;
+        k[QStringLiteral("x")] = key.pose.dx;
+        k[QStringLiteral("y")] = key.pose.dy;
+        k[QStringLiteral("rotation")] = key.pose.rotation;
+        k[QStringLiteral("scale")] = key.pose.scale;
+        k[QStringLiteral("opacity")] = key.pose.opacity;
+        k[QStringLiteral("ease")] = shotcam::easeName(key.ease);
+        keys.append(k);
+    }
+    motion[QStringLiteral("keys")] = keys;
+    return motion;
+}
+
+int layerMotionFromJson(const QJsonObject &motion, Layer *layer)
+{
+    int dropped = 0;
+    layer->animate = motion.value(QStringLiteral("animate")).toBool(false);
+    const QJsonArray pivot = motion.value(QStringLiteral("pivot")).toArray();
+    if (pivot.size() == 2 && pivot.at(0).isDouble() && pivot.at(1).isDouble()
+        && std::isfinite(pivot.at(0).toDouble()) && std::isfinite(pivot.at(1).toDouble()))
+        layer->pivot = QPointF(pivot.at(0).toDouble(), pivot.at(1).toDouble());
+    layer->keys.clear();
+    for (const QJsonValue &v : motion.value(QStringLiteral("keys")).toArray()) {
+        const QJsonObject k = v.toObject();
+        shotcam::LayerKey key;
+        key.at = k.value(QStringLiteral("at")).toDouble(-1.0);
+        key.pose.dx = k.value(QStringLiteral("x")).toDouble(0.0);
+        key.pose.dy = k.value(QStringLiteral("y")).toDouble(0.0);
+        key.pose.rotation = k.value(QStringLiteral("rotation")).toDouble(0.0);
+        key.pose.scale = k.value(QStringLiteral("scale")).toDouble(1.0);
+        key.pose.opacity = k.value(QStringLiteral("opacity")).toDouble(1.0);
+        bool known = false;
+        key.ease = shotcam::easeFromName(k.value(QStringLiteral("ease")).toString(), &known);
+        const bool fine = std::isfinite(key.at) && key.at >= 0.0 && key.at <= 1.0 && std::isfinite(key.pose.dx)
+            && std::isfinite(key.pose.dy) && std::isfinite(key.pose.rotation) && std::isfinite(key.pose.scale)
+            && key.pose.scale > 0.0 && std::isfinite(key.pose.opacity) && key.pose.opacity >= 0.0
+            && key.pose.opacity <= 1.0;
+        if (!fine) {
+            ++dropped;
+            continue;
+        }
+        layer->keys.append(key);
+    }
+    return dropped;
 }
 
 namespace {
@@ -1319,6 +1378,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         : QMargins();
     bool anyOwnMargin = false;
     bool anyLocked = false;
+    bool anyMotion = false; // a layer with motion kept (batch I-1): version 6
 
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
@@ -1378,6 +1438,14 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                 // without depth saves the JSON it saved before.
                 if (layer.parallax != 1.0)
                     layerObj[QStringLiteral("parallax")] = layer.parallax;
+                // LAYER MOTION (batch I-1): only on a layer with motion kept - Animate on, or
+                // keys - so a project without one saves the JSON it saved before; with one,
+                // the file is version 6.
+                if (layer.hasMotionData() && layer.type != QLatin1String("group")
+                    && layer.type != QLatin1String("background")) {
+                    layerObj[QStringLiteral("motion")] = layerMotionJson(layer);
+                    anyMotion = true;
+                }
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
                     saver.at(int(scenesArray.size()), int(panelsArray.size()), int(layersArray.size()));
@@ -1483,7 +1551,8 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     QJsonObject root;
     root[QStringLiteral("version")] = g_writeVersion2ForTest.load()
         ? 2
-        : (anyLocked ? kFileVersionLockedScene : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin));
+        : (anyMotion ? kFileVersionLayerMotion
+                     : (anyLocked ? kFileVersionLockedScene : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin)));
     root[QStringLiteral("projectName")] = data.projectName;
     // fps drives the animatic; canvasWidth/Height are the project's real
     // canvas resolution, reconciled to the pixels on load — what is written
@@ -2218,6 +2287,10 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                             ++out.parallaxRepaired;
                         }
                     }
+                    // Layer motion (batch I-1): absent = none.
+                    if (layerObj.contains(QStringLiteral("motion")))
+                        out.motionKeysDropped +=
+                            layerMotionFromJson(layerObj.value(QStringLiteral("motion")).toObject(), &layer);
 
                     QImage img;
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
