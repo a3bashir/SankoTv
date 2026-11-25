@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <functional>
 #include <QMargins>
 #include <QPoint>
 #include <QRect>
@@ -204,6 +205,9 @@ public:
     // track is locked"), empty when nothing was refused since the reset.
     QString lastRefusalForTest() const { return m_lastRefusal; }
     void clearRefusalForTest() { m_lastRefusal.clear(); }
+    // Where a refusal is said (batch I-1b): the workspace's note, in the status bar since round
+    // 1, as a refusal (amber); no sink, a tooltip at the pointer as before.
+    void setNoteSink(std::function<void(const QString &, bool warning)> sink) { m_noteSink = std::move(sink); }
 
     // The host's track state, pushed in whenever it changes (a toggle or a
     // load): the buttons show it, hidden tracks paint empty and take no
@@ -299,6 +303,10 @@ signals:
     // ...and the frame inside it, whenever that changes (Phase 1A: the
     // scrub is frame-accurate; the camera is seen frame by frame).
     void playheadScrubbedTo(int flatPanelIndex, int frameInPanel);
+    // The playhead's drag began (the press) and ended (the release) - batch I-1b: while
+    // it lasts the workspace leaves the Move tool's box for its end.
+    void playheadDragStarted();
+    void playheadDragEnded();
     // A panel's new length in FRAMES (2026-11-06; it was whole seconds):
     // the right edge, the left edge (a ripple: the clip keeps its start and
     // later clips move up) or the typing field.
@@ -661,6 +669,7 @@ private:
     QToolButton *m_animateButton = nullptr; // the CAMERA row's record dot
     bool m_cameraAnimate = false;
     QString m_lastRefusal;
+    std::function<void(const QString &, bool)> m_noteSink; // setNoteSink (batch I-1b)
     // The CAMERA row's selection, hover and drag (scene, key indices).
     int m_camSelScene = -1, m_camSelKey = -1;
     int m_camHoverScene = -1, m_camHoverKey = -1;
@@ -697,7 +706,14 @@ private:
 
     // Interaction.
     int m_hoverIndex = -1;
-    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey, LayerKey };
+    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey, LayerKey, Pan };
+    // PANNING (batch I-1b, the user's note 8): Ctrl + a left drag (mouse or pen) or a middle
+    // drag, anywhere on the rows or the ruler, moves the view left and right with the
+    // pointer - through the scrollbar, as the user's scroll - and nothing else.
+    double m_panStartGlobalX = 0.0;
+    int m_panStartScroll = 0;
+    bool m_panScrolling = false; // a pan is moving the scrollbar: the user's scroll
+    static bool panPress(const QMouseEvent *e);
     Drag m_drag = Drag::None;
     int m_scrubIndex = -1;     // last panel announced during a playhead drag
     int m_scrubFrameSent = -1; // last frame announced (playheadScrubbedTo)

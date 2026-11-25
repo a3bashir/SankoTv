@@ -1044,6 +1044,8 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     // completion callback can never observe a detached/deleted panel.
     flushPaintCommit();
     m_poseDrag = PoseNone; // the Move box's drag on an animated layer ends (batch I-1)
+    releaseHeldNotes();    // ...and a stroke's hold on the notes (batch I-1b)
+    queueNoteBarSync();    // the status bar's note follows the panel, painted or not
 
     // Leaving a panel (or re-clicking it) with live canvas-side state: bake
     // everything into the CURRENT panel's own layers FIRST. A floating paste
@@ -1231,7 +1233,133 @@ QFont camChipFont(const QFont &base)
     f.setPixelSize(11);
     return f;
 }
+
 } // namespace
+
+// --- THE NOTE IN THE STATUS BAR (batch I-1b round 1, 2026-11-25) ------------------------------
+// The user's change after hand test I1b-1: every note moves from the top centre of the canvas
+// to the bottom status bar (StoryboardPage's StatusNoteBar). Nothing is drawn over the art.
+
+// The active tool's own note: the Camera tool's mode, the Move tool's key on an animated layer,
+// "Drawing view - ..." with a drawing tool (they were chips painted on the canvas). None while
+// the stage is being sized.
+QString DrawingCanvas::toolNoteText() const
+{
+    if (m_stageMode)
+        return QString();
+    if (const QString camera = shotCameraChipForTest(); !camera.isEmpty())
+        return camera;
+    if (poseMode())
+        return poseChipText();
+    // The Perspective tool with no vanishing point yet (it was a chip at the canvas's centre).
+    if (m_tool == Perspective && m_panel && m_perspective.count() == 0)
+        return QStringLiteral("Tap anywhere to create the first Vanishing Point.");
+    if (shotCameraDrawingViewChip())
+        return drawingViewChipText();
+    return QString();
+}
+
+// What the bar says now: a said note while it is up, else the tool's own note. While a
+// drawing tool's stroke is under way nothing changes (the user's rule: the words update when
+// the pen lifts).
+void DrawingCanvas::syncNoteBar()
+{
+    m_noteBarSyncQueued = false;
+    if (m_notesHeld)
+        return;
+    QString text;
+    NoteKind kind = NoteKind::Tool;
+    QString tip;
+    if (!m_noteText.isEmpty()) {
+        text = m_noteText;
+        kind = m_noteWarning ? NoteKind::Warning : NoteKind::Said;
+    } else {
+        text = toolNoteText();
+        // The Camera tool's "Passed 3 layers" names them on a hover (Phase 2C, Q1) - the bar's
+        // tooltip now, as the chip's was.
+        if (!text.isEmpty() && m_tool == Camera && m_panel) {
+            const ShotCameraView v = shotCameraView();
+            if (v.valid) {
+                const QStringList passed = shotcam::passedLayers(*m_panel, shotCameraShownState(v));
+                if (passed.size() >= 3)
+                    tip = QStringLiteral("Passed: ") + passed.join(QStringLiteral(", "));
+            }
+        }
+    }
+    if (text == m_noteBarText && kind == m_noteBarKind && tip == m_noteBarTip)
+        return;
+    m_noteBarText = text;
+    m_noteBarKind = kind;
+    m_noteBarTip = tip;
+    emit noteBarChanged();
+}
+
+// A repaint follows whatever may change the tool's note - a tool, a layer, the playhead, a
+// drag of the Move box or of the camera's frame - as the chips on the canvas did: the bar is
+// brought up to date once the event that asked for the paint is over.
+void DrawingCanvas::queueNoteBarSync()
+{
+    if (m_noteBarSyncQueued || m_notesHeld)
+        return;
+    m_noteBarSyncQueued = true;
+    QMetaObject::invokeMethod(this, [this] { syncNoteBar(); }, Qt::QueuedConnection);
+}
+
+void DrawingCanvas::showNote(const QString &text, int ms, bool warning)
+{
+    if (text.isEmpty())
+        return;
+    if (m_notesHeld) { // a stroke is under way: it is said at the release
+        m_notePending = text;
+        m_notePendingMs = ms;
+        m_notePendingWarning = warning;
+        return;
+    }
+    if (!m_noteTimer) {
+        m_noteTimer = new QTimer(this);
+        m_noteTimer->setSingleShot(true);
+        connect(m_noteTimer, &QTimer::timeout, this, [this] { expireNote(); });
+    }
+    m_noteText = text;
+    m_noteWarning = warning;
+    m_noteTimer->start(qMax(500, ms));
+    syncNoteBar();
+}
+
+// The said note's time is up: the tool's own note comes back (at the release, if a stroke is
+// under way).
+void DrawingCanvas::expireNote()
+{
+    if (m_noteTimer)
+        m_noteTimer->stop();
+    m_noteText.clear();
+    m_noteWarning = false;
+    syncNoteBar();
+}
+
+// A drawing tool's press: the bar is brought up to date, then its words stay as they are
+// until the release; a note said meanwhile waits for it.
+void DrawingCanvas::holdNotesForStroke()
+{
+    if (m_notesHeld)
+        return;
+    syncNoteBar();
+    m_notesHeld = true;
+    m_notePending.clear();
+}
+
+void DrawingCanvas::releaseHeldNotes()
+{
+    if (!m_notesHeld)
+        return;
+    m_notesHeld = false;
+    const QString pending = m_notePending;
+    m_notePending.clear();
+    if (!pending.isEmpty())
+        showNote(pending, m_notePendingMs, m_notePendingWarning);
+    else
+        syncNoteBar();
+}
 
 void DrawingCanvas::setShotCameraProvider(std::function<ShotCameraView()> provider)
 {
@@ -1811,14 +1939,6 @@ QString DrawingCanvas::shotCameraChipText(const ShotCameraView &v,
     return t;
 }
 
-QRectF DrawingCanvas::shotCameraChipRect(const QString &text) const
-{
-    const QFontMetricsF fm(camChipFont(font()));
-    const ShotCameraView v = shotCameraView();
-    const double w = fm.horizontalAdvance(text) + 20.0 + (v.animate ? 12.0 : 0.0);
-    return QRectF(qRound((width() - w) / 2.0), 12.0, qCeil(w), 24.0);
-}
-
 void DrawingCanvas::shotCameraPress(const QPointF &widgetPos)
 {
     const ShotCameraView v = shotCameraView();
@@ -2084,39 +2204,9 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
             paintCamChip(painter, r, edge, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a),
                          QColor(0xdd, 0xdd, 0xdd), false);
         }
-        // The mode chip, top centre: which mode the next drag is in.
-        const QString text = shotCameraChipText(v, s);
-        const QRectF chip = shotCameraChipRect(text);
-        if (soft)
-            paintCamChip(painter, chip, text, kCamSoft, QColor(),
-                         QColor(0x1c, 0x1e, 0x25), v.animate);
-        else if (v.animate)
-            paintCamChip(painter, chip, text, kCamAccent, QColor(), Qt::white, true);
-        else
-            paintCamChip(painter, chip, text, QColor(0x16, 0x16, 0x16),
-                         QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd), false);
-        // The DEPTH tag (Figma 2B-3): the word on an accent tint at 25 %.
-        const QString depthWord = QStringLiteral("DEPTH");
-        const int at = text.indexOf(depthWord);
-        if (at >= 0) {
-            const double left = chip.left() + (v.animate ? 22.0 : 10.0)
-                + fm.horizontalAdvance(text.left(at));
-            QColor tint = kCamAccent;
-            tint.setAlpha(64);
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(tint);
-            painter.drawRoundedRect(QRectF(left - 4.0, chip.center().y() - 8.0,
-                                           fm.horizontalAdvance(depthWord) + 8.0, 16.0),
-                                    3, 3);
-        }
-    } else if (shotCameraDrawingViewChip()) {
-        // A drawing tool while the camera is elsewhere on a panel with depth
-        // (Phase 2B, Q5): the layers are as drawn here, not as the shot.
-        painter.setFont(camChipFont(font()));
-        const QString text = drawingViewChipText();
-        const QRectF chip = drawingViewChipRect(text);
-        paintCamChip(painter, chip, text, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a),
-                     QColor(0xdd, 0xdd, 0xdd), false);
+        // The mode chip ("SHOT CAMERA - ANIMATE ON - ...") and, with a drawing tool,
+        // "Drawing view - ..." are said in the status bar since batch I-1b round 1
+        // (toolNoteText): nothing is drawn over the art.
     }
     painter.restore();
 }
@@ -2185,37 +2275,6 @@ bool DrawingCanvas::depthOutline(QPolygonF *quad, double *depth, QString *name) 
     *depth = a;
     *name = which;
     return true;
-}
-
-QRectF DrawingCanvas::drawingViewChipRect(const QString &text) const
-{
-    const QFontMetricsF fm(camChipFont(font()));
-    const double w = qCeil(fm.horizontalAdvance(text) + 20.0);
-    QRectF r(qRound((width() - w) / 2.0), height() - 36.0, w, 24.0);
-    // Clear of the Move and Selection tools' modifier bars, which float over the
-    // canvas's bottom centre: under them it could not be read (B2's hand test; batch F1).
-    for (int pass = 0; pass < 3; ++pass) {
-        bool moved = false;
-        for (const QPointer<QWidget> &bar : m_chipObstacles)
-            if (bar && bar->isVisible()) {
-                const QRectF on(QPointF(mapFromGlobal(bar->mapToGlobal(QPoint(0, 0)))), QSizeF(bar->size()));
-                if (on.intersects(r)) {
-                    r.moveBottom(on.top() - 8.0);
-                    moved = true;
-                }
-            }
-        if (!moved)
-            break;
-    }
-    return r;
-}
-
-void DrawingCanvas::setChipObstacles(const QVector<QWidget *> &bars)
-{
-    m_chipObstacles.clear();
-    for (QWidget *bar : bars)
-        m_chipObstacles.append(bar);
-    update();
 }
 
 // --- LAYER MOTION (batch I-1, 2026-11-24; Figma I-1 693:755) ------------------------------
@@ -2471,19 +2530,9 @@ void DrawingCanvas::paintPoseBox(QPainter &painter) const
     painter.drawLine(QPointF(pw.x() + 3, pw.y()), QPointF(pw.x() + 9, pw.y()));
     painter.drawLine(QPointF(pw.x(), pw.y() - 9), QPointF(pw.x(), pw.y() - 3));
     painter.drawLine(QPointF(pw.x(), pw.y() + 3), QPointF(pw.x(), pw.y() + 9));
-    // The chip, above the box.
-    const QString text = poseChipText();
-    if (!text.isEmpty()) {
-        painter.setFont(camChipFont(font()));
-        const QFontMetricsF fm(painter.font());
-        const double w = qCeil(fm.horizontalAdvance(text) + 20.0);
-        const QRectF bounds = quad.size() >= 4 ? quad.boundingRect() : QRectF(pw, QSizeF(1, 1));
-        QRectF r(bounds.center().x() - w / 2.0, bounds.top() - 34.0, w, 24.0);
-        r.moveLeft(qBound(4.0, r.left(), width() - w - 4.0));
-        r.moveTop(qBound(4.0, r.top(), height() - 28.0));
-        paintCamChip(painter, r, text, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a),
-                     QColor(0xdd, 0xdd, 0xdd), false);
-    }
+    // The key's words ("Boat - key 2 of 3 - frame 93 - ...") are said in the status bar since
+    // batch I-1b round 1 (toolNoteText; it was a chip just above the box, over the art, then at
+    // the top centre). They follow the box while it is dragged (the user's answer 5).
     painter.restore();
 }
 
@@ -2550,12 +2599,6 @@ QString DrawingCanvas::shotCameraChipForTest() const
     if (!v.valid || m_tool != Camera)
         return QString();
     return shotCameraChipText(v, shotCameraShownState(v));
-}
-
-QRectF DrawingCanvas::shotCameraChipRectForTest() const
-{
-    const QString text = shotCameraChipForTest();
-    return text.isEmpty() ? QRectF() : shotCameraChipRect(text);
 }
 
 // The active layer, but only when it can legally take strokes: locked layers
@@ -2789,6 +2832,8 @@ void DrawingCanvas::setTool(Tool tool)
 {
     clearPenUiLatch(); // a latched pen tap does not survive a tool change
     m_poseDrag = PoseNone; // ...nor the Move box's drag on an animated layer (batch I-1)
+    releaseHeldNotes();    // ...nor a stroke's hold on the notes (batch I-1b)
+    queueNoteBarSync();    // the status bar's note follows the tool, painted or not
 
     // A pick waiting or under way ends with a tool change, taking nothing (batch D).
     if (tool != m_tool) {
@@ -3187,10 +3232,28 @@ void DrawingCanvas::resetTransformBox()
 // a live selection lifts the selected pixels; with NO selection the box wraps
 // the layer's whole artwork (synthesized rect selection, dropped on cancel).
 // An empty layer shows no box.
+void DrawingCanvas::setScrubbing(bool on)
+{
+    if (m_scrubbing == on)
+        return;
+    m_scrubbing = on;
+    if (!on && m_liftAfterScrub) {
+        m_liftAfterScrub = false;
+        if (m_tool == Move)
+            liftDefaultTransformBox(); // the drag is over: the box, around the panel it ended on
+    }
+}
+
 void DrawingCanvas::liftDefaultTransformBox()
 {
     if (m_xformActive)
         return;
+    // A scrub drag under way (batch I-1b): the lift waits for its end (setScrubbing).
+    if (m_scrubbing) {
+        m_liftAfterScrub = true;
+        update();
+        return;
+    }
     // A layer whose Animate is on (batch I-1): its box is its pose, not its pixels - none
     // are lifted. (Animate off: the Move tool changes the drawing, as it always has.)
     if (poseMode()) {
@@ -8641,6 +8704,9 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // Batch G: anything that repaints the canvas - a zoom, a resize, the selection, R, the
     // Quick Shape modes - may change the circle's size or the cursor: both follow here.
     refreshToolCursor();
+    // ...and the status bar's note (batch I-1b round 1): whatever repainted may change the
+    // tool's own note, as it changed the chips the canvas used to draw.
+    queueNoteBarSync();
     QPainter painter(this);
     // Gutter background + optional workspace grid, both SCREEN-SPACE: painted
     // before the world transform so they are fixed to the viewport — they
@@ -9313,25 +9379,9 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // preview, an export or the camera's shot.
     paintSymmetry(painter);
 
-    // Perspective tool with no VPs yet: centred prompt chip over the canvas
-    // (display-only, Sanko dark chip in the Modifier-bar language).
-    if (m_tool == Perspective && m_panel && m_perspective.count() == 0) {
-        const QString msg = QStringLiteral(
-            "Tap anywhere to create the first Vanishing Point.");
-        QFont chipFont(QStringLiteral("Inter"));
-        chipFont.setPixelSize(12);
-        chipFont.setWeight(QFont::DemiBold);
-        painter.setFont(chipFont);
-        const QFontMetricsF fm(chipFont);
-        QRectF chip(0, 0, fm.horizontalAdvance(msg) + 28, fm.height() + 16);
-        chip.moveCenter(QRectF(displayRect()).center());
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0x21, 0x21, 0x21, 166));
-        painter.drawRoundedRect(chip, 8, 8);
-        painter.setPen(QColor(0xcc, 0xcc, 0xcc));
-        painter.drawText(chip, Qt::AlignCenter, msg);
-    }
+    // (The Perspective tool with no vanishing point yet said "Tap anywhere to create the first
+    // Vanishing Point." in a chip at the centre of the canvas; since batch I-1b round 1 it is
+    // the tool's note in the status bar - toolNoteText.)
 
     // Perspective editing handles (Perspective tool): WIDGET space and NOT
     // clipped to the canvas — vanishing points may sit outside its bounds.
@@ -10039,22 +10089,8 @@ bool DrawingCanvas::transformUntouched() const
 // the stroke exactly like focus loss: commit, never orphan.
 bool DrawingCanvas::event(QEvent *event)
 {
-    // The mode chip's "Passed 3 layers" (Phase 2C, Q1): its hover names them.
-    if (event->type() == QEvent::ToolTip && m_tool == Camera && !m_stageMode && m_panel) {
-        const ShotCameraView v = shotCameraView();
-        if (v.valid) {
-            const shotcam::CameraState s = shotCameraShownState(v);
-            const QStringList passed = shotcam::passedLayers(*m_panel, s);
-            auto *help = static_cast<QHelpEvent *>(event);
-            if (passed.size() >= 3
-                && shotCameraChipRect(shotCameraChipText(v, s)).contains(help->pos())) {
-                QToolTip::showText(help->globalPos(),
-                                   QStringLiteral("Passed: ") + passed.join(QStringLiteral(", ")),
-                                   this);
-                return true;
-            }
-        }
-    }
+    // (The mode chip's "Passed 3 layers" named them on a hover over the chip; since batch
+    // I-1b round 1 the status bar's note does, as its tooltip - syncNoteBar.)
     if (event->type() == QEvent::UngrabMouse) {
         finishInterruptedStroke();
         if (m_camDrag >= 0)
@@ -10125,6 +10161,9 @@ void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 
 void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 {
+    // A press here means no playhead drag is under way (batch I-1b): one that never had its
+    // release (a window took the mouse) does not keep the Move box waiting.
+    setScrubbing(false);
     // Edit Shape mode swallows every canvas press: nodes drag, taps outside
     // commit — nothing here may start a brush stroke.
     if (m_qsEditing && event->button() == Qt::LeftButton) {
@@ -10380,6 +10419,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // eraser: hold-to-shape stays a Brush gesture.
         if (m_paintCommitPending)
             break; // UI remains responsive while the previous stroke publishes
+        holdNotesForStroke(); // batch I-1b, note 6: the notes go until the release
         beginLayerEdit();
         m_brushStroke = true;
         emit liveBrushStrokeStarted(); // live input only (see the signal)
@@ -10390,6 +10430,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     case Brush: {
         if (m_paintCommitPending)
             break; // UI remains responsive while the previous stroke publishes
+        holdNotesForStroke(); // batch I-1b, note 6
         // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
         beginLayerEdit();
         m_brushStroke = true;
@@ -10408,6 +10449,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         break;
     }
     case Shapes:
+        holdNotesForStroke(); // batch I-1b, note 6
         if (m_shapeKind == ShapePolygon) {
             m_shapeCurrentC = toCanvasF(event->position());
             m_polygonPts.append(m_shapeCurrentC);
@@ -10419,6 +10461,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         update();
         break;
     case Fill:
+        holdNotesForStroke(); // batch I-1b, note 6
         beginLayerEdit();
         floodFill(toCanvas(event->pos()));
         finalizeLayerEdit(QStringLiteral("Fill"));
@@ -10650,6 +10693,8 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton)
+        releaseHeldNotes(); // batch I-1b, note 6: a drawing tool's stroke is over
     if (m_qsEditing && event->button() == Qt::LeftButton) {
         quickShapeEditRelease();
         return;
@@ -10817,6 +10862,9 @@ void DrawingCanvas::finishInterruptedStroke()
                                         : QStringLiteral("Brush Stroke"));
         updateQuickShapeUi();
     }
+    // ...and the status bar's words are free again: an interrupted stroke is over as surely as
+    // a released one (batch I-1b round 1).
+    releaseHeldNotes();
 }
 
 void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
@@ -10921,6 +10969,8 @@ void DrawingCanvas::clearPenUiLatch()
 
 void DrawingCanvas::tabletEvent(QTabletEvent *event)
 {
+    if (event->type() == QEvent::TabletPress)
+        setScrubbing(false); // no playhead drag is under way (batch I-1b; as mousePressEvent)
     // (Where the pen is - hovering above the Cintiq or drawing - PointerWatch has noted
     // already, before this: batch G.)
     // THE PEN'S SIDE BUTTONS DO NOTHING ON THE CANVAS (the user, 2026-11-11). Windows
@@ -11083,6 +11133,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         // stage-5 router and edit-mode handlers already ran above, so a
         // press over a canvas-child control can never reach this branch.
         if (m_panel && editableActiveLayer() && !m_paintCommitPending) {
+            holdNotesForStroke(); // batch I-1b, note 6: the notes go until the pen lifts
             beginLayerEdit();
             m_brushStroke = true;
             emit liveBrushStrokeStarted(); // live input only (see the signal)
@@ -11139,6 +11190,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         }
         m_qsHeld = false;
         updateQuickShapeUi();
+        releaseHeldNotes(); // batch I-1b, note 6: the stroke is over
         break;
     default:
         break;

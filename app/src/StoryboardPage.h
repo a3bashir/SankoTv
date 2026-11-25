@@ -57,6 +57,41 @@ struct Panel;
 struct Scene;
 struct ConsistencyEntry;
 
+// THE NOTE IN THE STATUS BAR (batch I-1b round 1, 2026-11-25; the user's change after hand
+// test I1b-1, reference statusbar_place.png and notes_1-4.png). The bottom bar's space between
+// Import Image and "Recovery copy saved" says the canvas's note (DrawingCanvas::noteBarText):
+// plain text in the bar's own font and grey, a thin vertical separator either side - "| Drawing
+// view - depth shows with the Camera tool |" - centred in the space. A refusal or a warning is
+// in amber. Too long for the space, it ends with "..." and its tooltip says it whole (and
+// what the note's tip adds: the camera's passed layers). Paints nothing when there is no note.
+class StatusNoteBar : public QWidget
+{
+public:
+    explicit StatusNoteBar(QWidget *parent = nullptr);
+    void setNote(const QString &text, bool warning, const QString &tip = QString());
+    QString text() const { return m_text; }
+    bool warning() const { return m_warning; }
+    QString shownText() const;       // as painted: elided with "..." when too long
+    QColor textColor() const;
+    QRect textRect() const;          // where the words are painted, in the bar's px
+    QRect separatorRect(int side) const; // 0 the left separator, 1 the right
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+    static constexpr int kSeparatorGap = 12; // between a separator and the words
+    static constexpr int kSeparatorHeight = 16;
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+
+private:
+    QFont noteFont() const;
+    void refreshTip();
+    QString m_text;
+    bool m_warning = false;
+    QString m_tip;
+};
+
 // THE WORKSPACE: scene list (left), panel strip over the drawing canvas
 // (centre), the animatic timeline under it, and shot info (right). Drawing,
 // panels, timing and playback all happen here; there is no separate animatic
@@ -283,6 +318,8 @@ public:
     void updateOnionGhostForTest() { updateOnionGhost(); }
     void addPanelForTest() { addPanelAfterSelected(); }
     QWidget *moveModToolbarForTest() const { return m_moveModToolbar; } // batch F1's chip check
+    // The floating bar at the top centre (Layers, Perspective, Scenes, ...): batch I-1b's note
+    // slot sits 8 px below it.
     void duplicateSelectedPanelForTest() { duplicatePanel(); }
     // Batch I-1's checks: a Layers row pressed as the artist presses it; the footer's Merge.
     void layerRowClickedForTest(int index) { layerRowClicked(index, Qt::NoModifier); }
@@ -379,6 +416,10 @@ public:
     // and the words in red ("NOT saved"). recoveryStatusForTest: the words alone.
     void setRecoveryStatus(const QString &text, bool lit = false, bool failed = false);
     QString recoveryStatusForTest() const;
+    // The status bar's note (batch I-1b round 1): the widget, and its neighbours in the bar.
+    StatusNoteBar *noteBarForTest() const { return m_noteBar; }
+    QWidget *recoveryStatusLabelForTest() const;
+    QWidget *importButtonForTest() const;
     // DEPTH (Phase 2B): the Depth popover for layer `index` of the current
     // panel, as its badge or Depth... opens it (the paper and a folder's
     // member open nothing); the popover open now, or null.
@@ -520,14 +561,8 @@ public:
     // the one a panel removal shows when it took camera keys with it.
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
-    // Batch G: the note a press on a locked or hidden layer shows by the pointer ("Layer 2 is
-    // locked") - null before the first.
-    QWidget *refusalNoteForTest() const;
     // Batch E (Figma E-1): the five eases' popover a tap on a move's mark opens, while open.
     QWidget *easePopoverForTest() const { return m_easePopover.data(); }
-    // GROW-1's (cx10): a note's tooltip shown at this global point (on the test's own
-    // window) instead of the real pointer's; a null point gives the pointer back.
-    void setNotePointForTest(const QPoint &global) { m_notePointForTest = global; }
     Panel *currentPanelForTest() const { return currentPanel(); }
     // The strip's parallel thumbnails (2026-10-31): how many were built off
     // the UI thread since the last reset.
@@ -941,6 +976,7 @@ private:
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;
     QLabel *m_recoveryStatus = nullptr; // the recovery copy's word (2026-11-04)
+    StatusNoteBar *m_noteBar = nullptr; // the note, between Import Image and it (batch I-1b round 1)
     QString m_recoveryStatusWords;      // what it says, without the dot's markup
     // Floating Size CTL toolbar (Figma 209:42): size + opacity sliders and
     // Flip, snapping to the left/right canvas edge. (Brush Options is gone;
@@ -1117,6 +1153,10 @@ private:
     SankoTipPopup *m_toolbarTip = nullptr; // ONE reused tooltip for the Brush bar
     QWidget *m_selModToolbar = nullptr;  // Selection Modifier bar (Figma 146:67)
     QWidget *m_moveModToolbar = nullptr; // Move Modifier bar (Figma 161:39)
+    // Batch I-1b (note 3): the Move bar shows with the Move tool, but not on an animated
+    // layer with Animate on (refreshMoveBar).
+    bool m_moveToolOn = false;
+    void refreshMoveBar();
     QWidget *m_bottomBar = nullptr;      // status bar; both mod bars sit 10px above
     // Fixed control column (left of the panel strip).
     QPushButton *m_addPanelButton = nullptr;
@@ -1162,18 +1202,15 @@ private:
     bool refuseShotsEdit();
     bool refuseLockedHistory(const QUndoCommand *command);
     void sayLocked(const QString &message, bool asBox);
-    // The same non-modal tooltip for a note that is not a refusal; after a popover's or
-    // a menu's close, once the pointer has entered what is under it (GROW-1).
+    // A note that is not a refusal, said in the status bar in grey (batch I-1b: one place for
+    // every note - the status bar since round 1; it was a tooltip at the pointer).
     void sayNote(const QString &message);
-    QPoint notePoint() const; // the pointer, or the test's point
-    int m_noteSerial = 0;
-    QPoint m_notePointForTest;
-    // A press on a locked or hidden layer (batch G, answer 3): why, shown by the pointer in the
-    // one tooltip look for kRefusalNoteMs - a window of its own, so the press's release does
-    // not take it away as it does a QToolTip's.
+    // A refusal or a warning - something did not happen, or happened otherwise than asked:
+    // the same place, in amber (batch I-1b round 1).
+    void sayWarning(const QString &message);
+    // A press on a locked or hidden layer (batch G, answer 3): why, in the status bar in amber
+    // for kRefusalNoteMs (batch I-1b; it was by the pointer, a window of its own).
     void sayEditRefused(const QString &why, const QPoint &globalPos);
-    QPointer<SankoTipFrame> m_refusalNote;
-    QTimer *m_refusalNoteTimer = nullptr;
     static constexpr int kRefusalNoteMs = 2500;
     // Remove the selected panel with this history text ("Delete Panel",
     // "Cut Panel"); when the panel held camera keys the text names them

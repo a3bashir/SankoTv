@@ -1324,6 +1324,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::onScrubbed);
     connect(m_timeline, &AnimaticTimeline::playheadScrubbedTo,
             this, &AnimaticPage::onScrubbedTo);
+    connect(m_timeline, &AnimaticTimeline::playheadDragStarted, this, &AnimaticPage::scrubDragStarted);
+    connect(m_timeline, &AnimaticTimeline::playheadDragEnded, this, &AnimaticPage::scrubDragEnded);
     connect(m_timeline, &AnimaticTimeline::durationChanged,
             this, &AnimaticPage::onDurationChanged);
     connect(m_timeline, &AnimaticTimeline::rollRequested,
@@ -1863,13 +1865,23 @@ void AnimaticPage::applyHeaderSpacing(bool compact)
         m_totalLabel->setText(compact ? m_totalTime : QStringLiteral("Total: ") + m_totalTime);
 }
 
-// The dark note at the pointer, as the workspace's camera notes. Under the
-// gate the pointer is the real one, so it is only recorded there.
+// The note, in the workspace's note (batch I-1b; the status bar since round 1); with no
+// workspace, the dark note at the pointer - under the gate the pointer is the real one, so
+// then it is only recorded.
 void AnimaticPage::sayNote(const QString &message)
 {
     m_lastNote = message;
-    if (m_notesAtPointer)
+    if (m_noteSink)
+        m_noteSink(message, false); // a hint, not a refusal: grey
+    else if (m_notesAtPointer)
         QToolTip::showText(QCursor::pos(), message, this);
+}
+
+void AnimaticPage::setNoteSink(std::function<void(const QString &, bool)> sink)
+{
+    m_noteSink = sink;
+    if (m_timeline)
+        m_timeline->setNoteSink(std::move(sink));
 }
 
 QRect AnimaticPage::transportPillRectForTest() const
@@ -2131,19 +2143,19 @@ void AnimaticPage::seekTo(int index)
     }
 }
 
-// The playhead is being dragged along the ruler: LOOK at that panel. The
-// drawing canvas, the selection and the strip are not touched.
+// The playhead is being dragged along the ruler, or the ruler was clicked.
 void AnimaticPage::onScrubbed(int index)
 {
     if (index < 0 || index >= m_items.size())
         return;
     if (m_playing)
         pause();
-    // WITH THE CAMERA TOOL (the user's rule, 2026-10-26) a scrub moves the
-    // playhead ON THE CANVAS: the panel under it is SELECTED (the workspace
-    // decides, as for a clip click) and no preview opens, so the camera
-    // frame is drawn - and Animate keys - at any frame, not only a panel's
-    // start. Every other tool keeps "scrubbing looks without selecting".
+    // IN THE WORKSPACE (the Camera tool's rule since 2026-10-26; every tool's since batch
+    // I-1b, the user's note 1 - the workspace sets it) a scrub moves the playhead ON THE
+    // CANVAS: the panel under it is SELECTED (the workspace decides, as for a clip click)
+    // and no preview opens - a paused one closes - so the canvas shows that panel at the
+    // playhead's frame. Only Play opens the preview. A page with no workspace (the camera
+    // family's) still previews the panel it scrubs to.
     if (m_scrubShowsCanvas) {
         if (index != m_selected)
             emit panelSelectRequested(index); // -> setSelectedPanel -> seekTo
@@ -2172,7 +2184,10 @@ void AnimaticPage::onScrubbedTo(int index, int frameInPanel)
         return;
     if (m_playing)
         pause();
-    if (index != m_current)
+    // In the workspace a scrub inside the panel under the playhead leaves a paused preview
+    // too, and selects that panel if the film had played on past the selected one
+    // (batch I-1b: while you scrub you are in the workspace).
+    if (index != m_current || (m_scrubShowsCanvas && (m_previewShown || index != m_selected)))
         onScrubbed(index);
     const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
     const int frames = shotcam::panelFrames(*m_items.at(index).panel, fps);

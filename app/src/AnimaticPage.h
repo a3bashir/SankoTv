@@ -137,6 +137,11 @@ public:
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
     void setNotesAtPointerForTest(bool shown) { m_notesAtPointer = shown; }
+    // ONE PLACE FOR EVERY NOTE (batch I-1b, the user's answer 1): the workspace takes this
+    // page's notes and the timeline's refusals to the status bar's note (batch I-1b round 1),
+    // with whether it is a refusal (amber). With no sink (a page with no workspace) they are
+    // tooltips at the pointer, as before.
+    void setNoteSink(std::function<void(const QString &, bool warning)> sink);
     // The gate's pointer (StoryboardPage::setRealPointerIgnoredForTest): the preview's REAL
     // pointer moves wake no stage (StageClear) - only the moves a check sends.
     void setRealPointerIgnoredForTest(bool ignored);
@@ -328,6 +333,9 @@ signals:
     void tracksChanged();
     // The playhead's panel or frame changed (see playheadPanel above).
     void playheadMoved();
+    // The timeline's playhead drag began and ended (batch I-1b; AnimaticTimeline's).
+    void scrubDragStarted();
+    void scrubDragEnded();
     // The preview came over the canvas (true) or went (false). The Camera
     // bar is disabled while it covers the canvas (Phase 1B follow-up).
     void previewShownChanged(bool shown);
@@ -384,6 +392,18 @@ public:
     int itemCountForTest() const { return int(m_items.size()); }
     void advanceForTest() { advance(); }
     void scrubForTest(int flatIndex) { onScrubbed(flatIndex); }
+    // The preview over the canvas, paused on this panel's first frame - as Play then Pause
+    // leaves it. (Batch I-1b: in the workspace a scrub no longer opens it; this is how the
+    // checks that need the preview up get it.)
+    void previewForTest(int flatIndex)
+    {
+        if (flatIndex < 0 || flatIndex >= m_items.size())
+            return;
+        if (m_playing)
+            pause();
+        seekTo(flatIndex);
+        enterPreview();
+    }
     // The frame-accurate scrub (Phase 1A): what a playhead drag inside a
     // panel now requests.
     void scrubToForTest(int flatIndex, int frameInPanel)
@@ -626,4 +646,5 @@ private:
     QString m_totalTime; // the total without its word
     QString m_lastNote;
     bool m_notesAtPointer = true;
+    std::function<void(const QString &, bool)> m_noteSink; // setNoteSink (batch I-1b)
 };

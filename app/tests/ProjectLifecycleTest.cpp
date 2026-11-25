@@ -5370,6 +5370,22 @@ QStringList barPlaces(Rig &r)
     return places;
 }
 
+// THE NOTE IN THE STATUS BAR (batch I-1b round 1): what the bar's note says now, as shown by the
+// widget (the canvas's queued update run first), and whether it is in amber.
+QString barNote(Rig &r)
+{
+    QCoreApplication::processEvents();
+    StatusNoteBar *bar = r.storyboard ? r.storyboard->noteBarForTest() : nullptr;
+    return bar ? bar->text() : QStringLiteral("<no bar>");
+}
+
+bool barWarns(Rig &r)
+{
+    QCoreApplication::processEvents();
+    StatusNoteBar *bar = r.storyboard ? r.storyboard->noteBarForTest() : nullptr;
+    return bar && bar->warning();
+}
+
 bool barsInsideCanvas(Rig &r, QString *why)
 {
     const QRect canvas(r.canvas->mapToGlobal(QPoint(0, 0)), r.canvas->size());
@@ -5802,31 +5818,43 @@ void runWorkspacePreviewPass(const QString &project)
         const QPointF b(r.timeline->clipRectForTest(3).center().x(), 10);
         sendMouse(r.surface, QEvent::MouseButtonPress, a, Qt::LeftButton);
         pump(100);
+        // BATCH I-1b (the user's note 1): a scrub stays in the workspace - no preview, the
+        // panel under the playhead selected (until then: previewed, not selected).
         const bool onFifth = r.timeline->playheadPanelForTest() == 4
-            && r.animatic->previewVisible();
+            && !r.animatic->previewVisible() && r.storyboard->selectedFlatIndexForTest() == 4;
         sendMouse(r.surface, QEvent::MouseMove, b, Qt::LeftButton);
         sendMouse(r.surface, QEvent::MouseButtonRelease, b, Qt::LeftButton);
         pump(200);
-        check(QStringLiteral("(af) dragging the playhead PREVIEWS the panel "
-                             "under it, panel by panel, and stays there on "
-                             "release"),
-              onFifth && r.animatic->previewVisible() && !r.animatic->isPlaying()
+        check(QStringLiteral("(af) dragging the playhead stays in the workspace (batch I-1b, your note 1): no "
+                             "preview - the panel under it is selected, panel by panel, and the playhead stays "
+                             "there on release"),
+              onFifth && !r.animatic->previewVisible() && !r.animatic->isPlaying()
                   && r.timeline->playheadPanelForTest() == 3
-                  && r.animatic->previewCaptionForTest().contains(
-                         QStringLiteral("Scene 2")),
-              r.animatic->previewCaptionForTest());
+                  && r.storyboard->selectedFlatIndexForTest() == 3,
+              QStringLiteral("on the fifth %1; preview %2, playing %3, playhead %4, selected %5").arg(onFifth)
+                  .arg(r.animatic->previewVisible()).arg(r.animatic->isPlaying())
+                  .arg(r.timeline->playheadPanelForTest()).arg(r.storyboard->selectedFlatIndexForTest()));
     }
-    check(QStringLiteral("(af) ...without selecting it: the canvas, the "
-                         "strip and the dirty flag are untouched"),
-          r.storyboard->selectedFlatIndexForTest() == 0
-              && r.storyboard->selectPanelCallsForTest() == calls2
-              && !r.window.isDirty());
-    clickThumb(r, 1);
-    check(QStringLiteral("(af) selecting a panel leaves the preview and "
-                         "puts the playhead on that panel"),
-          !r.animatic->previewVisible()
+    check(QStringLiteral("(af) ...selecting it as a clip click does: the strip follows, and the project stays "
+                         "clean"),
+          r.storyboard->selectedFlatIndexForTest() == 3 && selectedThumb(r.storyboard) >= 0
+              && r.storyboard->selectPanelCallsForTest() > calls2 && !r.window.isDirty(),
+          QStringLiteral("selected %1, strip %2, select calls %3 -> %4, dirty %5")
+              .arg(r.storyboard->selectedFlatIndexForTest()).arg(selectedThumb(r.storyboard)).arg(calls2)
+              .arg(r.storyboard->selectPanelCallsForTest()).arg(r.window.isDirty()));
+    // The preview up as Play then Pause leaves it (a scrub no longer opens it), on panel 4.
+    r.animatic->previewForTest(3);
+    pump(150);
+    const bool upBeforeSelect = r.animatic->previewVisible();
+    clickClip(r, 1); // panel 2, in scene 1 - the strip shows scene 2's panels now
+    check(QStringLiteral("(af) selecting a panel (its clip) leaves the preview and puts the playhead on that "
+                         "panel (control: the preview was up)"),
+          upBeforeSelect && !r.animatic->previewVisible()
               && r.timeline->playheadPanelForTest() == 1
-              && r.storyboard->selectedFlatIndexForTest() == 1);
+              && r.storyboard->selectedFlatIndexForTest() == 1,
+          QStringLiteral("up before %1; preview %2, playhead %3, selected %4").arg(upBeforeSelect)
+              .arg(r.animatic->previewVisible()).arg(r.timeline->playheadPanelForTest())
+              .arg(r.storyboard->selectedFlatIndexForTest()));
 
     // ---- the end of the film ------------------------------------------------
     r.animatic->togglePlay();
@@ -5871,8 +5899,9 @@ void runWorkspacePreviewPass(const QString &project)
         stack->setCurrentWidget(r.storyboard);
     pump(500);
 
-    // Undo changes the document, so it goes back to drawing first.
-    r.animatic->scrubForTest(2);
+    // Undo changes the document, so it goes back to drawing first. (The preview paused on
+    // panel 3, as Play then Pause leaves it: since batch I-1b a scrub stays in the workspace.)
+    r.animatic->previewForTest(2);
     pump(150);
     const bool previewUp = r.animatic->previewVisible();
     const int indexBefore = r.window.undoStackForTest()->index();
@@ -5897,14 +5926,14 @@ void runWorkspacePreviewPass(const QString &project)
           barUndo && barRedo);
     if (barUndo && barRedo) {
         const int at = r.window.undoStackForTest()->index();
-        r.animatic->scrubForTest(2);
+        r.animatic->previewForTest(2); // batch I-1b: a scrub no longer opens it
         pump(150);
         const bool upForRedo = r.animatic->previewVisible();
         barRedo->click();
         pump(300);
         const bool redoLeft = !r.animatic->previewVisible()
             && r.window.undoStackForTest()->index() == at + 1;
-        r.animatic->scrubForTest(2);
+        r.animatic->previewForTest(2);
         pump(150);
         const bool upForUndo = r.animatic->previewVisible();
         barUndo->click();
@@ -12263,7 +12292,7 @@ void runCameraRowPass(const QString &scratch)
         auto state = [&](bool *clipNeutral, bool *previewNeutral, QString *warning, QImage *png,
                          const QString &folder) {
             *clipNeutral = shotcam::isNeutral(r.timeline->clipCameraForTest(1), cs);
-            r.animatic->scrubForTest(1);
+            r.animatic->previewForTest(1); // the preview on panel 2 (batch I-1b: not a scrub's now)
             pump(120);
             r.animatic->cameraTickForTest();
             *previewNeutral = r.animatic->previewCameraNeutralForTest();
@@ -12565,7 +12594,7 @@ void runQuickMovePass(const QString &scratch)
         check(QStringLiteral("(qm.4) control: unlocked, the same move is one command"), accepted);
         const bool enabledBefore =
             r.storyboard->cameraBarStateForTest().value(QStringLiteral("camQuickMove.enabled")).toBool();
-        r.animatic->scrubForTest(1);
+        r.animatic->previewForTest(1); // the preview over the canvas (batch I-1b: not a scrub's now)
         pump(150);
         const bool coveredOff =
             !r.storyboard->cameraBarStateForTest().value(QStringLiteral("camQuickMove.enabled")).toBool();
@@ -19518,7 +19547,10 @@ void runGrowAnyZoomPass(const QString &scratch)
         RealPointerDeaf deaf;
         const QPoint notePt = r.surface->mapToGlobal(r.timeline->clipRectForTest(1).center());
         const bool pointOnSurface = QApplication::widgetAt(notePt) == r.surface;
-        r.storyboard->setNotePointForTest(notePt);
+        // BATCH I-1b (2026-11-25): the note is in the one place for notes (the status bar since
+        // round 1), no tooltip at the pointer - so it no longer waits for the pointer's Enter
+        // after a close (GROW-1's AfterNextEnter went with the tooltip), and nothing a pointer
+        // does takes it away.
         r.surface->setAttribute(Qt::WA_UnderMouse, false); // as when a popup closed over it
         auto deliverCloseEvents = [&](const QList<QWidget *> &left) {
             // What Windows sends after a popup closes under the pointer: a Leave for each
@@ -19549,73 +19581,52 @@ void runGrowAnyZoomPass(const QString &scratch)
         QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
         auto *tile = pop ? pop->findChild<QToolButton *>(QStringLiteral("camQuickPanRight")) : nullptr;
         const QString expected = QStringLiteral("The move leaves the art of Panel 2: Grow to fit is on the clip.");
-        bool popShown = false, waitedForEnter = false, upAtOnce = false, upAfter = false;
-        int unheard = -1;
-        QString note;
+        bool popShown = false, upAtOnce = false, upAfter = false, amber = false;
+        int unheard = -1, heardNow = -1, canvasKids = -1;
+        QString note, inBar;
         if (quickBtn && pop && tile) {
-            QToolTip::hideText();
-            pump(400);
+            r.canvas->expireNoteForTest();
             r.storyboard->clearNoteForTest();
             quickBtn->click();
             pump(60);
             popShown = pop->isVisible();
             tile->click(); // closes the popover, then the move says its note
             note = r.storyboard->lastNoteForTest();
-            waitedForEnter = !QToolTip::isVisible();
+            upAtOnce = r.canvas->noteSaidShownForTest() && barNote(r) == expected;
             deliverCloseEvents({tile, pop});
-            pump(60); // the Enter's dispatch is over: the note is up
-            upAtOnce = QToolTip::isVisible() && QToolTip::text() == expected;
+            QCoreApplication::processEvents(); // the close's events dispatched - no waiting
             const int unheardBefore = deaf.unheard();
             pointerSpeaks(); // not heard
             unheard = deaf.unheard() - unheardBefore;
-            pump(440); // 0.5 s after the close's events
-            upAfter = QToolTip::isVisible() && QToolTip::text() == expected;
+            const int heardBefore = deaf.unheard();
+            deaf.setDeaf(false);
+            pointerSpeaks(); // heard: this time they reach the app
+            deaf.setDeaf(true);
+            heardNow = deaf.unheard() - heardBefore;
+            QCoreApplication::processEvents();
+            upAfter = r.canvas->noteSaidShownForTest() && barNote(r) == expected;
+            inBar = barNote(r);
+            amber = barWarns(r);
+            // Nothing over the canvas says it: no shown child of the canvas has the words.
+            canvasKids = 0;
+            for (QWidget *w : r.canvas->findChildren<QWidget *>())
+                if (w->isVisible() && (w->toolTip() == expected || w->property("text").toString() == expected))
+                    ++canvasKids;
         }
-        check(QStringLiteral("(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK: it waits for the pointer's Enter "
-                             "and is still up 0.5 s after the close's Leave events - and the machine's own pointer is "
-                             "not heard (2026-11-23): a Leave and an Enter sent through the window system while the "
-                             "note is up, as a pointer at rest under the closing popover makes them, reach nothing"),
-              pointOnSurface && popShown && !pop->isVisible() && note == expected && waitedForEnter && upAtOnce
-                  && unheard == 2 && upAfter,
-              QStringLiteral("on surface %1; popover shown %2; note '%3'; waited %4; up at once %5; the window "
-                             "system's two events unheard %6; up %7 '%8'")
-                  .arg(pointOnSurface).arg(popShown).arg(note).arg(waitedForEnter).arg(upAtOnce).arg(unheard)
-                  .arg(upAfter).arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+        check(QStringLiteral("(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK (batch I-1b round 1: in the "
+                             "status bar): it is up at once, in amber (the move leaves the art: otherwise than asked), "
+                             "nothing over the canvas, and still up after the close's Leave and Enter events and after "
+                             "the window system's own - unheard (the machine's pointer, 2026-11-23) and heard: nothing a "
+                             "pointer does takes it away"),
+              pointOnSurface && popShown && !pop->isVisible() && note == expected && upAtOnce
+                  && unheard == 2 && heardNow == 0 && upAfter && amber && canvasKids == 0,
+              QStringLiteral("on surface %1; popover shown %2; note '%3'; up at once %4; the window system's two events "
+                             "unheard %5, then heard (unheard %6); up after %7 '%8', amber %9; canvas children saying it %10")
+                  .arg(pointOnSurface).arg(popShown).arg(note).arg(upAtOnce).arg(unheard).arg(heardNow).arg(upAfter)
+                  .arg(inBar).arg(amber).arg(canvasKids));
         r.window.undoActionForTest()->trigger();
         pump(60);
-        // CONTROL (2026-11-23): the same click HEARD, as every run was before the change. The
-        // same two events reach the app and the note goes - what gate H3 read.
-        bool heardShown = false, heardUpAtOnce = false, heardUpAfter = true;
-        int heardUnheard = -1;
-        if (quickBtn && pop && tile) {
-            QToolTip::hideText();
-            pump(400);
-            r.surface->setAttribute(Qt::WA_UnderMouse, false);
-            r.storyboard->clearNoteForTest();
-            quickBtn->click();
-            pump(60);
-            heardShown = pop->isVisible();
-            tile->click();
-            deliverCloseEvents({tile, pop});
-            pump(60);
-            heardUpAtOnce = QToolTip::isVisible() && QToolTip::text() == expected;
-            const int unheardBefore = deaf.unheard();
-            deaf.setDeaf(false);
-            pointerSpeaks(); // heard
-            deaf.setDeaf(true);
-            heardUnheard = deaf.unheard() - unheardBefore;
-            pump(500);
-            heardUpAfter = QToolTip::isVisible();
-            r.window.undoActionForTest()->trigger();
-            pump(60);
-        }
-        check(QStringLiteral("(cx10) control (2026-11-23): the same click heard as before, the check not deaf - the note "
-                             "comes up, the same Leave and Enter from the window system reach the app, and the note is "
-                             "gone 0.5 s later: gate H3's reading (\"up 0\") with the machine's pointer at rest in the "
-                             "middle of the test screen"),
-              heardShown && heardUpAtOnce && heardUnheard == 0 && !heardUpAfter,
-              QStringLiteral("popover shown %1; up at once %2; events unheard %3; up 0.5 s later %4")
-                  .arg(heardShown).arg(heardUpAtOnce).arg(heardUnheard).arg(heardUpAfter));
+        r.canvas->expireNoteForTest();
         // The old order: shown at once, then the close's events - it goes.
         QToolTip::hideText();
         pump(400);
@@ -19633,13 +19644,13 @@ void runGrowAnyZoomPass(const QString &scratch)
         pump(400);
         r.surface->setAttribute(Qt::WA_UnderMouse, false);
         r.storyboard->clearNoteForTest();
-        bool menuMoved = false, menuWaited = false;
+        r.canvas->expireNoteForTest();
+        bool menuMoved = false;
         r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
             for (QMenu *q : m->findChildren<QMenu *>(QStringLiteral("cameraQuickMenu")))
                 if (QAction *act = q->findChild<QAction *>(QStringLiteral("quickPanRight"))) {
                     act->trigger();
                     menuMoved = true;
-                    menuWaited = !QToolTip::isVisible();
                     QEvent leave(QEvent::Leave);
                     QCoreApplication::sendEvent(q, &leave);
                     QCoreApplication::sendEvent(m, &leave);
@@ -19649,19 +19660,18 @@ void runGrowAnyZoomPass(const QString &scratch)
         r.storyboard->setClipMenuHookForTest({});
         const QString menuNote = r.storyboard->lastNoteForTest();
         deliverCloseEvents({});
-        pump(500);
-        check(QStringLiteral("(cx10) THE CLIP MENU'S QUICK MOVE: its note too waits for the Enter after the menu's close, "
-                             "and is up 0.5 s after"),
-              menuMoved && menuWaited && menuNote.contains(QStringLiteral("leaves the art of Panel 2"))
-                  && QToolTip::isVisible() && QToolTip::text() == menuNote,
-              QStringLiteral("moved %1; waited %2; note '%3'; up '%4'").arg(menuMoved).arg(menuWaited).arg(menuNote)
-                  .arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+        QCoreApplication::processEvents();
+        check(QStringLiteral("(cx10) THE CLIP MENU'S QUICK MOVE: its note too is in the status bar after the menu's "
+                             "close and its Leave and Enter events (batch I-1b round 1)"),
+              menuMoved && menuNote.contains(QStringLiteral("leaves the art of Panel 2"))
+                  && r.canvas->noteSaidShownForTest() && barNote(r) == menuNote,
+              QStringLiteral("moved %1; note '%2'; in the bar '%3'").arg(menuMoved).arg(menuNote).arg(barNote(r)));
         if (menuMoved) {
             r.window.undoActionForTest()->trigger();
             pump(60);
         }
         QToolTip::hideText();
-        r.storyboard->setNotePointForTest(QPoint());
+        r.canvas->expireNoteForTest();
         r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ThisPanel);
         pump(400);
     }
@@ -22442,7 +22452,9 @@ void runStageBackgroundDepthPass(const QString &scratch)
     pump(150);
     if (r.animatic->isPlaying())
         r.animatic->togglePlay();
-    r.animatic->scrubToForTest(0, 0);
+    // The playhead to the first frame, the preview kept (batch I-1b: a scrub leaves a paused
+    // preview now, as every scrub stays in the workspace).
+    r.animatic->setPlayheadFrameInPanel(0, 0);
     pump(150);
     QWidget *display = r.animatic->previewDisplayForTest();
     const bool previewUp = r.animatic->previewVisible() && display;
@@ -24259,41 +24271,42 @@ void runContextualCursorsPass(const QString &scratch)
     Layer *locked = p0->activeLayer();
     const QImage before8 = locked ? locked->image : QImage();
     const int steps8 = stack->index();
+    r.canvas->expireNoteForTest();
     pen(B, true);
-    auto *note = static_cast<SankoTipFrame *>(r.storyboard->refusalNoteForTest());
-    const bool noteAtPress = note && note->isVisible();
+    // BATCH I-1b (2026-11-25): the note is in the one place for notes - since round 1 the
+    // status bar, in amber - not just below and to the right of the pen; a refused press draws
+    // nothing, so it is no stroke and the note shows at once (the user's answer 5).
+    const bool noteAtPress = r.canvas->noteSaidShownForTest() && barNote(r) == refusal;
     pen(B + QPointF(30, 0), true);
     pen(B + QPointF(30, 0), false);
     pump(200);
-    const bool noteAfterLift = note && note->isVisible();
-    const QString noteText = note ? note->tipText() : QString();
-    const QPoint notePos = note ? note->pos() : QPoint();
-    const QPoint expected = r.canvas->mapToGlobal(B).toPoint() + QPoint(14, 18);
+    const bool noteAfterLift = r.canvas->noteSaidShownForTest();
+    const QString noteText = barNote(r);
+    const bool amber = barWarns(r);
     const bool nothingChanged = locked && locked->image == before8 && stack->index() == steps8;
     check(QStringLiteral("(cur8) A LOCKED LAYER (G-1, 5; your answer 3): locked with the pen hovering, "
                          "the cursor is \"not allowed\" and the circle goes, the pen not moved; a pen "
-                         "press shows \"%1 is locked\" just below and to the right of it, in the tooltip "
-                         "look, still there after the pen lifts; the press changes nothing (the layer's "
-                         "pixels, the history)").arg(name),
+                         "press shows \"%1 is locked\" in the status bar, in amber (batch I-1b round 1), "
+                         "still there after the pen lifts; the press changes nothing (the layer's pixels, "
+                         "the history)").arg(name),
           circleBefore && lock && lockedKind == QLatin1String("forbidden") && forbidden && circleGone
               && refusal == name + QStringLiteral(" is locked") && noteAtPress && noteAfterLift
-              && noteText == refusal && (notePos - expected).manhattanLength() <= 2 && nothingChanged,
+              && noteText == refusal && amber && nothingChanged,
           QStringLiteral("lock %1; kind %2, forbidden %3, circle gone %4; \"%5\"; note at the press %6, after "
-                         "the lift %7, \"%8\" at (%9, %10) - expected (%11, %12); nothing changed %13")
+                         "the lift %7, \"%8\" in the bar, amber %9; nothing changed %10")
               .arg(lock != nullptr).arg(lockedKind).arg(forbidden).arg(circleGone).arg(refusal).arg(noteAtPress)
-              .arg(noteAfterLift).arg(noteText).arg(notePos.x()).arg(notePos.y()).arg(expected.x())
-              .arg(expected.y()).arg(nothingChanged));
+              .arg(noteAfterLift).arg(noteText).arg(amber).arg(nothingChanged));
     // The mouse: its release takes a QToolTip away - not this note.
+    r.canvas->expireNoteForTest();
     mouseClick(C);
     pump(60);
-    const bool noteAfterMouse = note && note->isVisible()
-        && (note->pos() - (r.canvas->mapToGlobal(C).toPoint() + QPoint(14, 18))).manhattanLength() <= 2;
+    const bool noteAfterMouse = r.canvas->noteSaidShownForTest() && barNote(r) == refusal;
     const bool nothingChangedMouse = locked && locked->image == before8 && stack->index() == steps8;
     QElapsedTimer waited;
     waited.start();
-    while (note && note->isVisible() && waited.elapsed() < 6000)
+    while (r.canvas->noteSaidShownForTest() && waited.elapsed() < 6000)
         pump(50);
-    const bool noteWent = note && !note->isVisible();
+    const bool noteWent = !r.canvas->noteSaidShownForTest();
     check(QStringLiteral("(cur8) a mouse click says it too, and its release does not take the note away; "
                          "the note goes by itself (2.5 s); nothing changed"),
           noteAfterMouse && nothingChangedMouse && noteWent,
@@ -24335,7 +24348,7 @@ void runContextualCursorsPass(const QString &scratch)
     pen(B, true);
     pen(B, false);
     pump(100);
-    const QString hiddenText = note ? note->tipText() : QString();
+    const QString hiddenText = barNote(r); // the status bar (batch I-1b round 1)
     QToolButton *show = rowButton("layerEye");
     if (show)
         show->click();
@@ -24498,13 +24511,38 @@ void runContextualCursorsPass(const QString &scratch)
           mouseHandle && mouseCanvas,
           QStringLiteral("handle %1, canvas shape %2 = the canvas's %3").arg(mouseHandle).arg(shapeMouse)
               .arg(int(r.canvas->cursor().shape())));
-    QWidget *noteWindow = r.storyboard->refusalNoteForTest();
-    const bool noteThrough = noteWindow && noteWindow->windowFlags().testFlag(Qt::WindowTransparentForInput)
-        && noteWindow->windowHandle()
-        && noteWindow->windowHandle()->flags().testFlag(Qt::WindowTransparentForInput);
-    check(QStringLiteral("(cur10) THE NOTE LETS THE PEN THROUGH: its window takes no input (the hand test: it "
-                         "took the pen's moves 14 times, just below and to the right of the pen)"),
-          noteThrough, QStringLiteral("note %1, through %2").arg(noteWindow != nullptr).arg(noteThrough));
+    // Batch I-1b round 1: the note is said in the status bar - outside the canvas, no window of
+    // its own - so it is never under the pen.
+    auto shownWindows = [] {
+        int n = 0;
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (w->isVisible())
+                ++n;
+        return n;
+    };
+    r.canvas->expireNoteForTest(); // no note up before: an earlier one would be counted on both sides
+    pump(100);
+    const int windowsBefore = shownWindows();
+    const QString pointerNote = QStringLiteral("A note while the pen is about.");
+    r.canvas->showNote(pointerNote, DrawingCanvas::kNoteMs, true);
+    pump(300); // a tooltip's roll-in is over by then: a window opened for the note would be shown
+    const int windowsWith = shownWindows();
+    StatusNoteBar *noteBar = r.storyboard->noteBarForTest();
+    const QRect barOnScreen = noteBar ? QRect(noteBar->mapToGlobal(QPoint(0, 0)), noteBar->size()) : QRect();
+    const QRect canvasOnScreen(r.canvas->mapToGlobal(QPoint(0, 0)), r.canvas->size());
+    const QString saidInBar = barNote(r);
+    const bool noteThrough = noteBar && !noteBar->isWindow() && noteBar->isVisible() && saidInBar == pointerNote
+        && !barOnScreen.intersects(canvasOnScreen) && windowsWith == windowsBefore;
+    r.canvas->expireNoteForTest();
+    check(QStringLiteral("(cur10) THE NOTE IS NEVER UNDER THE PEN: a note said is in the status bar (batch I-1b "
+                         "round 1) - outside the canvas, and no window opens for it (the hand test of batch G: as a "
+                         "window just below and to the right of the pen it took the pen's moves 14 times)"),
+          noteThrough,
+          QStringLiteral("bar %1 (a window %2), says '%3'; bar %4,%5 %6x%7, canvas %8,%9 %10x%11; shown windows %12 -> %13")
+              .arg(noteBar != nullptr).arg(noteBar && noteBar->isWindow()).arg(saidInBar)
+              .arg(barOnScreen.x()).arg(barOnScreen.y()).arg(barOnScreen.width()).arg(barOnScreen.height())
+              .arg(canvasOnScreen.x()).arg(canvasOnScreen.y()).arg(canvasOnScreen.width()).arg(canvasOnScreen.height())
+              .arg(windowsBefore).arg(windowsWith));
 
     // --- (cur11) a pick's pointer: the dropper alone, and steady (hand test H, 2026-11-22) --------
     // The user's point 3: with the Brush and the Colors panel open, while a pick waited the dropper
@@ -27085,28 +27123,40 @@ void runSceneLockPass(const QString &scratch)
         const bool barShown = bar && bar->isVisible();
         const QRectF barRect = bar ? QRectF(QPointF(c.canvas->mapFromGlobal(bar->mapToGlobal(QPoint(0, 0)))), QSizeF(bar->size()))
                                    : QRectF();
-        const QRectF chipRect = c.canvas->drawingViewChipRectForTest();
         const QString chipText = c.canvas->drawingViewChipForTest();
-        const QRectF where(chipRect.left(), c.canvas->height() - 36.0, chipRect.width(), 24.0); // its place before
-        check(QStringLiteral("(sl12) THE DRAWING-VIEW CHIP CLEARS THE MOVE TOOL'S MODE BAR: with the Move tool on, the "
-                             "chip sits 8 px above the bar instead of under it"),
-              moveTool && barShown && !chipText.isEmpty() && !chipRect.intersects(barRect)
-                  && qAbs(chipRect.bottom() - (barRect.top() - 8.0)) < 0.5,
-              QStringLiteral("bar shown %1 at %2,%3 %4x%5; chip '%6' at %7,%8 %9x%10").arg(barShown).arg(barRect.left())
-                  .arg(barRect.top()).arg(barRect.width()).arg(barRect.height()).arg(chipText).arg(chipRect.left())
-                  .arg(chipRect.top()).arg(chipRect.width()).arg(chipRect.height()));
+        const QFontMetricsF chipFm(c.canvas->font());
+        const double chipW = qCeil(chipFm.horizontalAdvance(chipText) + 20.0);
+        const QRectF where((c.canvas->width() - chipW) / 2.0, c.canvas->height() - 36.0, chipW, 24.0); // before F1
+        // BATCH I-1b round 1 (2026-11-25): "Drawing view - ..." is said in the status bar - below
+        // the canvas, where no floating bar goes (it was kept 8 px above the mode bar since batch
+        // F1, then at the top centre of the canvas).
+        StatusNoteBar *noteBar = c.storyboard->noteBarForTest();
+        auto onCanvas = [&](QWidget *w) {
+            return w ? QRectF(QPointF(c.canvas->mapFromGlobal(w->mapToGlobal(QPoint(0, 0)))), QSizeF(w->size())) : QRectF();
+        };
+        const QRectF noteRect = onCanvas(noteBar);
+        const QString inBar = barNote(c);
+        check(QStringLiteral("(sl12) THE DRAWING-VIEW NOTE CLEARS THE MOVE TOOL'S MODE BAR: with the Move tool on, "
+                             "\"Drawing view - ...\" is said in the status bar (batch I-1b round 1) - below the canvas, "
+                             "clear of the bar"),
+              moveTool && barShown && !chipText.isEmpty() && inBar == chipText && noteRect.top() >= c.canvas->height()
+                  && !noteRect.intersects(barRect),
+              QStringLiteral("bar shown %1 at %2,%3 %4x%5; note '%6' (the bar says '%7') at %8,%9 %10x%11 below a %12 px "
+                             "canvas").arg(barShown).arg(barRect.left()).arg(barRect.top()).arg(barRect.width())
+                  .arg(barRect.height()).arg(chipText, inBar).arg(noteRect.left()).arg(noteRect.top())
+                  .arg(noteRect.width()).arg(noteRect.height()).arg(c.canvas->height()));
         auto *brushTool = c.window.findChild<QPushButton *>(QStringLiteral("toolBrush"));
         if (brushTool)
             brushTool->click();
         pump(200);
-        const QRectF brushChip = c.canvas->drawingViewChipRectForTest();
-        check(QStringLiteral("(sl12) control: where it used to be, the bar covers it; with the Brush (no bar) it is back "
-                             "at its place, 36 px from the canvas's bottom"),
-              where.intersects(barRect) && bar && !bar->isVisible()
-                  && qAbs(brushChip.top() - (c.canvas->height() - 36.0)) < 0.5,
-              QStringLiteral("old place %1,%2 meets the bar %3; bar now shown %4; Brush chip top %5 (canvas %6)")
+        const QString brushNote = barNote(c);
+        check(QStringLiteral("(sl12) control: where it was before batch F1, the bar covers it; with the Brush (no mode "
+                             "bar) the same note is in the status bar"),
+              where.intersects(barRect) && bar && !bar->isVisible() && !brushNote.isEmpty()
+                  && brushNote == c.canvas->drawingViewChipForTest() && brushNote.startsWith(QLatin1String("Drawing view")),
+              QStringLiteral("old place %1,%2 meets the bar %3; bar now shown %4; the Brush's note '%5'")
                   .arg(where.left()).arg(where.top()).arg(where.intersects(barRect)).arg(bar && bar->isVisible())
-                  .arg(brushChip.top()).arg(c.canvas->height()));
+                  .arg(brushNote));
         c.window.markCleanForTest();
     }
 }
@@ -28717,38 +28767,42 @@ void runDrawingOverlaysPass(const QString &scratch)
         tick(DrawingCanvas::OverlayDepthNote, false); // the note off, the outline still ticked
         const QImage moveNoNote = picture();
         const bool outlineWithoutNote = r.canvas->depthOutlinePaintedForTest()
-            && r.canvas->drawingViewChipForTest().isEmpty();
+            && r.canvas->drawingViewChipForTest().isEmpty() && barNote(r).isEmpty();
         tick(DrawingCanvas::OverlayDepthNote, true);
         tick(DrawingCanvas::OverlayDepthOutline, false);
         const int moveBack = differing(moveDefault, picture());
+        // BATCH I-1b round 1: the note is said in the status bar - the canvas's picture does not
+        // change with it (it lost the chip's pixels when the note went, before).
         check(QStringLiteral("(do6) control: VIEW > DRAWING OVERLAYS > DEPTH OUTLINE ticked brings them back - the "
-                             "dashed box where the shot puts the layer, drawn (the picture differs), and the chip "
-                             "names it; with Depth Note unticked as well the outline is still drawn, without the "
-                             "chip; both as they were again, the picture is the first one's, pixel for pixel"),
+                             "dashed box where the shot puts the layer, drawn (the picture differs), and the note "
+                             "names it; with Depth Note unticked as well the outline is still drawn, and the status "
+                             "bar says nothing (the canvas's picture the same: the note is not on it, batch I-1b "
+                             "round 1); both as they were again, the picture is the first one's, pixel for pixel"),
               sameQuad(outlineTicked, expected) && paintedTicked && chipTicked == dashedChip && outlinePixels > 50
-                  && outlineWithoutNote && differing(moveOutlined, moveNoNote) > 0 && moveBack == 0,
-              QStringLiteral("outline %1 corners, where the shot puts it %2, painted %3; chip '%4'; px differing %5; "
-                             "outline without the note %6; back to the first picture: %7 px differ")
+                  && outlineWithoutNote && differing(moveOutlined, moveNoNote) == 0 && moveBack == 0,
+              QStringLiteral("outline %1 corners, where the shot puts it %2, painted %3; note '%4'; px differing %5; "
+                             "outline without the note %6 (px differing %7); back to the first picture: %8 px differ")
                   .arg(outlineTicked.size()).arg(sameQuad(outlineTicked, expected)).arg(paintedTicked).arg(chipTicked)
-                  .arg(outlinePixels).arg(outlineWithoutNote).arg(moveBack));
-        // The Depth Note: the chip, and nothing else.
+                  .arg(outlinePixels).arg(outlineWithoutNote).arg(differing(moveOutlined, moveNoNote)).arg(moveBack));
+        // The Depth Note: the status bar's words, and nothing on the canvas.
         r.canvas->setTool(DrawingCanvas::Brush);
         pump(100);
-        const QRect chipRect = r.canvas->drawingViewChipRectForTest().toAlignedRect().adjusted(-2, -2, 2, 2);
         const QString noteOn = r.canvas->drawingViewChipForTest();
+        const QString barOn = barNote(r);
         const QImage noted = picture();
         tick(DrawingCanvas::OverlayDepthNote, false);
         const QString noteOff = r.canvas->drawingViewChipForTest();
+        const QString barOff = barNote(r);
         const QImage unnoted = picture();
         tick(DrawingCanvas::OverlayDepthNote, true);
-        const int inChip = differingIn(noted, unnoted, chipRect);
-        const int outsideChip = differing(noted, unnoted) - inChip;
-        check(QStringLiteral("(do6) THE DEPTH NOTE STAYS (Depth Note ticked): with the Brush on that panel the chip "
-                             "reads \"Drawing view · depth shows with the Camera tool\"; control: unticked, there "
-                             "is no chip - the two pictures differ inside the chip's rect and nowhere else"),
-              noteOn == plainChip && noteOff.isEmpty() && inChip > 100 && outsideChip == 0,
-              QStringLiteral("ticked '%1'; unticked '%2'; px differing in the chip %3, elsewhere %4").arg(noteOn)
-                  .arg(noteOff).arg(inChip).arg(outsideChip));
+        const int anywhere = differing(noted, unnoted);
+        check(QStringLiteral("(do6) THE DEPTH NOTE STAYS (Depth Note ticked): with the Brush on that panel the status "
+                             "bar says \"Drawing view · depth shows with the Camera tool\" (batch I-1b round 1); "
+                             "control: unticked, the bar says nothing - and the canvas's picture is the same ticked or "
+                             "not, pixel for pixel: nothing is drawn over the art"),
+              noteOn == plainChip && barOn == plainChip && noteOff.isEmpty() && barOff.isEmpty() && anywhere == 0,
+              QStringLiteral("ticked '%1' (the bar '%2'); unticked '%3' (the bar '%4'); px differing %5").arg(noteOn)
+                  .arg(barOn).arg(noteOff).arg(barOff).arg(anywhere));
 
         // --- (do7) the ticks are remembered: set here, read by the next launch on another project ---
         tick(DrawingCanvas::OverlayDepthOutline, true);
@@ -30854,6 +30908,9 @@ void runTrialFixesPass(const QString &scratch)
         QToolTip::hideText();
         pump(350);
         qApp->installEventFilter(&tips);
+        // Batch I-1b: the scrub below selects the panels it crosses (it used to preview them), so
+        // the selection is put back at the end, as the old preview's close left it.
+        const int selectedBeforeScrub = r.storyboard->selectedFlatIndexForTest();
         const QPointF press(r.timeline->clipRectForTest(0).left() + 24, 4); // the ruler
         const QRegularExpression timecode(QStringLiteral("^\\d\\d:\\d\\d:\\d\\d:\\d\\d$"));
         sendMouse(r.surface, QEvent::MouseButtonPress, press, Qt::LeftButton);
@@ -30911,6 +30968,8 @@ void runTrialFixesPass(const QString &scratch)
         QApplication::setEffectEnabled(Qt::UI_General, general);
         r.animatic->leavePreview();
         pump(120);
+        if (selectedBeforeScrub >= 0 && r.storyboard->selectedFlatIndexForTest() != selectedBeforeScrub)
+            clickClip(r, selectedBeforeScrub);
     }
 
     // --- (ta5) Delete Layer asks nothing, and is one undo step -----------------------------
@@ -33853,16 +33912,28 @@ void runCameraToolPass(const QString &scratch)
                              "key frame"),
               offChip.contains(soft) && !offChip.contains(QStringLiteral("key at")),
               offChip);
-        // Control: the Brush tool's scrub still previews.
+        // Batch I-1b (the user's note 1): the Brush tool's scrub stays on the canvas too; only
+        // Play opens the preview. (Until then: "with the Brush tool the same ruler drag opens
+        // the preview, as before".)
         brushBtn->setChecked(true);
         pump(100);
         rulerDrag(2, 10);
-        const bool brushPreviews = r.animatic->previewVisible();
+        const bool brushOnCanvas = !r.animatic->previewVisible()
+            && r.storyboard->selectedFlatIndexForTest() == 2 && r.animatic->playheadFrameInPanel() == 10;
+        r.animatic->togglePlay();
+        pump(150);
+        const bool playPreviews = r.animatic->previewVisible();
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
         r.animatic->leavePreview();
         pump(50);
-        check(QStringLiteral("(ct) scrub control: with the Brush tool the same ruler "
-                             "drag opens the preview, as before"),
-              brushPreviews);
+        check(QStringLiteral("(ct) scrub control (batch I-1b, your note 1): with the Brush tool the same ruler "
+                             "drag stays on the canvas too - panel 3 selected at frame 10 - and Play opens the "
+                             "preview"),
+              brushOnCanvas && playPreviews,
+              QStringLiteral("on the canvas %1 (preview %2, sel %3, frame %4); Play previews %5").arg(brushOnCanvas)
+                  .arg(r.animatic->previewVisible()).arg(r.storyboard->selectedFlatIndexForTest())
+                  .arg(r.animatic->playheadFrameInPanel()).arg(playPreviews));
     }
 
     rig.reset(); // the window closes; the guide setting stays
@@ -36126,7 +36197,7 @@ void runLayerMotionPass(const QString &scratch)
             r.animatic->togglePlay();
         QWidget *display = r.animatic->previewDisplayForTest();
         auto boatInPreview = [&](int frame, double *at) {
-            r.animatic->scrubToForTest(0, frame);
+            r.animatic->setPlayheadFrameInPanel(0, frame); // the preview kept (batch I-1b: a scrub leaves it)
             pump(150);
             *at = r.animatic->previewAtForTest();
             const QRect pic = r.animatic->previewPictureRectForTest();
@@ -36296,6 +36367,802 @@ void runLayerMotionPass(const QString &scratch)
               QStringLiteral("saved %1, row %2, version %3").arg(ok).arg(p.timeline->layerRowShown()).arg(version));
         p.window.markCleanForTest();
     }
+}
+
+// ---- BATCH I-1b, ROUND 1 (2026-11-25; Figma I-1b 701:755, approved with the user's six answers) -----
+// (ns) one place for every note - the status bar, the user's change after hand test I1b-1 (note 2,
+// answer 1); (nh) the bar's words stay while you draw (note 6, answer 5, and the same change); (sc) a
+// scrub stays in the workspace (note 1, answer 6); (mb) the Move bar on an animated
+// layer (note 3, answer 2); (dk) the diamond's click makes a key (note 4, answer 3); (tp) panning the
+// timeline (note 8). On the layer-motion fixture: panel 1 holds Ground (still) and Boat (animated),
+// panel 2 the Gull (animated); 24 frames each at 24 fps.
+void runI1bPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lmui;
+    using camtool::mouse;
+    using camtool::drag;
+    out() << "--- (nb) batch I-1b: the note in the status bar, its words while drawing, the scrub, the Move bar, the "
+             "diamond's key, panning the timeline ---" << Qt::endl;
+    const QString project = writeMotionProject(scratch + QStringLiteral("/i1b"), true);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    auto *moveBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolMove")) : nullptr;
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    auto *cameraBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolCamera")) : nullptr;
+    QWidget *moveBar = r.ok ? r.storyboard->moveModToolbarForTest() : nullptr;
+    if (!r.ok || !scene || scene->panels.size() != 2 || !stack || !moveBtn || !brushBtn || !cameraBtn
+        || !moveBar || scene->panels.at(0)->layers.size() != 3 || scene->panels.at(0)->layers.at(2).keys.size() != 2) {
+        check(QStringLiteral("(nb) the I-1b fixture opens, with the Move, Brush and Camera tools and the Move bar"),
+              false);
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scene->panels.at(0);
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(2); // the Boat
+    r.animatic->setPlayheadFrameInPanel(0, 0);
+    pump(200);
+
+    // (ns1) THE NOTE IN THE STATUS BAR (the user's change after hand test I1b-1, 2026-11-25): the Move tool's note on
+    // the animated Boat is said in the bottom bar, between Import Image and the recovery copy's word - grey, centred, a
+    // separator either side - and nothing is painted over the canvas where the chips were.
+    StatusNoteBar *noteBar = r.storyboard->noteBarForTest();
+    QWidget *importBtn = r.storyboard->importButtonForTest();
+    QWidget *recoveryWord = r.storyboard->recoveryStatusLabelForTest();
+    auto onScreen = [](QWidget *w) { return w ? QRect(w->mapToGlobal(QPoint(0, 0)), w->size()) : QRect(); };
+    // The chips' fill (#161616, a 24 px high rounded box) in the canvas's top third - where the slot was, wherever a
+    // floating window moved it - counted in the canvas's own picture (the floating windows are not in it).
+    auto chipFillAtTop = [&](const QImage &img) {
+        int n = 0;
+        for (int y = 0; y < qMin(img.height(), r.canvas->height() / 3); ++y)
+            for (int x = 0; x < img.width(); ++x)
+                if ((img.pixel(x, y) & 0xffffff) == 0x161616)
+                    ++n;
+        return n;
+    };
+    if (!noteBar || !importBtn || !recoveryWord) {
+        check(QStringLiteral("(ns) the status bar's note, Import Image and the recovery copy's word are there"), false);
+        r.window.markCleanForTest();
+        return;
+    }
+    {
+        moveBtn->click();
+        pump(150);
+        r.canvas->expireNoteForTest();
+        pump(60);
+        const QString said = barNote(r);
+        const QRect bar = onScreen(noteBar), import = onScreen(importBtn), recovery = onScreen(recoveryWord);
+        const QRect canvas = onScreen(r.canvas);
+        const QRect text = noteBar->textRect();
+        const QRect sepL = noteBar->separatorRect(0), sepR = noteBar->separatorRect(1);
+        const bool between = bar.left() >= import.right() && bar.right() <= recovery.left()
+            && bar.top() >= canvas.bottom();
+        const bool centredText = qAbs(text.center().x() - noteBar->width() / 2.0) <= 1.0;
+        const bool separators = sepL.isValid() && sepR.isValid() && sepL.right() < text.left()
+            && sepR.left() > text.right() && sepL.height() == StatusNoteBar::kSeparatorHeight
+            && text.left() - sepL.right() - 1 == StatusNoteBar::kSeparatorGap
+            && sepR.left() - text.right() - 1 == StatusNoteBar::kSeparatorGap;
+        const bool grey = !noteBar->warning() && noteBar->textColor() == QColor(0x99, 0x99, 0x99);
+        const QImage canvasPicture = r.canvas->grab().toImage();
+        const int chipPx = chipFillAtTop(canvasPicture);
+        check(QStringLiteral("(ns1) THE NOTE IN THE STATUS BAR (your change after hand test I1b-1): the Move tool's note "
+                             "on the animated Boat is said in the bottom bar, between Import Image and the recovery "
+                             "copy's word, below the canvas - grey, centred in the space, a separator either side - and "
+                             "no chip is painted at the top of the canvas"),
+              !said.isEmpty() && said == r.canvas->poseChipForTest() && grey && between && centredText && separators
+                  && chipPx == 0,
+              QStringLiteral("'%1' (grey %2); bar %3,%4 %5x%6 between Import Image's right %7 and the word's left %8, "
+                             "canvas bottom %9: %10; text centred %11, separators %12; chip fill px at the top %13")
+                  .arg(said).arg(grey).arg(bar.x()).arg(bar.y()).arg(bar.width()).arg(bar.height()).arg(import.right())
+                  .arg(recovery.left()).arg(canvas.bottom()).arg(between).arg(centredText).arg(separators).arg(chipPx));
+        // The count finds a chip when there is one: the old slot's chip drawn into the same picture.
+        QImage withChip = canvasPicture.convertToFormat(QImage::Format_ARGB32);
+        {
+            QPainter p(&withChip);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+            p.setBrush(QColor(0x16, 0x16, 0x16));
+            p.drawRoundedRect(QRectF((r.canvas->width() - 240) / 2.0, 12.0, 240.0, 24.0), 6, 6);
+        }
+        check(QStringLiteral("(ns1) control: the old slot's chip (240 x 24 at the top centre) drawn into the same "
+                             "picture is counted"),
+              chipFillAtTop(withChip) > 3000, QStringLiteral("%1 px").arg(chipFillAtTop(withChip)));
+    }
+
+    // (ns2) THE CAMERA TOOL'S NOTE: in the bar too, and live - while the frame's corner is dragged in, the zoom the bar
+    // names changes before the release (the user's rule: the Move and Camera notes may update while dragging). This
+    // fixture's frame is past the sharp limit already at rest ("Soft 1.00x").
+    {
+        cameraBtn->click();
+        pump(150);
+        const QString chip = r.canvas->shotCameraChipForTest();
+        const QString said = barNote(r);
+        const int steps = stack->index();
+        const QPolygonF q = r.canvas->shotCameraQuadForTest();
+        const QVector<QPointF> handles = r.canvas->shotCameraHandlesForTest();
+        QString during, soft;
+        bool held = true;
+        if (q.size() == 4 && !handles.isEmpty()) {
+            const QPointF h0 = handles.at(0);
+            const QPointF c = (q.at(0) + q.at(2)) / 2.0;
+            sendMouse(r.canvas, QEvent::MouseButtonPress, h0, Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseMove, h0 + (c - h0) * 0.15, Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseMove, h0 + (c - h0) * 0.3, Qt::LeftButton);
+            pump(80); // a paint, then the bar
+            during = barNote(r);
+            soft = r.canvas->shotCameraChipForTest();
+            held = r.canvas->notesHeldForTest();
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, h0 + (c - h0) * 0.3, Qt::LeftButton);
+            pump(100);
+        }
+        const bool keyed = stack->index() == steps + 1;
+        if (keyed)
+            stack->undo();
+        pump(100);
+        const QString restZoom = QStringLiteral("Soft 1.00") + QChar(0x00D7);
+        check(QStringLiteral("(ns2) THE CAMERA TOOL'S NOTE is in the status bar too, and follows a drag: with a corner "
+                             "pulled in, the bar names the new zoom while the mouse is still down (a camera drag holds "
+                             "nothing); control: at rest it named 1.00"),
+              !chip.isEmpty() && said == chip && said.endsWith(restZoom) && !held && during.contains(QLatin1String("Soft"))
+                  && !during.endsWith(restZoom) && during == soft && keyed,
+              QStringLiteral("before '%1' (the bar '%2'); during the drag '%3' (the chip '%4'), held %5; keyed %6")
+                  .arg(chip, said, during, soft).arg(held).arg(keyed));
+    }
+
+    // (ns3) A SAID NOTE, made away from the canvas (answer 1): the timeline's refusal is said in the same place, in
+    // amber, in the tool's note's place while it is up.
+    {
+        moveBtn->click();
+        pump(150);
+        r.canvas->expireNoteForTest();
+        const QString chip = barNote(r); // the Move tool's, on the Boat
+        QToolButton *lockShots = r.timeline->trackControlForTest(QStringLiteral("trackLockShots"));
+        if (lockShots)
+            lockShots->click();
+        pump(80);
+        r.timeline->clearRefusalForTest();
+        const QRect clip = r.timeline->clipRectForTest(0);
+        const QPointF edge(clip.right(), clip.center().y());
+        mouse(r.surface, QEvent::MouseButtonPress, edge, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, edge, Qt::LeftButton, Qt::NoButton);
+        pump(60);
+        const QString refusal = r.timeline->lastRefusalForTest();
+        const QString shown = barNote(r);
+        const bool amber = barWarns(r) && noteBar->textColor() == QColor(0xf5, 0xa6, 0x23);
+        const bool said = r.canvas->noteSaidShownForTest();
+        if (lockShots)
+            lockShots->click();
+        pump(60);
+        r.canvas->expireNoteForTest();
+        const QString back = barNote(r);
+        const bool greyBack = !barWarns(r);
+        check(QStringLiteral("(ns3) NOTES MADE AWAY FROM THE CANVAS (your answer 1): the SHOTS lock's refusal on the "
+                             "timeline is said in the status bar, in amber, in the Move tool's note's place while up"),
+              refusal == QLatin1String("SHOTS track is locked") && said && shown == refusal && amber,
+              QStringLiteral("refusal '%1'; the bar '%2' (said %3, amber %4)").arg(refusal, shown).arg(said).arg(amber));
+        check(QStringLiteral("(ns3) control: its time up, the bar says the Move tool's note again, in grey"),
+              !chip.isEmpty() && back == chip && greyBack, QStringLiteral("'%1' -> '%2' (grey %3)").arg(chip, back)
+                                                               .arg(greyBack));
+    }
+
+    // (ns4) WITH THE PREVIEW UP: a note said is in the status bar - the preview covers the canvas only, never the bar -
+    // and the canvas gets no label of its own over the preview.
+    {
+        r.animatic->previewForTest(0);
+        pump(150);
+        QWidget *display = r.animatic->previewDisplayForTest();
+        auto shownKids = [&] {
+            int n = 0;
+            for (QWidget *w : r.canvas->findChildren<QWidget *>())
+                if (w->isVisible())
+                    ++n;
+            return n;
+        };
+        const int kidsBefore = shownKids();
+        r.canvas->showNote(QStringLiteral("A note with the preview up."));
+        pump(60);
+        const QString said = barNote(r);
+        const QRect shownAt = display ? QRect(display->mapToGlobal(QPoint(0, 0)), display->size()) : QRect();
+        const bool previewUp = display && display->isVisible();
+        const bool barClear = previewUp && noteBar->isVisible() && !shownAt.intersects(onScreen(noteBar));
+        const int kidsWith = shownKids();
+        r.canvas->expireNoteForTest();
+        r.animatic->leavePreview();
+        pump(100);
+        check(QStringLiteral("(ns4) WITH THE PREVIEW UP: a note said is in the status bar, which the preview does not "
+                             "cover; the canvas makes no label of its own for it"),
+              said == QLatin1String("A note with the preview up.") && barClear && kidsWith == kidsBefore,
+              QStringLiteral("the bar '%1'; preview shown %2, clear of the bar %3; the canvas's children %4 -> %5")
+                  .arg(said).arg(previewUp).arg(barClear).arg(kidsBefore).arg(kidsWith));
+    }
+
+    // (ns5) TOO LONG FOR THE SPACE: it ends with "..." and its tooltip says it whole; "Saving...", "Saved" and
+    // "Recovery copy saved" keep their place at the right.
+    {
+        const QString wordWas = r.storyboard->recoveryStatusForTest();
+        r.storyboard->setRecoveryStatus(QStringLiteral("Recovery copy saved 13:53"));
+        pump(60);
+        const QRect wordBefore = onScreen(recoveryWord);
+        QString longNote = QStringLiteral("A long note:");
+        while (QFontMetrics(noteBar->font()).horizontalAdvance(longNote) < noteBar->width() * 2)
+            longNote += QStringLiteral(" the words go on");
+        r.canvas->showNote(longNote, DrawingCanvas::kNoteMs, true);
+        pump(60);
+        const QString shownLong = noteBar->shownText();
+        const QString tipLong = noteBar->toolTip();
+        const QRect wordWithLong = onScreen(recoveryWord);
+        const bool fits = noteBar->textRect().width() <= noteBar->width() - 2 * (1 + StatusNoteBar::kSeparatorGap);
+        r.storyboard->setRecoveryStatus(QStringLiteral("Saving") + QChar(0x2026), true);
+        pump(60);
+        const QRect saving = onScreen(recoveryWord);
+        const int noteRightSaving = onScreen(noteBar).right();
+        const bool savingRight = saving.left() >= noteRightSaving && qAbs(saving.right() - wordBefore.right()) <= 1;
+        r.storyboard->setRecoveryStatus(QStringLiteral("Saved 13:54"));
+        pump(60);
+        const QRect saved = onScreen(recoveryWord);
+        const int noteRightSaved = onScreen(noteBar).right();
+        const bool savedRight = saved.left() >= noteRightSaved && qAbs(saved.right() - wordBefore.right()) <= 1;
+        r.canvas->expireNoteForTest();
+        r.canvas->showNote(QStringLiteral("A short note."));
+        pump(60);
+        const QString shownShort = noteBar->shownText();
+        const QString tipShort = noteBar->toolTip();
+        r.canvas->expireNoteForTest();
+        r.storyboard->setRecoveryStatus(wordWas);
+        pump(60);
+        check(QStringLiteral("(ns5) TOO LONG FOR THE SPACE: a note longer than the bar's space ends with \"...\" and "
+                             "fits; its tooltip says it whole; the recovery copy's word stays where it was, and "
+                             "\"Saving...\" and \"Saved\" are at the right too"),
+              shownLong.endsWith(QChar(0x2026)) && shownLong.size() < longNote.size() && fits && tipLong == longNote
+                  && wordWithLong == wordBefore && savingRight && savedRight,
+              QStringLiteral("shown '%1' (%2 of %3 characters), fits %4; tooltip whole %5; the word at %6 -> %7; "
+                             "Saving at %8..%9 (the note's right %10), Saved at %11..%12 (the note's right %13)")
+                  .arg(shownLong.right(24)).arg(shownLong.size()).arg(longNote.size()).arg(fits)
+                  .arg(tipLong == longNote).arg(wordBefore.left()).arg(wordWithLong.left()).arg(saving.left())
+                  .arg(saving.right()).arg(noteRightSaving).arg(saved.left()).arg(saved.right()).arg(noteRightSaved));
+        check(QStringLiteral("(ns5) control: a short note is shown whole, with no tooltip"),
+              shownShort == QLatin1String("A short note.") && tipShort.isEmpty(),
+              QStringLiteral("'%1', tooltip '%2'").arg(shownShort, tipShort));
+    }
+
+    // (ns6) NOTHING OVER THE ART: a refusal said changes the status bar's pixels - amber words - and not one of the
+    // canvas's; control: a note that tells is grey.
+    {
+        r.canvas->expireNoteForTest();
+        pump(60);
+        auto amberPx = [](const QImage &img) {
+            int n = 0;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    const QColor c(img.pixel(x, y));
+                    if (c.red() > 150 && c.red() - c.blue() > 90 && c.green() > 80) // #f5a623 and its edges
+                        ++n;
+                }
+            return n;
+        };
+        const QImage canvasBefore = r.canvas->grab().toImage();
+        r.canvas->showNote(QStringLiteral("Ground is locked"), DrawingCanvas::kNoteMs, true);
+        pump(80);
+        const QImage canvasWith = r.canvas->grab().toImage();
+        const int barAmber = amberPx(noteBar->grab().toImage());
+        r.canvas->expireNoteForTest();
+        r.canvas->showNote(QStringLiteral("Camera key marked at 00:00:01:00"));
+        pump(80);
+        const int greyAmber = amberPx(noteBar->grab().toImage());
+        const bool greyWords = !noteBar->warning() && noteBar->text().startsWith(QLatin1String("Camera key"));
+        r.canvas->expireNoteForTest();
+        pump(60);
+        int canvasDiffer = 0;
+        if (canvasBefore.size() == canvasWith.size())
+            for (int y = 0; y < canvasBefore.height(); ++y)
+                for (int x = 0; x < canvasBefore.width(); ++x)
+                    canvasDiffer += canvasBefore.pixel(x, y) != canvasWith.pixel(x, y) ? 1 : 0;
+        else
+            canvasDiffer = -1;
+        check(QStringLiteral("(ns6) NOTHING OVER THE ART: a refusal said (\"Ground is locked\") puts amber words in the "
+                             "status bar and changes not one pixel of the canvas"),
+              barAmber > 20 && canvasDiffer == 0,
+              QStringLiteral("amber px in the bar %1; canvas px differing %2").arg(barAmber).arg(canvasDiffer));
+        check(QStringLiteral("(ns6) control: a note that tells (\"Camera key marked at ...\") is grey - no amber in the bar"),
+              greyWords && greyAmber == 0, QStringLiteral("grey %1, amber px %2").arg(greyWords).arg(greyAmber));
+    }
+
+    // (nh1) THE WORDS STAY WHILE YOU DRAW (your change after I1b-1: "While the pen is down, the bar's text doesn't
+    // change; it updates when I lift"): a Brush stroke on the Ground with the mouse.
+    {
+        brushBtn->click();
+        pump(100);
+        r.storyboard->layerRowClickedForTest(1); // the Ground: a still layer the Brush draws on
+        pump(100);
+        r.canvas->expireNoteForTest();
+        const QString chipBefore = barNote(r); // "Drawing view - ..."
+        const QString first = QStringLiteral("A note up before the stroke.");
+        r.canvas->showNote(first);
+        const bool upBefore = barNote(r) == first;
+        const QPointF at = r.canvas->viewTransformForTest().map(QPointF(480, 440));
+        const int steps = stack->index();
+        sendMouse(r.canvas, QEvent::MouseButtonPress, at, Qt::LeftButton);
+        const bool heldAtPress = r.canvas->notesHeldForTest() && barNote(r) == first;
+        r.canvas->showNote(QStringLiteral("Said during the stroke."));
+        const bool waits = barNote(r) == first
+            && r.canvas->notePendingForTest() == QLatin1String("Said during the stroke.");
+        r.canvas->expireNoteForTest(); // the first's time is up while the stroke goes on
+        sendMouse(r.canvas, QEvent::MouseMove, at + QPointF(40, 0), Qt::LeftButton);
+        pump(60); // the stroke's paints: the bar must not follow them
+        const bool unchanged = barNote(r) == first && r.canvas->notesHeldForTest();
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, at + QPointF(40, 0), Qt::LeftButton);
+        pump(250);
+        const QString atRelease = barNote(r);
+        const bool released = !r.canvas->notesHeldForTest() && atRelease == QLatin1String("Said during the stroke.");
+        const bool drew = stack->index() == steps + 1;
+        check(QStringLiteral("(nh1) THE WORDS STAY WHILE YOU DRAW (your change after I1b-1): with the Brush on the "
+                             "Ground, the note up when the mouse presses stays in the bar while the stroke goes on - a "
+                             "note said meanwhile waits, the first's time running out changes nothing; at the release "
+                             "the bar is brought up to date (the waiting note); the stroke drew"),
+              chipBefore.startsWith(QLatin1String("Drawing view")) && upBefore && heldAtPress && waits && unchanged
+                  && released && drew,
+              QStringLiteral("before '%1'; up %2; held at the press %3; waits %4; unchanged %5; at the release '%6' (%7); "
+                             "drew %8").arg(chipBefore).arg(upBefore).arg(heldAtPress).arg(waits).arg(unchanged)
+                  .arg(atRelease).arg(released).arg(drew));
+        if (drew)
+            stack->undo();
+        pump(150);
+        r.canvas->expireNoteForTest();
+        r.canvas->showNote(QStringLiteral("Said during the stroke."));
+        const bool atOnce = barNote(r) == QLatin1String("Said during the stroke.");
+        r.canvas->expireNoteForTest();
+        const bool backAtOnce = barNote(r) == chipBefore;
+        check(QStringLiteral("(nh1) control: with no stroke under way a note said shows at once, and its time up the "
+                             "tool's note is back at once"),
+              atOnce && backAtOnce, QStringLiteral("at once %1, back %2 '%3'").arg(atOnce).arg(backAtOnce)
+                                        .arg(barNote(r)));
+    }
+
+    // (nh2) THE PEN TOO: a pen press through the window system takes the notes away until the pen lifts.
+    {
+        constexpr qint64 kPen = 7041;
+        r.storyboard->setPointerDeviceForTest(kPen);
+        auto penAt = [&](const QPointF &onCanvas, Qt::MouseButtons buttons, qreal pressure) {
+            QWindow *target = r.canvas->window()->windowHandle();
+            if (!target)
+                return;
+            const QPointF global = r.canvas->mapToGlobal(onCanvas);
+            const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleTabletEvent(target, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                      int(QPointingDevice::PointerType::Pen), buttons, pressure,
+                                                      0, 0, 0, 0, 0, kPen);
+            QCoreApplication::processEvents();
+        };
+        const QPointF at = r.canvas->viewTransformForTest().map(QPointF(480, 470));
+        const QString before = QStringLiteral("A note up before the pen.");
+        r.canvas->showNote(before);
+        const bool upBefore = barNote(r) == before;
+        const int steps = stack->index();
+        penAt(at, Qt::NoButton, 0.0);
+        penAt(at, Qt::LeftButton, 0.6);
+        r.canvas->showNote(QStringLiteral("Said while the pen is down."), DrawingCanvas::kNoteMs, true);
+        penAt(at + QPointF(40, 0), Qt::LeftButton, 0.6);
+        pump(60);
+        const bool heldDown = r.canvas->notesHeldForTest() && barNote(r) == before && !barWarns(r);
+        penAt(at + QPointF(40, 0), Qt::NoButton, 0.0);
+        pump(250);
+        const QString lifted = barNote(r);
+        const bool liftedOk = !r.canvas->notesHeldForTest() && lifted == QLatin1String("Said while the pen is down.")
+            && barWarns(r);
+        const bool drew = stack->index() == steps + 1;
+        if (drew)
+            stack->undo();
+        pump(150);
+        r.canvas->expireNoteForTest();
+        r.storyboard->setPointerDeviceForTest(-1);
+        check(QStringLiteral("(nh2) THE PEN TOO: while a pen stroke is down the bar keeps the words it had at the press "
+                             "(a refusal said meanwhile waits); when the pen lifts the bar says it, in amber; the stroke "
+                             "drew"),
+              upBefore && heldDown && liftedOk && drew,
+              QStringLiteral("up %1; unchanged while down %2; lifted '%3' (%4); drew %5").arg(upBefore).arg(heldDown)
+                  .arg(lifted).arg(liftedOk).arg(drew));
+    }
+
+    // (nh3) WHAT STAYS LIVE (answer 5): the Move tool's note while its box is dragged; a refused press's note.
+    {
+        moveBtn->click();
+        r.storyboard->layerRowClickedForTest(2); // the Boat
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(150);
+        r.canvas->expireNoteForTest();
+        const QPolygonF box = r.canvas->poseBoxForTest();
+        const QPointF inside = box.size() >= 4 ? (box.at(0) + box.at(2)) / 2.0 : QPointF();
+        const int steps = stack->index();
+        sendMouse(r.canvas, QEvent::MouseButtonPress, inside, Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseMove, inside + QPointF(20, 0), Qt::LeftButton);
+        const QString during = barNote(r);
+        const bool notHeld = !r.canvas->notesHeldForTest();
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, inside + QPointF(20, 0), Qt::LeftButton);
+        pump(150);
+        const bool keyed = stack->index() == steps + 1;
+        if (keyed)
+            stack->undo();
+        pump(100);
+        // A press on a locked layer draws nothing: its note shows at once.
+        brushBtn->click();
+        r.storyboard->layerRowClickedForTest(1); // the Ground
+        pump(100);
+        pa->layers[1].locked = true;
+        r.storyboard->rebuildLayerPanelForTest();
+        pump(100);
+        r.canvas->expireNoteForTest();
+        const QPointF at = r.canvas->viewTransformForTest().map(QPointF(480, 440));
+        sendMouse(r.canvas, QEvent::MouseButtonPress, at, Qt::LeftButton);
+        const QString refused = barNote(r);
+        const bool refusedAmber = barWarns(r);
+        const bool refusedHeld = r.canvas->notesHeldForTest();
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, at, Qt::LeftButton);
+        pump(100);
+        pa->layers[1].locked = false;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->expireNoteForTest();
+        pump(100);
+        check(QStringLiteral("(nh3) WHAT STAYS LIVE (your answer 5): while the Move box is dragged the bar says the Move "
+                             "tool's note (it says what the drag edits; nothing is held); a press on a locked layer "
+                             "draws nothing and \"Ground is locked\" is said at once, in amber"),
+              box.size() >= 4 && !during.isEmpty() && during.startsWith(QLatin1String("Boat")) && notHeld && keyed
+                  && refused == QLatin1String("Ground is locked") && refusedAmber && !refusedHeld,
+              QStringLiteral("box %1; during the drag '%2', held %3; keyed %4; locked press '%5' (amber %6), held %7")
+                  .arg(box.size()).arg(during).arg(!notHeld).arg(keyed).arg(refused).arg(refusedAmber)
+                  .arg(refusedHeld));
+    }
+
+    // (nh4) AN INTERRUPTED STROKE ENDS THE HOLD: a Brush stroke on the Ground whose mouse grab is lost (as when a
+    // dialog or another window takes it) is over - the bar's words are free again.
+    {
+        brushBtn->click();
+        r.storyboard->layerRowClickedForTest(1); // the Ground
+        pump(100);
+        r.canvas->expireNoteForTest();
+        const QString waiting = QStringLiteral("Said before the grab was lost.");
+        const QPointF at = r.canvas->viewTransformForTest().map(QPointF(480, 440));
+        const int steps = stack->index();
+        sendMouse(r.canvas, QEvent::MouseButtonPress, at, Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseMove, at + QPointF(30, 0), Qt::LeftButton);
+        const bool heldDown = r.canvas->notesHeldForTest();
+        r.canvas->showNote(waiting, DrawingCanvas::kNoteMs, true);
+        const bool waited = barNote(r) != waiting;
+        QEvent ungrab(QEvent::UngrabMouse);
+        QCoreApplication::sendEvent(r.canvas, &ungrab);
+        pump(100);
+        const QString after = barNote(r);
+        const bool freed = !r.canvas->notesHeldForTest() && after == waiting && barWarns(r);
+        const bool committed = stack->index() == steps + 1;
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, at + QPointF(30, 0), Qt::LeftButton); // a late release
+        pump(100);
+        while (stack->index() > steps)
+            stack->undo();
+        pump(100);
+        r.canvas->expireNoteForTest();
+        check(QStringLiteral("(nh4) AN INTERRUPTED STROKE ENDS THE HOLD: a Brush stroke whose mouse grab is lost (a "
+                             "dialog, another window) is committed and the bar's words are free again - the refusal "
+                             "said while it went on is said at once, in amber; control: until then it waited"),
+              heldDown && waited && freed && committed,
+              QStringLiteral("held while down %1; waited %2; after the lost grab '%3' (free %4); committed %5")
+                  .arg(heldDown).arg(waited).arg(after).arg(freed).arg(committed));
+    }
+
+    // (sc) THE SCRUB STAYS IN THE WORKSPACE (note 1): a drag on the ruler, through the timeline's own events.
+    r.timeline->setZoomForTest(800);
+    r.timeline->userScrollForTest(0);
+    pump(150);
+    auto rulerX = [&](int flat, double frameIn) {
+        return r.timeline->clipRectForTest(flat).left() + (frameIn + 0.25) * r.timeline->pxPerFrameForTest();
+    };
+    auto rulerPress = [&](int flat, double frameIn) {
+        mouse(r.surface, QEvent::MouseButtonPress, QPointF(rulerX(flat, frameIn), 10), Qt::LeftButton, Qt::LeftButton);
+    };
+    auto rulerMove = [&](int flat, double frameIn) {
+        mouse(r.surface, QEvent::MouseMove, QPointF(rulerX(flat, frameIn), 10), Qt::NoButton, Qt::LeftButton);
+    };
+    auto rulerRelease = [&](int flat, double frameIn) {
+        mouse(r.surface, QEvent::MouseButtonRelease, QPointF(rulerX(flat, frameIn), 10), Qt::LeftButton, Qt::NoButton);
+        pump(150);
+    };
+    // (sc1) With the Brush: no preview; the panel under the playhead is selected at the frame.
+    {
+        brushBtn->click();
+        clickThumb(r, 0);
+        pump(150);
+        rulerPress(0, 4);
+        rulerMove(1, 10);
+        rulerRelease(1, 10);
+        const bool onCanvas = !r.animatic->previewVisible() && r.storyboard->selectedFlatIndexForTest() == 1
+            && r.animatic->playheadFrameInPanel() == 10;
+        check(QStringLiteral("(sc1) A SCRUB STAYS IN THE WORKSPACE (your note 1): with the Brush, a drag on the ruler "
+                             "into panel 2 opens no preview; panel 2 is selected, the playhead at its frame 10"),
+              onCanvas, QStringLiteral("preview %1, selected %2, frame %3").arg(r.animatic->previewVisible())
+                            .arg(r.storyboard->selectedFlatIndexForTest()).arg(r.animatic->playheadFrameInPanel()));
+        r.animatic->togglePlay();
+        pump(150);
+        const bool playPreviews = r.animatic->previewVisible() && r.animatic->isPlaying();
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        pump(60);
+        const bool pausedUp = r.animatic->previewVisible();
+        rulerPress(1, 6);
+        rulerRelease(1, 6);
+        const bool clickLeft = !r.animatic->previewVisible() && r.animatic->playheadFrameInPanel() == 6;
+        check(QStringLiteral("(sc1) control: Play opens the preview, and paused it stays up"),
+              playPreviews && pausedUp,
+              QStringLiteral("Play previews %1; paused up %2").arg(playPreviews).arg(pausedUp));
+        check(QStringLiteral("(sc1) ...and a click on the ruler takes the paused preview away: the workspace, the "
+                             "playhead at that frame"),
+              pausedUp && clickLeft,
+              QStringLiteral("the click leaves it %1 (frame %2)").arg(clickLeft).arg(r.animatic->playheadFrameInPanel()));
+    }
+    // (sc2) The canvas follows the playhead: the Move tool shows the Boat where the keys put it, the Brush as drawn.
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2); // the Boat
+        moveBtn->click();
+        pump(150);
+        rulerPress(0, 12);
+        rulerRelease(0, 12);
+        r.canvas->expireNoteForTest();
+        // At 200 %: the 20 px Boat is larger than the Move box's own marks over it (its corner handles, the pivot's
+        // ring, the key's diamond) - at the fitted zoom, about 65 %, they cover every one of its pixels.
+        r.canvas->setViewZoom(2.0);
+        pump(60);
+        const QTransform view = r.canvas->viewTransformForTest();
+        const QPointF wantPosed = view.map(QPointF(500, 300)), wantDrawn = view.map(QPointF(200, 200));
+        auto boatNear = [&](const QPointF &want, int *n) {
+            const QRect window(want.toPoint() - QPoint(60, 60), QSize(120, 120));
+            const QPointF c = centroidOf(r.canvas->grab().toImage().copy(window), kBoat, n);
+            return *n ? c + QPointF(window.topLeft()) : c;
+        };
+        int nPosed = 0, nDrawn = 0, nAnywhere = 0;
+        const QPointF posed = boatNear(wantPosed, &nPosed);
+        const QImage moveGrab = r.canvas->grab().toImage();
+        const QPointF anywhere = centroidOf(moveGrab, kBoat, &nAnywhere);
+        const bool posing = r.canvas->poseModeForTest();
+        const QString colours = QStringLiteral("grab %1x%2 dpr %3; at the posed place %4, at the drawn place %5")
+                                    .arg(moveGrab.width()).arg(moveGrab.height()).arg(moveGrab.devicePixelRatio())
+                                    .arg(moveGrab.pixelColor(wantPosed.toPoint()).name())
+                                    .arg(moveGrab.pixelColor(wantDrawn.toPoint()).name());
+        const int frame = r.animatic->playheadFrameInPanel();
+        brushBtn->click();
+        pump(150);
+        const QPointF drawn = boatNear(wantDrawn, &nDrawn);
+        r.canvas->resetViewAfterResize(); // the fitted view again
+        pump(60);
+        check(QStringLiteral("(sc2) THE CANVAS FOLLOWS THE PLAYHEAD: scrubbed to frame 12, the Move tool shows the Boat "
+                             "where its keys put it (300 px right, 100 down); the Brush shows it as drawn"),
+              frame == 12 && nPosed > 20 && QLineF(posed, wantPosed).length() <= 1.5 && nDrawn > 20
+                  && QLineF(drawn, wantDrawn).length() <= 1.5,
+              QStringLiteral("frame %1; Move %2 (want %3, %4 px; posing %8, anywhere %9, %10 px); Brush %5 (want %6, "
+                             "%7 px)").arg(frame)
+                  .arg(pt(posed), pt(wantPosed)).arg(nPosed).arg(pt(drawn), pt(wantDrawn)).arg(nDrawn).arg(posing)
+                  .arg(pt(anywhere)).arg(nAnywhere) + QStringLiteral("; ") + colours);
+    }
+    // (sc3) While the playhead is dragged the Move tool's box waits for the drag's end (answer 6).
+    {
+        clickThumb(r, 1);
+        moveBtn->click();
+        pump(150);
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(1); // the Ground: a still layer - the box is a lift of its pixels
+        pump(150);
+        const bool boxAtSelect = r.canvas->moveBoxOpen();
+        clickThumb(r, 1); // the Gull's panel: its active layer is animated, no lift
+        pump(150);
+        rulerPress(1, 4);
+        rulerMove(0, 8); // into panel 1, the Ground active
+        const bool during = r.canvas->scrubbingForTest() && r.canvas->liftWaitsForTest() && !r.canvas->moveBoxOpen()
+            && r.storyboard->selectedFlatIndexForTest() == 0;
+        rulerRelease(0, 8);
+        const bool after = !r.canvas->scrubbingForTest() && r.canvas->moveBoxOpen();
+        check(QStringLiteral("(sc3) THE MOVE TOOL'S BOX WAITS FOR THE DRAG'S END (your answer 6: lifting a 4K layer at "
+                             "each panel crossed made a crossing slower than a frame): dragged into panel 1, the panel "
+                             "is selected and no box is lifted; at the release, the box"),
+              during && after,
+              QStringLiteral("during: scrubbing %1, waits %2, box %3, selected %4; after: box %5")
+                  .arg(r.canvas->scrubbingForTest()).arg(r.canvas->liftWaitsForTest()).arg(r.canvas->moveBoxOpen())
+                  .arg(r.storyboard->selectedFlatIndexForTest()).arg(r.canvas->moveBoxOpen()));
+        check(QStringLiteral("(sc3) control: selected from the strip, not in a drag, the Ground's box is lifted at once"),
+              boxAtSelect);
+    }
+
+    // (mb1) THE MOVE BAR ON AN ANIMATED LAYER (note 3, answer 2).
+    {
+        clickThumb(r, 0);
+        moveBtn->click();
+        r.storyboard->layerRowClickedForTest(2); // the Boat, Animate on
+        pump(150);
+        const bool hiddenOnBoat = !moveBar->isVisible();
+        r.storyboard->layerRowClickedForTest(1); // the Ground
+        pump(150);
+        const bool shownOnGround = moveBar->isVisible();
+        r.storyboard->layerRowClickedForTest(2);
+        pump(150);
+        const bool hiddenAgain = !moveBar->isVisible();
+        check(QStringLiteral("(mb1) THE MOVE BAR ON AN ANIMATED LAYER (your note 3): with the Move tool on the Boat, "
+                             "Animate on, the whole bar is hidden (all seven of its buttons would hide); on the Ground, "
+                             "a normal layer, it shows; back on the Boat, hidden"),
+              hiddenOnBoat && shownOnGround && hiddenAgain,
+              QStringLiteral("Boat %1, Ground %2, Boat %3").arg(!hiddenOnBoat).arg(shownOnGround).arg(!hiddenAgain));
+        r.storyboard->rebuildLayerPanelForTest();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        pump(80);
+        QAbstractButton *boatDiamond = r.storyboard->layerAnimateButtonForTest(2);
+        if (boatDiamond)
+            boatDiamond->click(); // Animate off
+        pump(150);
+        const bool shownOff = moveBar->isVisible() && !pa->layers.at(2).animate;
+        stack->undo(); // Animate on again
+        pump(150);
+        const bool hiddenOn = !moveBar->isVisible() && pa->layers.at(2).animate;
+        check(QStringLiteral("(mb1) ...and Animate on again (an undo of the diamond's click): hidden"),
+              boatDiamond && hiddenOn, QStringLiteral("on: bar %1").arg(!hiddenOn));
+        check(QStringLiteral("(mb1) control: the Boat with Animate off is a normal layer to the Move tool - the bar "
+                             "shows, as before"),
+              boatDiamond && shownOff, QStringLiteral("off: bar %1").arg(shownOff));
+    }
+
+    // (dk1) THE DIAMOND'S CLICK MAKES A KEY (note 4, answer 3).
+    {
+        brushBtn->click();
+        clickThumb(r, 0);
+        r.animatic->setPlayheadFrameInPanel(0, 6);
+        pump(150);
+        r.storyboard->rebuildLayerPanelForTest();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        pump(80);
+        QAbstractButton *groundDiamond = r.storyboard->layerAnimateButtonForTest(1);
+        const double opacity = pa->layers.at(1).opacity;
+        const int steps = stack->index();
+        if (groundDiamond)
+            groundDiamond->click();
+        pump(150);
+        const Layer &ground = pa->layers.at(1);
+        const shotcam::LayerKey k = ground.keys.value(0);
+        const bool oneKey = ground.animate && ground.keys.size() == 1 && layerKeyFrame(k, 24) == 6;
+        const bool asDrawn = k.pose.dx == 0 && k.pose.dy == 0 && k.pose.rotation == 0 && k.pose.scale == 1.0
+            && k.pose.opacity == opacity;
+        const bool pivot = ground.pivot == QPointF(700, 380);
+        QAbstractButton *after = r.storyboard->layerAnimateButtonForTest(1);
+        const bool solid = after && after->property("keyHere").toBool();
+        const bool oneStep = stack->index() == steps + 1 && stack->text(stack->index() - 1) == QLatin1String("Animate Layer");
+        stack->undo();
+        pump(150);
+        const bool undone = !pa->layers.at(1).animate && pa->layers.at(1).keys.isEmpty();
+        check(QStringLiteral("(dk1) THE DIAMOND'S CLICK MAKES A KEY (your note 4): on the Ground (no keys) at frame 6, "
+                             "Animate on and one key there, the layer as drawn (no move, no turn, 100 %, its own "
+                             "opacity), its pivot at its art's centre (700, 380); the diamond solid; one step, \"Animate "
+                             "Layer\" - undone, both go"),
+              groundDiamond && oneKey && asDrawn && pivot && solid && oneStep && undone,
+              QStringLiteral("one key at 6 %1; as drawn %2; pivot %3; solid %4; one step %5; undone %6")
+                  .arg(oneKey).arg(asDrawn).arg(pt(ground.pivot)).arg(solid).arg(oneStep).arg(undone));
+        // Control (answer 3): keys kept from before come back as they were, and none is added.
+        r.storyboard->rebuildLayerPanelForTest();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        pump(80);
+        const QVector<shotcam::LayerKey> before = pa->layers.at(2).keys;
+        if (QAbstractButton *b = r.storyboard->layerAnimateButtonForTest(2))
+            b->click(); // off: kept, greyed
+        pump(100);
+        r.storyboard->rebuildLayerPanelForTest();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        pump(80);
+        if (QAbstractButton *b = r.storyboard->layerAnimateButtonForTest(2))
+            b->click(); // on again, at frame 6 - no key there
+        pump(100);
+        const QVector<shotcam::LayerKey> back = pa->layers.at(2).keys;
+        bool same = back.size() == before.size();
+        for (int i = 0; same && i < back.size(); ++i)
+            same = back.at(i).at == before.at(i).at && back.at(i).pose == before.at(i).pose
+                && back.at(i).ease == before.at(i).ease;
+        check(QStringLiteral("(dk1) control: the Boat's two kept keys, Animate off then on at frame 6, come back as they "
+                             "were and no key is added (a key between them would change the motion)"),
+              pa->layers.at(2).animate && same, QStringLiteral("%1 keys -> %2").arg(before.size()).arg(back.size()));
+    }
+
+    // (tp) PANNING THE TIMELINE (note 8).
+    {
+        clickThumb(r, 0);
+        // A film long enough to pan over: both panels 240 frames (the fixture's 48 fit the view even at the
+        // closest zoom).
+        scene->panels.at(0)->setLength(240, 24);
+        scene->panels.at(1)->setLength(240, 24);
+        r.animatic->refreshTiming();
+        r.timeline->setZoomForTest(1600);
+        pump(100);
+        r.timeline->userScrollForTest(300);
+        pump(150);
+        const int scroll0 = r.timeline->scrollXForTest();
+        const int sel0 = r.storyboard->selectedFlatIndexForTest();
+        const int frame0 = r.animatic->playheadFrameInPanel();
+        const QRect clip0 = r.timeline->clipRectForTest(0), clip1 = r.timeline->clipRectForTest(1);
+        const QVariantList keys0 = r.timeline->layerKeysForTest();
+        const int steps = stack->index();
+        auto sameElse = [&](int scrollShift) {
+            return r.storyboard->selectedFlatIndexForTest() == sel0 && r.animatic->playheadFrameInPanel() == frame0
+                && r.timeline->clipRectForTest(0) == clip0.translated(-scrollShift, 0)
+                && r.timeline->clipRectForTest(1) == clip1.translated(-scrollShift, 0)
+                && r.timeline->layerKeysForTest().size() == keys0.size() && stack->index() == steps
+                && shotcam::panelFrames(*scene->panels.at(0), 24) == 240
+                && shotcam::panelFrames(*scene->panels.at(1), 24) == 240;
+        };
+        // The hand: Ctrl held over the zoomed-in rows (the SHOTS row, mid-view).
+        const QPointF over(r.surface->width() / 2.0, r.timeline->clipRectForTest(0).center().y());
+        mouse(r.surface, QEvent::MouseMove, over, Qt::NoButton, Qt::NoButton, Qt::ControlModifier);
+        const bool hand = r.surface->cursor().shape() == Qt::OpenHandCursor;
+        mouse(r.surface, QEvent::MouseMove, over, Qt::NoButton, Qt::NoButton);
+        const bool noHand = r.surface->cursor().shape() != Qt::OpenHandCursor;
+        // Ctrl + a left drag on the SHOTS row, 150 px to the left.
+        drag(r.surface, over, over - QPointF(150, 0), Qt::ControlModifier);
+        pump(60);
+        const int scroll1 = r.timeline->scrollXForTest();
+        const bool ctrlPan = scroll1 == scroll0 + 150 && sameElse(150) && r.surface->cursor().shape() != Qt::ClosedHandCursor;
+        check(QStringLiteral("(tp1) PANNING THE TIMELINE (your note 8): zoomed in, Ctrl + a left drag on the SHOTS row "
+                             "150 px to the left moves the view 150 px on - the playhead, the selection, the panels, "
+                             "their lengths and the keys as they were, no step in the history; Ctrl held over the rows "
+                             "shows the open hand, without it not"),
+              ctrlPan && hand && noHand,
+              QStringLiteral("scroll %1 -> %2; the rest the same %3; hand %4, without Ctrl %5").arg(scroll0).arg(scroll1)
+                  .arg(sameElse(scroll1 - scroll0)).arg(hand).arg(noHand));
+        // A middle drag, 100 px back.
+        drag(r.surface, over, over + QPointF(100, 0), Qt::NoModifier, Qt::MiddleButton);
+        pump(60);
+        const int scroll2 = r.timeline->scrollXForTest();
+        check(QStringLiteral("(tp2) ...a middle-button drag pans the same way: 100 px back, nothing else changed"),
+              scroll2 == scroll1 - 100 && sameElse(scroll2 - scroll0),
+              QStringLiteral("scroll %1 -> %2").arg(scroll1).arg(scroll2));
+        // The pen, Ctrl held, through the window system (Qt makes the mouse of it).
+        constexpr qint64 kPen = 7042;
+        r.storyboard->setPointerDeviceForTest(kPen); // the page hears this pen (the gate's own pointer is deaf)
+        auto penOn = [&](const QPointF &onSurface, Qt::MouseButtons buttons, qreal pressure) {
+            QWindow *target = r.surface->window()->windowHandle();
+            if (!target)
+                return;
+            const QPointF global = r.surface->mapToGlobal(onSurface);
+            const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleTabletEvent(target, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                      int(QPointingDevice::PointerType::Pen), buttons, pressure,
+                                                      0, 0, 0, 0, 0, kPen, Qt::ControlModifier);
+            QCoreApplication::processEvents();
+        };
+        penOn(over, Qt::NoButton, 0.0);
+        penOn(over, Qt::LeftButton, 0.6);
+        for (int i = 1; i <= 4; ++i)
+            penOn(over - QPointF(20.0 * i, 0), Qt::LeftButton, 0.6);
+        penOn(over - QPointF(80, 0), Qt::NoButton, 0.0);
+        pump(60);
+        r.storyboard->setPointerDeviceForTest(-1);
+        const int scroll3 = r.timeline->scrollXForTest();
+        check(QStringLiteral("(tp3) ...and the pen: Ctrl + a pen drag 80 px to the left pans 80 px, nothing else changed"),
+              scroll3 == scroll2 + 80 && sameElse(scroll3 - scroll0),
+              QStringLiteral("scroll %1 -> %2").arg(scroll2).arg(scroll3));
+        // Control: the same drag without Ctrl on the ruler moves the playhead, not the view.
+        const int frameBefore = r.animatic->playheadFrameInPanel();
+        const QPointF onRuler(over.x(), 10);
+        drag(r.surface, onRuler, onRuler - QPointF(40, 0));
+        pump(150);
+        const bool plainScrubs = r.timeline->scrollXForTest() == scroll3 && r.animatic->playheadFrameInPanel() != frameBefore;
+        // At full view a Ctrl drag moves nothing.
+        r.timeline->setZoomForTest(10);
+        pump(150);
+        const int fullScroll = r.timeline->scrollXForTest();
+        const QPointF anywhere(r.timeline->clipRectForTest(0).center());
+        drag(r.surface, anywhere, anywhere - QPointF(150, 0), Qt::ControlModifier);
+        pump(60);
+        check(QStringLiteral("(tp4) control: a plain drag on the ruler moves the playhead and not the view; at full view "
+                             "(nothing to scroll) a Ctrl drag moves nothing"),
+              plainScrubs && fullScroll == 0 && r.timeline->scrollXForTest() == 0 && stack->index() == steps,
+              QStringLiteral("plain: scroll %1, frame %2 -> %3; full view: scroll %4 -> %5")
+                  .arg(r.timeline->scrollXForTest()).arg(frameBefore).arg(r.animatic->playheadFrameInPanel())
+                  .arg(fullScroll).arg(r.timeline->scrollXForTest()));
+    }
+    r.window.markCleanForTest();
 }
 
 // ---- (ss) THE SAFE SAVE (saving step 1, 2026-11-23; approved by the user that day) -------------
@@ -38935,6 +39802,14 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i1b")) {
+        runI1bPass(scratch); // batch I-1b round 1 (2026-11-25)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("motion")) {
         runLayerMotionPass(scratch); // batch I-1, layer motion (2026-11-24)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -39222,6 +40097,7 @@ int main(int argc, char **argv)
     runEraserLibraryPass(scratch);
     runLibraryBoxesPass(scratch); // the Library's boxes and Rename Brush in place (2026-11-24)
     runLayerMotionPass(scratch);  // batch I-1, layer motion (2026-11-24)
+    runI1bPass(scratch);          // batch I-1b round 1: notes, scrub, Move bar, diamond, panning (2026-11-25)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

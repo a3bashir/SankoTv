@@ -4118,9 +4118,9 @@ void StoryboardPage::createFloatingToolbar()
             b->setChecked(false);
     });
 
-    // The canvas's drawing-view chip keeps clear of both modifier bars (batch F1).
-    if (m_canvas)
-        m_canvas->setChipObstacles({m_selModToolbar, m_moveModToolbar});
+    // (The canvas's drawing-view chip kept clear of both modifier bars - batch F1 - and the
+    // I-1b note slot of every floating window. Since batch I-1b round 1 every note is said in
+    // the status bar: nothing over the canvas to keep clear.)
     moveBar->setDefaultOffsetProvider([this, moveBar] {
         // Bottom-centre, 10px above the status bar — identical to the
         // Selection Modifier bar's placement rule.
@@ -4141,8 +4141,8 @@ void StoryboardPage::createFloatingToolbar()
             if (m_canvas)
                 m_canvas->setXformUiMode(DrawingCanvas::XformDefault);
         }
-        if (m_moveModToolbar)
-            m_moveModToolbar->setVisible(on);
+        m_moveToolOn = on;
+        refreshMoveBar(); // ...not on an animated layer with Animate on (batch I-1b)
     });
 
     bar->addWidget(brushTool, 0, Qt::AlignVCenter);
@@ -5596,12 +5596,12 @@ QWidget *StoryboardPage::createCameraPanel()
     connect(m_canvas, &DrawingCanvas::shotCameraEditRefused, this, [this] {
         if (refuseCameraEdit()) // the CAMERA lock (Phase 1C) is the reason first
             return;
-        sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
+        sayWarning(QStringLiteral("Turn on Animate to change the camera at this point."));
     });
     // Kept art (batch B1, Figma B-1): a landing past what a layer may hold.
     connect(m_canvas, &DrawingCanvas::keptArtLimitReached, this, [this] {
-        sayNote(QStringLiteral("The layer reaches the 8,192 px limit: art past it is not kept. "
-                               "Undo brings it back."));
+        sayWarning(QStringLiteral("The layer reaches the 8,192 px limit: art past it is not kept. "
+                                  "Undo brings it back."));
     });
     // A press on a locked or hidden layer (batch G): why, by the pointer.
     connect(m_canvas, &DrawingCanvas::editRefused, this,
@@ -6321,7 +6321,7 @@ void StoryboardPage::enterStageMode()
         return;
     QString active;
     if (hasActiveEdit(&active)) {
-        sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+        sayWarning(QStringLiteral("Finish %1 before changing the stage.").arg(active));
         return;
     }
     m_stageModeOn = true;
@@ -6530,7 +6530,7 @@ void StoryboardPage::growPanelToFit(int sceneIndex, int panelIndex)
         QString active;
         if (hasActiveEdit(&active)) {
             if (!m_canvas || !m_canvas->transformUntouched()) {
-                sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+                sayWarning(QStringLiteral("Finish %1 before changing the stage.").arg(active));
                 return;
             }
             reliftBox = true;
@@ -6670,7 +6670,7 @@ void StoryboardPage::growAllToFit(int sceneIndex, int panelIndex)
             QString active;
             if (hasActiveEdit(&active)) {
                 if (!m_canvas || !m_canvas->transformUntouched()) {
-                    sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+                    sayWarning(QStringLiteral("Finish %1 before changing the stage.").arg(active));
                     return;
                 }
                 reliftBox = true;
@@ -6789,7 +6789,7 @@ void StoryboardPage::onShotCameraEdit(const shotcam::CameraState &state, int kin
     const shotcam::CameraState keyState = shotcam::toCameraSpace(*scene->panels.at(pi), state);
     if (!m_cameraAnimate) {
         if (live >= 2) { // the canvas refuses first; this is the backstop
-            sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
+            sayWarning(QStringLiteral("Turn on Animate to change the camera at this point."));
             return;
         }
         // THE SCENE'S SINGLE FRAMING: one key, on its first frame. Inert keys
@@ -7087,7 +7087,7 @@ void StoryboardPage::cameraMoveKey(int sceneIndex, int keyIndex, int sceneFrame)
     for (int j = 0; j < scene->camera.keys.size(); ++j) {
         const double f = shotcam::keyFrame(*scene, scene->camera.keys.at(j), fps, filmStartOf(scene));
         if (j != keyIndex && f >= 0.0 && qAbs(f - sceneFrame) < 0.5) {
-            sayNote(QStringLiteral("Another camera key is at this frame."));
+            sayWarning(QStringLiteral("Another camera key is at this frame."));
             return;
         }
     }
@@ -7406,9 +7406,9 @@ void StoryboardPage::cameraQuickMove(shotcam::QuickMove move)
     if (quickMovePlan(move, m_currentScene, pi, m_quickSpan, &plan, &why)) {
         applyQuickPlan(plan);
         if (!plan.note.isEmpty())
-            sayNote(plan.note);
+            sayWarning(plan.note); // the move gave way, or leaves the art: otherwise than asked
     } else if (!why.isEmpty()) {
-        sayNote(why);
+        sayWarning(why);
     }
 }
 
@@ -7425,9 +7425,9 @@ void StoryboardPage::cameraQuickMoveOnPanel(shotcam::QuickMove move, int flatPan
     if (quickMovePlan(move, si, pi, QuickSpan::ThisPanel, &plan, &why)) {
         applyQuickPlan(plan);
         if (!plan.note.isEmpty())
-            sayNote(plan.note);
+            sayWarning(plan.note); // the move gave way, or leaves the art: otherwise than asked
     } else if (!why.isEmpty()) {
-        sayNote(why);
+        sayWarning(why);
     }
 }
 
@@ -7581,7 +7581,7 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
                 if (shotcam::keyFrame(*scene, k, fps, filmStartOf(scene)) >= 0.0
                     && k.panelUid == key.panelUid
                     && k.at == key.at && k.state == key.state && k.ease == key.ease) {
-                    sayNote(QStringLiteral("Scene %1 already holds Scene %2's last framing.")
+                    sayWarning(QStringLiteral("Scene %1 already holds Scene %2's last framing.")
                                 .arg(scene->number).arg(m_scenes.at(sceneIndex - 1)->number));
                     return;
                 }
@@ -7590,7 +7590,7 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
     if (whole && shotcam::liveKeyCount(*scene, fps, filmStartOf(scene)) == 0) {
         // The whole canvas already: nothing to change, and the artist is
         // told so rather than left with an entry that did nothing.
-        sayNote(QStringLiteral("Scene %1 already shows the whole canvas.").arg(scene->number));
+        sayWarning(QStringLiteral("Scene %1 already shows the whole canvas.").arg(scene->number));
         return;
     }
     int pinned = 0; // D20: the pinned keys it replaces, named in the undo text
@@ -7600,7 +7600,7 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
     pushCameraEdit(scene, scene->camera, after,
                    QStringLiteral("Use Last Framing") + pinnedReplacedText(pinned));
     if (!heldNote.isEmpty())
-        sayNote(heldNote);
+        sayWarning(heldNote); // the framing was held inside: otherwise than asked
 }
 
 void StoryboardPage::cameraContinue(int sceneIndex)
@@ -7618,7 +7618,7 @@ void StoryboardPage::cameraContinue(int sceneIndex)
     if (first >= 0) {
         if (after.keys.at(first).state == framing) {
             // Already starts there (the round-2 hand test's silent no-op).
-            sayNote(QStringLiteral("Scene %1 already starts on Scene %2's last framing.")
+            sayWarning(QStringLiteral("Scene %1 already starts on Scene %2's last framing.")
                         .arg(scene->number).arg(m_scenes.at(sceneIndex - 1)->number));
             return;
         }
@@ -7628,7 +7628,7 @@ void StoryboardPage::cameraContinue(int sceneIndex)
     }
     pushCameraEdit(scene, scene->camera, after, QStringLiteral("Continue Camera"));
     if (!heldNote.isEmpty())
-        sayNote(heldNote);
+        sayWarning(heldNote); // the framing was held inside: otherwise than asked
 }
 
 // A FRAMING COPIED ONTO A PANEL WITH LESS MARGIN (batch 6d, MARGIN-0): Use Last Framing
@@ -7917,7 +7917,7 @@ void StoryboardPage::cameraPinKey(int sceneIndex, int keyIndex, bool pin)
     for (int j = 0; j < scene->camera.keys.size(); ++j) {
         const double g = shotcam::keyFrame(*scene, scene->camera.keys.at(j), fps, filmStartOf(scene));
         if (j != keyIndex && g >= 0.0 && qAbs(g - f) < 0.5) {
-            sayNote(QStringLiteral("Another camera key is at this frame."));
+            sayWarning(QStringLiteral("Another camera key is at this frame."));
             return;
         }
     }
@@ -8035,7 +8035,7 @@ void StoryboardPage::cameraUnpinStranded(int sceneIndex, int keyIndex)
     const int inPanel = before ? 0 : shotcam::panelFrames(*scene->panels.at(last), fps) - 1;
     const double sceneFrame = shotcam::panelStartFrame(*scene, panelIndex, fps) + inPanel;
     if (shotcam::keyIndexAtFrame(*scene, sceneFrame, fps, filmStartOf(scene)) >= 0) {
-        sayNote(QStringLiteral("Another camera key is at this frame."));
+        sayWarning(QStringLiteral("Another camera key is at this frame."));
         return;
     }
     shotcam::SceneCamera after = scene->camera;
@@ -8165,7 +8165,7 @@ bool StoryboardPage::pushInsertPanel(Scene *scene, int index, Panel *panel, cons
         Panel *donor = scene->panels.at(donorIndex);
         const int n = shotcam::panelFrames(*donor, fps);
         if (n <= 1) {
-            sayNote(QStringLiteral("Panel %1 is 1 frame long, so it has no time to give a new panel: "
+            sayWarning(QStringLiteral("Panel %1 is 1 frame long, so it has no time to give a new panel: "
                                    "scene %2's length is locked. Lengthen panel %1 first, or unlock the scene.")
                         .arg(donorIndex + 1).arg(number));
             delete panel;
@@ -8192,12 +8192,14 @@ bool StoryboardPage::pushInsertPanel(Scene *scene, int index, Panel *panel, cons
         const int donorNumber = donorFirst ? donorIndex + 1 : index + 2;
         const QString given = shotcam::lengthText(newFrames, fps);
         const QString locked = QStringLiteral("scene %1's length is locked.").arg(number);
+        // Not its own length - otherwise than asked: a warning (amber). A new panel taking its
+        // time from a neighbour is how a locked scene adds one: a note (grey).
         if (kind == InsertKind::Duplicate)
-            sayNote(QStringLiteral("The copy takes %1 from panel %2, not its own %3: %4")
-                        .arg(given).arg(donorNumber).arg(shotcam::lengthText(ownFrames, fps), locked));
+            sayWarning(QStringLiteral("The copy takes %1 from panel %2, not its own %3: %4")
+                           .arg(given).arg(donorNumber).arg(shotcam::lengthText(ownFrames, fps), locked));
         else if (kind == InsertKind::Paste)
-            sayNote(QStringLiteral("The pasted panel takes %1 from panel %2, not its own %3: %4")
-                        .arg(given).arg(donorNumber).arg(shotcam::lengthText(ownFrames, fps), locked));
+            sayWarning(QStringLiteral("The pasted panel takes %1 from panel %2, not its own %3: %4")
+                           .arg(given).arg(donorNumber).arg(shotcam::lengthText(ownFrames, fps), locked));
         else if (atPlayhead)
             sayNote(QStringLiteral("Panel %1 %2 at the playhead and takes %3 from panel %4: %5")
                         .arg(index + 1)
@@ -8217,7 +8219,7 @@ bool StoryboardPage::pushInsertPanel(Scene *scene, int index, Panel *panel, cons
     const QString suffix = strandingSuffix(after, &note);
     m_undoStack->push(new InsertPanelCommand(this, scene, index, panel, text + suffix));
     if (!note.isEmpty())
-        sayNote(note);
+        sayWarning(note); // pinned camera keys outside their scene, or back
     return true;
 }
 
@@ -8240,7 +8242,7 @@ void StoryboardPage::pushMovePanel(Scene *scene, int from, int to)
     const QString suffix = strandingSuffix(after, &note);
     m_undoStack->push(new MovePanelCommand(this, scene, from, to, suffix));
     if (!note.isEmpty())
-        sayNote(note);
+        sayWarning(note); // pinned camera keys outside their scene, or back
 }
 
 bool StoryboardPage::cameraKeyAtPlayhead() const
@@ -9674,6 +9676,12 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         if (m_syncCameraBar)
             m_syncCameraBar();
     });
+    // The timeline's and the transport's notes are said in the same place (batch I-1b, answer
+    // 1: the status bar since round 1) - a lock's refusal in amber.
+    m_animatic->setNoteSink([this](const QString &text, bool warning) {
+        if (m_canvas)
+            m_canvas->showNote(text, DrawingCanvas::kNoteMs, warning);
+    });
     // CLEAR THE STAGE while the film plays (2026-11-02, Figma PLAYBACK-2):
     // every bar over the canvas and the preview's caption chip fade out on
     // Play and come back on a pointer move, on pause, or when the preview
@@ -9702,12 +9710,20 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         m_compactSuppressed = true;
         applyCompact(false);
     });
-    // With the Camera tool a ruler scrub stays on the canvas at the exact
-    // frame (AnimaticPage::setScrubShowsCanvas); every other tool previews.
-    m_animatic->setScrubShowsCanvas(m_canvas->tool() == DrawingCanvas::Camera);
-    connect(m_canvas, &DrawingCanvas::toolChanged, this, [this](int tool) {
-        if (m_animatic)
-            m_animatic->setScrubShowsCanvas(tool == DrawingCanvas::Camera);
+    // A RULER SCRUB STAYS IN THE WORKSPACE, WHATEVER THE TOOL (batch I-1b, the user's note 1;
+    // until then the Camera tool's alone): the panel under the playhead is selected and the
+    // canvas shows it at the playhead's frame - the Move and Camera tools with the motion
+    // there, the drawing tools with the layers as drawn. Only Play opens the preview.
+    m_animatic->setScrubShowsCanvas(true);
+    // While the playhead is dragged the Move tool's box waits for the drag's end: lifting a
+    // 4K layer at each panel crossed was what made a crossing slower than a frame (answer 6).
+    connect(m_animatic, &AnimaticPage::scrubDragStarted, this, [this] {
+        if (m_canvas)
+            m_canvas->setScrubbing(true);
+    });
+    connect(m_animatic, &AnimaticPage::scrubDragEnded, this, [this] {
+        if (m_canvas)
+            m_canvas->setScrubbing(false);
     });
     connect(m_animatic, &AnimaticPage::durationChangeRequested, this,
             &StoryboardPage::onDurationChangeRequested);
@@ -10468,7 +10484,7 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
     m_undoStack->push(new PanelDurationCommand(this, panel, {panel->frames, panel->rate},
                                                {bounded, fps}, suffix));
     if (!note.isEmpty())
-        sayNote(note);
+        sayWarning(note); // pinned camera keys outside their scene, or back
 }
 
 // THE ROLL (2026-11-06, Q4): two neighbouring panels, one step. Refused by
@@ -10497,7 +10513,7 @@ void StoryboardPage::onRollRequested(int sceneA, int panelA, int framesA, int sc
     // THE SCENE LENGTH LOCK (batch F1): a roll across the cut to a locked scene is
     // refused - the timeline refuses it at the press; this is the backstop.
     if (sceneA != sceneB && (sa->lengthLocked || sb->lengthLocked)) {
-        sayNote(QStringLiteral("Scene %1's length is locked: the cut between scenes %2 and %3 stays.")
+        sayWarning(QStringLiteral("Scene %1's length is locked: the cut between scenes %2 and %3 stays.")
                     .arg((sa->lengthLocked ? sa : sb)->number).arg(sa->number).arg(sb->number));
         if (m_animatic)
             m_animatic->refreshTiming();
@@ -10518,7 +10534,7 @@ void StoryboardPage::onRollRequested(int sceneA, int panelA, int framesA, int sc
     }
     m_undoStack->push(command);
     if (!note.isEmpty())
-        sayNote(note);
+        sayWarning(note); // pinned camera keys outside their scene, or back
 }
 
 void StoryboardPage::lockedDurationChange(int sceneIndex, int panelIndex, int frames)
@@ -10539,7 +10555,7 @@ void StoryboardPage::lockedDurationChange(int sceneIndex, int panelIndex, int fr
         loadShotInfo();
     };
     if (scene->panels.size() < 2) {
-        sayNote(QStringLiteral("Scene %1's length is locked, and panel %2 is its only panel: its length "
+        sayWarning(QStringLiteral("Scene %1's length is locked, and panel %2 is its only panel: its length "
                                "cannot change.").arg(number).arg(panelIndex + 1));
         snapBack();
         return;
@@ -10555,7 +10571,7 @@ void StoryboardPage::lockedDurationChange(int sceneIndex, int panelIndex, int fr
                               .arg(nbIndex + 1).arg(shotcam::lengthText(nbFrames - 1, fps)).arg(panelIndex + 1)
                               .arg(shotcam::lengthText(got, fps), shotcam::lengthText(wanted, fps)).arg(number);
     if (give == 0) { // a 1-frame neighbour has nothing to give
-        sayNote(limit);
+        sayWarning(limit);
         snapBack();
         return;
     }
@@ -10568,7 +10584,7 @@ void StoryboardPage::lockedDurationChange(int sceneIndex, int panelIndex, int fr
     command->setCamera(scene, scene->camera, lockedSceneCamera(scene, spans));
     m_undoStack->push(command);
     if (got != wanted)
-        sayNote(limit);
+        sayWarning(limit);
     else if (give > 0)
         sayNote(QStringLiteral("Panel %1 gave %2 to panel %3: scene %4's length is locked.")
                     .arg(nbIndex + 1).arg(shotcam::lengthText(give, fps)).arg(panelIndex + 1).arg(number));
@@ -10630,7 +10646,7 @@ void StoryboardPage::setAllSceneLengthsLocked(bool lock)
         if (scene && scene->lengthLocked != lock)
             changing.append(scene);
     if (changing.isEmpty()) {
-        sayNote(lock ? QStringLiteral("Every scene's length is already locked.")
+        sayWarning(lock ? QStringLiteral("Every scene's length is already locked.")
                      : QStringLiteral("No scene's length is locked."));
         return;
     }
@@ -10704,7 +10720,7 @@ void StoryboardPage::endSceneAtPlayhead(int sceneIndex)
     const QString blocker = endSceneAtPlayheadBlocker(sceneIndex, &frames);
     if (!blocker.isEmpty()) {
         if (scene->lengthLocked)
-            sayNote(QStringLiteral("Scene %1's length is locked: unlock it to end it at the playhead.")
+            sayWarning(QStringLiteral("Scene %1's length is locked: unlock it to end it at the playhead.")
                         .arg(scene->number));
         return;
     }
@@ -10728,7 +10744,10 @@ void StoryboardPage::endSceneAtPlayhead(int sceneIndex)
                        .arg(shotcam::lengthText(frames, fps), shotcam::lengthText(was, fps));
     if (!strandNote.isEmpty())
         note += QStringLiteral(" ") + strandNote;
-    sayNote(note);
+    if (strandNote.isEmpty())
+        sayNote(note); // what it did, as asked
+    else
+        sayWarning(note); // ...and pinned camera keys outside their scene, or back
 }
 
 // Import Audio and Remove Audio, from the Edit menu or the audio track's own
@@ -11070,6 +11089,119 @@ QWidget *StoryboardPage::createRightColumn()
     return column;
 }
 
+// --- The note in the status bar (batch I-1b round 1, 2026-11-25) -------------------------
+// The user's change after hand test I1b-1: "Move every note to the bottom status bar ... Plain
+// text in the bar's own font and grey, with vertical separators around each note". The grey is
+// the bar's own words' (#999999, "Script Editor" and "Saving..."), at "Recovery copy saved"'s
+// 12 px; the separators are the bar's lines, a shade lighter (#3a3a3a) to read on #111111. A
+// refusal or a warning is in the canvas's warning amber (#f5a623, kCamSoft / kStageAmber).
+
+StatusNoteBar::StatusNoteBar(QWidget *parent) : QWidget(parent)
+{
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+}
+
+QFont StatusNoteBar::noteFont() const
+{
+    QFont f = font();
+    f.setPixelSize(12);
+    return f;
+}
+
+QSize StatusNoteBar::sizeHint() const
+{
+    return QSize(200, 24);
+}
+
+QSize StatusNoteBar::minimumSizeHint() const
+{
+    return QSize(0, 24);
+}
+
+void StatusNoteBar::setNote(const QString &text, bool warning, const QString &tip)
+{
+    if (text == m_text && warning == m_warning && tip == m_tip)
+        return;
+    m_text = text;
+    m_warning = warning;
+    m_tip = tip;
+    refreshTip();
+    update();
+}
+
+QColor StatusNoteBar::textColor() const
+{
+    return m_warning ? QColor(0xf5, 0xa6, 0x23) : QColor(0x99, 0x99, 0x99);
+}
+
+QString StatusNoteBar::shownText() const
+{
+    if (m_text.isEmpty())
+        return QString();
+    const QFontMetrics fm(noteFont());
+    const int room = qMax(0, width() - 2 * (1 + kSeparatorGap));
+    return fm.elidedText(m_text, Qt::ElideRight, room);
+}
+
+QRect StatusNoteBar::textRect() const
+{
+    if (m_text.isEmpty())
+        return QRect();
+    const QFontMetrics fm(noteFont());
+    const int w = fm.horizontalAdvance(shownText());
+    const int total = w + 2 * (1 + kSeparatorGap);
+    return QRect((width() - total) / 2 + 1 + kSeparatorGap, 0, w, height());
+}
+
+QRect StatusNoteBar::separatorRect(int side) const
+{
+    const QRect t = textRect();
+    if (t.isNull())
+        return QRect();
+    const int x = side == 0 ? t.left() - kSeparatorGap - 1 : t.left() + t.width() + kSeparatorGap;
+    return QRect(x, (height() - kSeparatorHeight) / 2, 1, kSeparatorHeight);
+}
+
+// Whole as a tooltip when the space cuts it short; with the tip's extra (the passed layers)
+// always.
+void StatusNoteBar::refreshTip()
+{
+    const bool cut = !m_text.isEmpty() && shownText() != m_text;
+    QString tip;
+    if (cut || (!m_text.isEmpty() && !m_tip.isEmpty()))
+        tip = m_tip.isEmpty() ? m_text : m_text + QLatin1Char('\n') + m_tip;
+    if (tip != toolTip())
+        setToolTip(tip);
+}
+
+void StatusNoteBar::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    refreshTip();
+}
+
+void StatusNoteBar::paintEvent(QPaintEvent *)
+{
+    if (m_text.isEmpty())
+        return;
+    QPainter p(this);
+    p.setFont(noteFont());
+    p.setPen(textColor());
+    p.drawText(textRect(), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine | Qt::TextDontClip, shownText());
+    for (int side = 0; side < 2; ++side)
+        p.fillRect(separatorRect(side), QColor(0x3a, 0x3a, 0x3a));
+}
+
+QWidget *StoryboardPage::recoveryStatusLabelForTest() const
+{
+    return m_recoveryStatus;
+}
+
+QWidget *StoryboardPage::importButtonForTest() const
+{
+    return m_importButton;
+}
+
 // --- Bottom bar -----------------------------------------------------------
 
 QWidget *StoryboardPage::createBottomBar()
@@ -11111,7 +11243,21 @@ QWidget *StoryboardPage::createBottomBar()
     connect(m_importButton, &QPushButton::clicked, this, &StoryboardPage::importImageToPanel);
     layout->addWidget(m_importButton);
 
-    layout->addStretch(1);
+    // THE NOTE (batch I-1b round 1): every note SankoTV says, in the space up to the
+    // recovery copy's word - the canvas works out what it says (DrawingCanvas::noteBarText).
+    m_noteBar = new StatusNoteBar;
+    m_noteBar->setObjectName(QStringLiteral("statusNote"));
+    layout->addWidget(m_noteBar, 1);
+    if (m_canvas) {
+        auto follow = [this] {
+            if (m_noteBar && m_canvas)
+                m_noteBar->setNote(m_canvas->noteBarText(),
+                                   m_canvas->noteBarKind() == DrawingCanvas::NoteKind::Warning,
+                                   m_canvas->noteBarTip());
+        };
+        connect(m_canvas, &DrawingCanvas::noteBarChanged, this, follow);
+        follow();
+    }
 
     // The recovery copy's word (2026-11-04), dimmed, at the right: "Recovery
     // copy saved 19:42"; empty until one is written, cleared by a Save.
@@ -12322,121 +12468,45 @@ void StoryboardPage::sayLocked(const QString &message, bool asBox)
         QMessageBox::information(this, QStringLiteral("Locked track"), message);
         return;
     }
-    if (!m_ignoreRealPointerForTest)
-        QToolTip::showText(QCursor::pos(), message, this);
+    if (m_canvas)
+        m_canvas->showNote(message, DrawingCanvas::kNoteMs, true); // the status bar, in amber
 }
 
-namespace {
-// Runs `then` once: just after the pointer's next Enter anywhere in the application
-// has been dispatched (with the Leaves that come with it), or after `fallbackMs` if
-// none comes.
-class AfterNextEnter : public QObject
-{
-public:
-    AfterNextEnter(QObject *owner, int fallbackMs, std::function<void()> then)
-        : QObject(owner), m_then(std::move(then))
-    {
-        qApp->installEventFilter(this);
-        QTimer::singleShot(fallbackMs, this, [this] { run(); });
-    }
-
-protected:
-    bool eventFilter(QObject *, QEvent *e) override
-    {
-        if (e->type() == QEvent::Enter && !m_entered) {
-            m_entered = true;
-            QTimer::singleShot(0, this, [this] { run(); }); // after the rest of that dispatch
-        }
-        return false;
-    }
-
-private:
-    void run()
-    {
-        if (m_ran)
-            return;
-        m_ran = true;
-        qApp->removeEventFilter(this);
-        if (m_then)
-            m_then();
-        deleteLater();
-    }
-    std::function<void()> m_then;
-    bool m_entered = false;
-    bool m_ran = false;
-};
-} // namespace
-
-QPoint StoryboardPage::notePoint() const
-{
-    return m_notePointForTest.isNull() ? QCursor::pos() : m_notePointForTest;
-}
-
-// A NOTE THAT CAN BE READ (GROW-1). A popover or a menu that closed for the press that
-// made the note leaves the pointer over a widget Qt has not entered yet, and the Leave
-// events of that close, still to come, hide any tooltip 300 ms later: the Quick Move's
-// note was up 0.26 s in the user's 6d hand test (Pan Right's click closes the popover,
-// then the move says its note). So the note waits for that Enter, then shows for the
-// tooltip's usual time. With nothing closing, it shows at once, as before.
+// ONE PLACE FOR EVERY NOTE (batch I-1b, 2026-11-25; the user's notes 2 and 6 and answer 1).
+// A note is said in the status bar's note (round 1, the user's change after hand test I1b-1:
+// at the top centre of the canvas it still distracted) wherever it was made: the canvas, the
+// timeline, a panel, a menu. (Until I-1b it was a tooltip at the pointer, which after a
+// popover's or a menu's close had to wait for the pointer's Enter not to be taken away -
+// GROW-1; the bar is no tooltip and no window, so nothing a pointer does takes it away.) It
+// takes the tool's own note's place for its time, and a later note replaces it. sayNote is
+// a note that tells (grey); sayWarning a refusal or a warning (amber): something did not
+// happen, or happened otherwise than asked.
 void StoryboardPage::sayNote(const QString &message)
 {
     m_lastNote = message;
-    if (m_ignoreRealPointerForTest && m_notePointForTest.isNull())
-        return;
-    const int serial = ++m_noteSerial;
-    const auto show = [this, serial, message] {
-        if (serial == m_noteSerial) // a later note replaces this one
-            QToolTip::showText(notePoint(), message, this);
-    };
-    QWidget *under = QApplication::widgetAt(notePoint());
-    if (!under || under->testAttribute(Qt::WA_UnderMouse))
-        show();
-    else
-        new AfterNextEnter(this, 400, show);
+    if (m_canvas)
+        m_canvas->showNote(message);
+}
+
+void StoryboardPage::sayWarning(const QString &message)
+{
+    m_lastNote = message;
+    if (m_canvas)
+        m_canvas->showNote(message, DrawingCanvas::kNoteMs, true);
 }
 
 // WHY A PRESS DID NOTHING (batch G; Figma G-1, the user's answer 3). The cursor already said
-// "not allowed"; the press says why - "Layer 2 is locked", "... is hidden" - just below and to
-// the right of where it was made, in the one tooltip look (SankoTipFrame), for 2.5 s; another
-// press moves it and starts its time again. Not a QToolTip: Qt takes one away at the mouse's
-// release, a moment after the press that showed it. The press changes nothing.
+// "not allowed"; the press says why - "Layer 2 is locked", "... is hidden" - for 2.5 s, and
+// another press starts its time again. Since batch I-1b in the one place for notes (the status
+// bar since round 1, in amber; it was just below and to the right of the press, a window of
+// its own). The press changes nothing - and it draws nothing, so the note shows at once (a
+// drawing tool's stroke holds the bar's words, a refused press is no stroke).
 void StoryboardPage::sayEditRefused(const QString &why, const QPoint &globalPos)
 {
+    Q_UNUSED(globalPos);
     m_lastNote = why;
-    // In the gate, only for a check that drives its own pointer (a window at the real
-    // pointer's place is not part of a check).
-    if (m_ignoreRealPointerForTest && m_testPointerDevice < 0)
-        return;
-    if (!m_refusalNote) {
-        m_refusalNote = new SankoTipFrame(this);
-        m_refusalNote->setObjectName(QStringLiteral("editRefusedNote"));
-        // The pen passes through it (the hand test of batch G: shown just below and to the
-        // right of the pen, it took the pen's next moves - a window of its own, which Qt's
-        // WA_TransparentForMouseEvents does not make click-through on Windows).
-        m_refusalNote->setWindowFlag(Qt::WindowTransparentForInput, true);
-        m_refusalNoteTimer = new QTimer(this);
-        m_refusalNoteTimer->setSingleShot(true);
-        connect(m_refusalNoteTimer, &QTimer::timeout, this, [this] {
-            if (m_refusalNote)
-                m_refusalNote->hide();
-        });
-    }
-    m_refusalNote->setTipText(why, Qt::PlainText); // a layer's name is shown as it is written
-    QPoint at = globalPos + QPoint(14, 18);
-    if (QScreen *screen = QGuiApplication::screenAt(globalPos)) {
-        const QRect room = screen->availableGeometry();
-        at.setX(qMin(at.x(), room.right() - m_refusalNote->width()));
-        at.setY(qMin(at.y(), room.bottom() - m_refusalNote->height()));
-    }
-    m_refusalNote->move(at);
-    m_refusalNote->showFaded();
-    m_refusalNote->raise();
-    m_refusalNoteTimer->start(kRefusalNoteMs);
-}
-
-QWidget *StoryboardPage::refusalNoteForTest() const
-{
-    return m_refusalNote.data();
+    if (m_canvas)
+        m_canvas->showNote(why, kRefusalNoteMs, true);
 }
 
 void StoryboardPage::removeSelectedPanel(const QString &baseText)
@@ -12474,7 +12544,7 @@ void StoryboardPage::removeSelectedPanel(const QString &baseText)
     if (!strandNote.isEmpty())
         note += (note.isEmpty() ? QString() : QStringLiteral(" ")) + strandNote;
     if (!note.isEmpty())
-        sayNote(note);
+        sayWarning(note); // the camera move changed, keys stranded: a deletion is never silent
 }
 
 void StoryboardPage::removeSelectedPanelLocked(const QString &baseText)
@@ -13377,6 +13447,7 @@ QWidget *StoryboardPage::createLayerPanel()
 
 void StoryboardPage::rebuildLayerPanel()
 {
+    refreshMoveBar(); // another panel, another stack: animated or not (batch I-1b)
     if (!m_layerListLayout)
         return;
     if (m_canvas) {
@@ -13683,6 +13754,7 @@ void StoryboardPage::fitLayerRows()
 // click made the panel flicker and lag.
 void StoryboardPage::updateLayerSelectionUi()
 {
+    refreshMoveBar(); // the active layer may be another: animated or not (batch I-1b)
     Panel *panel = currentPanel();
     if (!panel || panel->layers.isEmpty() || panel != m_layerSelPanel
         || m_layerRows.isEmpty()) {
@@ -14415,7 +14487,7 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
     for (int idx : indices) {
         const Layer &layer = panel->layers.at(idx);
         if (layer.hasMotionData() && layer.type != QLatin1String("background")) {
-            sayNote(QStringLiteral("Merge Layers: “%1” has motion, which a merge would lose. "
+            sayWarning(QStringLiteral("Merge Layers: “%1” has motion, which a merge would lose. "
                                    "Delete its keys and switch its Animate off first, or keep the layers apart.")
                         .arg(layer.name));
             return;
@@ -14935,6 +15007,17 @@ void StoryboardPage::layerToggleAnimate(int index)
     const int beforeActive = p->activeLayerIndex;
     Layer &layer = p->layers[index];
     layer.animate = !layer.animate;
+    // THE DIAMOND'S CLICK MAKES A KEY (batch I-1b, the user's note 4 and answer 3): switched
+    // on with no keys, the layer gets its first key at the playhead at once - the layer as it
+    // is there, as drawn (no move, no turn, size 100 %, its own opacity), its pivot the centre
+    // of its art (the first key's rule) - so the diamond is solid purple. Keys kept from
+    // before (Animate was off) come back as they were, and none is added: a key between them
+    // would change the motion. One step: an undo takes the switch and the key back together.
+    if (layer.animate && layer.keys.isEmpty()) {
+        shotcam::LayerPose asDrawn;
+        asDrawn.opacity = layer.opacity;
+        writeLayerKeyAtPlayhead(p, index, asDrawn, m_canvas->artCentreOf(layer));
+    }
     const QString text = layer.animate ? QStringLiteral("Animate Layer") : QStringLiteral("Stop Animating Layer");
     pushLayerCommand(p, before, beforeActive, text);
     // The Move tool's box: the layer's pose when it animates, its pixels when not - a
@@ -14955,8 +15038,26 @@ QAbstractButton *StoryboardPage::layerAnimateButtonForTest(int index) const
     return nullptr;
 }
 
+// THE MOVE BAR ON AN ANIMATED LAYER (batch I-1b, 2026-11-25; Figma I-1b 701:755, the user's
+// note 3 and answer 2). With Animate on, the Move box poses the layer at the playhead - a key
+// holds a place, a turn, a size and an opacity - and none of the bar's seven buttons (Pivot
+// Point, Skew, Distort, Perspective, Warp, Flip H, Flip V) has a key to make: all seven hide,
+// so the whole bar hides, and the note slot says what the Move tool is doing. A normal layer,
+// or Animate off: the bar, as before.
+void StoryboardPage::refreshMoveBar()
+{
+    if (!m_moveModToolbar)
+        return;
+    Panel *panel = currentPanel();
+    const Layer *active = panel ? panel->activeLayer() : nullptr;
+    const bool animated = active && active->animate && !isGroupLayer(*active)
+        && active->type != QLatin1String("background");
+    m_moveModToolbar->setVisible(m_moveToolOn && !animated);
+}
+
 void StoryboardPage::refreshLayerMotionUi()
 {
+    refreshMoveBar(); // Animate switched, a key undone, another panel (batch I-1b)
     Panel *panel = currentPanel();
     for (QWidget *row : m_layerRows)
         for (QAbstractButton *b : row->findChildren<QAbstractButton *>(QStringLiteral("layerAnimate"))) {

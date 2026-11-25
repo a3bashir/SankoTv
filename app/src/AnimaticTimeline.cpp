@@ -844,12 +844,16 @@ QToolButton *AnimaticTimeline::trackControlForTest(const QString &objectName) co
     return m_canvas ? m_canvas->findChild<QToolButton *>(objectName) : nullptr;
 }
 
-// A press the lock refuses: say why at the pointer (the same tooltip path
-// the trim drag uses) and remember it for the gate.
+// A press the lock refuses: say why - in the workspace's note (batch I-1b; the status bar, in
+// amber, since round 1), else at the pointer (the same tooltip path the trim drag uses) - and
+// remember it for the gate.
 void AnimaticTimeline::refuse(const QString &why, const QPoint &globalPos)
 {
     m_lastRefusal = why;
-    QToolTip::showText(globalPos, why, m_canvas);
+    if (m_noteSink)
+        m_noteSink(why, true);
+    else
+        QToolTip::showText(globalPos, why, m_canvas);
 }
 
 // --- Track geometry -------------------------------------------------------
@@ -1370,7 +1374,7 @@ void AnimaticTimeline::onScrollbarAction(int action)
         user = true;
         break;
     case QAbstractSlider::SliderMove:
-        user = (m_hScroll && m_hScroll->isSliderDown()) || m_wheelOnScrollbar;
+        user = (m_hScroll && m_hScroll->isSliderDown()) || m_wheelOnScrollbar || m_panScrolling;
         break;
     default:
         break;
@@ -3787,6 +3791,17 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         m_volumePopup->hide(); // a press on the canvas is a press outside the popup
     if (m_durFlat >= 0)
         closeDurationField(false); // ...and outside the typing field: it cancels
+    // PANNING (batch I-1b, note 8): before anything a press could start - a pan moves no
+    // playhead, panel, key or trim. Ctrl was read nowhere on a press before it (no
+    // multi-select on the timeline), and the middle button was not used at all.
+    if (panPress(e) && m_drag == Drag::None) {
+        m_drag = Drag::Pan;
+        m_panStartGlobalX = e->globalPosition().x();
+        m_panStartScroll = m_scrollX;
+        m_canvas->setCursor(Qt::ClosedHandCursor);
+        e->accept();
+        return;
+    }
     if (e->button() != Qt::LeftButton)
         return;
     const QPoint pos = e->position().toPoint();
@@ -3904,6 +3919,7 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     }
     if (pos.y() < kRulerY + kRulerH || (!onSelectedEdge && qAbs(pos.x() - phx) <= kGrab)) {
         m_drag = Drag::Playhead;
+        emit playheadDragStarted(); // batch I-1b: the Move tool's box waits for its end
         m_dragPlayheadFrame = frameAtScreenX(pos.x());
         followChip(e->globalPosition().toPoint(), timecode(m_dragPlayheadFrame));
         m_canvas->update();
@@ -4113,9 +4129,30 @@ int AnimaticTimeline::moveGapAt(int screenX) const
     return last + 1;
 }
 
+bool AnimaticTimeline::panPress(const QMouseEvent *e)
+{
+    return e->button() == Qt::MiddleButton
+        || (e->button() == Qt::LeftButton && e->modifiers().testFlag(Qt::ControlModifier));
+}
+
 void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
 {
     const QPoint pos = e->position().toPoint();
+
+    // A pan (batch I-1b): the content follows the pointer, pixel for pixel, sideways only.
+    // At full view the bar has no range and nothing moves.
+    if (m_drag == Drag::Pan) {
+        if (m_hScroll && m_hScroll->maximum() > 0) {
+            const int wanted = qBound(0, m_panStartScroll - qRound(e->globalPosition().x() - m_panStartGlobalX),
+                                      m_hScroll->maximum());
+            if (wanted != m_scrollX) {
+                m_panScrolling = true;
+                m_hScroll->setSliderPosition(wanted); // actionTriggered(SliderMove) -> the user's
+                m_panScrolling = false;
+            }
+        }
+        return;
+    }
 
     if (m_drag == Drag::Playhead) {
         m_dragPlayheadFrame = frameAtScreenX(pos.x());
@@ -4351,6 +4388,9 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
     const int chipHover = artExitChipAt(pos);
     if (chipHover >= 0)
         cursor = Qt::PointingHandCursor;
+    // Ctrl held with the view zoomed in: the open hand - a drag pans (batch I-1b, note 8).
+    if (e->modifiers().testFlag(Qt::ControlModifier) && m_hScroll && m_hScroll->maximum() > 0)
+        cursor = Qt::OpenHandCursor;
     m_canvas->setCursor(cursor);
     if (hover != m_hoverIndex) {
         m_hoverIndex = hover;
@@ -4433,7 +4473,7 @@ QString AnimaticTimeline::artExitChipHoverText(int flatIndex) const
 void AnimaticTimeline::canvasMouseDoubleClick(QMouseEvent *e)
 {
     const QPoint pos = e->position().toPoint();
-    if (e->button() == Qt::LeftButton && m_tracks.shotsVisible && pos.x() >= kLabelCol
+    if (!panPress(e) && e->button() == Qt::LeftButton && m_tracks.shotsVisible && pos.x() >= kLabelCol
         && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int idx = blockAtScreenX(pos.x());
         if (idx >= 0 && idx < m_blocks.size()) {
@@ -4449,6 +4489,13 @@ void AnimaticTimeline::canvasMouseDoubleClick(QMouseEvent *e)
 
 void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 {
+    if (m_drag == Drag::Pan) { // the pan ends with its button's release (batch I-1b)
+        if (e->button() == Qt::LeftButton || e->button() == Qt::MiddleButton) {
+            m_drag = Drag::None;
+            m_canvas->setCursor(Qt::ArrowCursor);
+        }
+        return;
+    }
     if (e->button() != Qt::LeftButton)
         return;
 
@@ -4500,6 +4547,7 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         m_drag = Drag::None;
         m_dragPlayheadFrame = -1;
         m_scrubIndex = -1;
+        emit playheadDragEnded(); // batch I-1b: now the Move tool's box
         m_scrubFrameSent = -1;
         // The playhead came to rest at a panel's start, which may be off
         // the left edge of the view: the jump rule, once, now that the

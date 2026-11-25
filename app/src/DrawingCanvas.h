@@ -293,10 +293,35 @@ public:
     // DEPTH (Phase 2B): the drawing-view chip's text (empty: not drawn), and
     // whether the Camera tool is showing the layers placed for their depth.
     QString drawingViewChipForTest() const;
-    // The windows over the canvas that its bottom chip keeps clear of: the Move and
-    // Selection tools' modifier bars (batch F1). And where the chip is now, for the checks.
-    void setChipObstacles(const QVector<QWidget *> &bars);
-    QRectF drawingViewChipRectForTest() const { return drawingViewChipRect(drawingViewChipText()); }
+
+    // THE NOTE IN THE STATUS BAR (batch I-1b round 1, 2026-11-25: the user's change after hand
+    // test I1b-1 - "the notes are still distracting over the canvas, even at the top centre").
+    // Every note SankoTV shows is said in ONE place, the bottom status bar, between Import Image
+    // and "Recovery copy saved"; nothing is drawn over the canvas any more. The canvas works
+    // out what the bar says and tells the page when it changes (noteBarChanged):
+    //   * the active tool's own note - the Camera tool's ("SHOT CAMERA - ANIMATE ON - ..."),
+    //     the Move tool's on an animated layer ("Boat - key 2 of 3 - frame 93 - ..."),
+    //     "Drawing view - ..." with a drawing tool - live, also while the Move box or the
+    //     camera's frame is dragged;
+    //   * a note SAID by the workspace, the timeline or the Layers panel, for its time (one at
+    //     a time, the newest), then the tool's own note again. A refusal or a warning
+    //     ("Layer 2 is locked") is said in amber (warning = true), any other note in grey.
+    // While a drawing tool's stroke is under way (Brush, Eraser, Fill, Shapes; the mouse or the
+    // pen) the bar's words do not change: a note said meanwhile waits for the release, and
+    // the bar is brought up to date then. The readouts that follow the pointer through a drag
+    // (the camera's zoom or turn, the depth layer that holds a frame, the stage's size) stay
+    // at the pointer.
+    static constexpr int kNoteMs = 4000;
+    void showNote(const QString &text, int ms = kNoteMs, bool warning = false);
+    enum class NoteKind { Tool, Said, Warning };
+    QString noteBarText() const { return m_noteBarText; } // what the bar says now ("" nothing)
+    NoteKind noteBarKind() const { return m_noteBarKind; }
+    QString noteBarTip() const { return m_noteBarTip; }   // more than the words: the passed layers
+    QString toolNoteText() const; // the active tool's own note, worked out now
+    bool noteSaidShownForTest() const { return m_noteBarKind != NoteKind::Tool; } // a said note
+    bool notesHeldForTest() const { return m_notesHeld; }
+    QString notePendingForTest() const { return m_notePending; }
+    void expireNoteForTest() { expireNote(); } // the said note's time is up, now
     // Batch B2: the depth outline (canvas px; empty: none) and whether the last
     // paint drew it.
     QPolygonF depthOutlineForTest() const
@@ -311,7 +336,6 @@ public:
     // Phase 2C: the drag chip naming the depth layer that holds a frame
     // drag in ("Edge of 'Ground'"; empty: none shown).
     QString shotCameraEdgeChipForTest() const { return shotCameraEdgeText(); }
-    QRectF shotCameraChipRectForTest() const;
     bool shotCameraDraggingForTest() const { return m_camDrag >= 0; }
 
     // Safe-area guide opacities in percent (Preferences > Camera). Defaults
@@ -409,6 +433,14 @@ public:
     // Selection changed while Move is active: commit the running transform
     // and re-lift around the NEW target (layer or group) — no tool toggle.
     void refreshTransformBox();
+    // A SCRUB DRAG ON THE TIMELINE (batch I-1b, the user's note 1 and answer 6): while the
+    // playhead is dragged, each panel it crosses is selected, and the Move tool's box - a
+    // lift of the layer's pixels, the costly part of a crossing (64-71 ms on the 4K song
+    // copy, more than a frame) - waits for the drag's end; the canvas shows the panel's
+    // layers meanwhile.
+    void setScrubbing(bool on);
+    bool scrubbingForTest() const { return m_scrubbing; }
+    bool liftWaitsForTest() const { return m_liftAfterScrub; }
     // The layer model changed UNDERNEATH a Move session (e.g. layers were
     // merged): the lifted buffers are stale, so drop them without committing
     // and lift a fresh box around the new active target.
@@ -818,6 +850,9 @@ public:
     bool poseDraggingForTest() const { return m_poseDrag != PoseNone; }
 
 signals:
+    // The words the status bar's note says changed (batch I-1b round 1): noteBarText,
+    // noteBarKind, noteBarTip.
+    void noteBarChanged();
     // LAYER MOTION (batch I-1): the Move box let go on an animated layer - the pose it
     // made at the playhead, and the pivot it turned and sized about (stage px).
     void layerPoseEdited(int layerIndex, const shotcam::LayerPose &pose, const QPointF &pivot);
@@ -1665,7 +1700,6 @@ private:
                         const shotcam::CameraState &s) const;
     QString shotCameraChipText(const ShotCameraView &v,
                                const shotcam::CameraState &s) const;
-    QRectF shotCameraChipRect(const QString &text) const;
     // Phase 2B, Q5: a drawing tool, a panel with depth, the camera elsewhere.
     bool shotCameraDrawingViewChip() const;
     QString drawingViewChipText() const;
@@ -1674,8 +1708,25 @@ private:
     // the playhead (layerToStage), canvas px; false when there is none to show.
     bool depthOutline(QPolygonF *quad, double *depth, QString *name) const;
     mutable bool m_depthOutlinePainted = false; // the last paint drew it (the checks)
-    QRectF drawingViewChipRect(const QString &text) const;
-    QVector<QPointer<QWidget>> m_chipObstacles; // setChipObstacles
+    // The note in the status bar (above, batch I-1b round 1).
+    void syncNoteBar();       // works out what the bar says; noteBarChanged when it changed
+    void queueNoteBarSync();  // ...once, after this event (a paint: whatever repainted may change it)
+    void holdNotesForStroke(); // a drawing tool's press: the bar's words stay until...
+    void releaseHeldNotes();   // ...its release
+    void expireNote();
+    QTimer *m_noteTimer = nullptr;
+    QString m_noteText;           // the said note up now ("" none, or its time is up)
+    bool m_noteWarning = false;   // ...a refusal or a warning: amber
+    bool m_notesHeld = false;     // a drawing tool's stroke is under way
+    QString m_notePending;        // said during it: shown at its release
+    int m_notePendingMs = 0;
+    bool m_notePendingWarning = false;
+    QString m_noteBarText;        // what the bar says now (syncNoteBar)
+    NoteKind m_noteBarKind = NoteKind::Tool;
+    QString m_noteBarTip;
+    bool m_noteBarSyncQueued = false;
+    bool m_scrubbing = false;      // setScrubbing (batch I-1b)
+    bool m_liftAfterScrub = false; // the Move tool's box waits for the drag's end
     void shotCameraPress(const QPointF &widgetPos);
     void shotCameraMove(const QPointF &widgetPos, Qt::MouseButtons buttons,
                         Qt::KeyboardModifiers mods);

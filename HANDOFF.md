@@ -1,5 +1,183 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-25 (evening): BATCH I-1b ROUND 1 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1b-2 - THE SCRUB STAYS IN THE WORKSPACE, EVERY NOTE IN THE STATUS BAR, NO MOVE BAR ON AN ANIMATED LAYER, THE DIAMOND'S KEY, NOTES HELD WHILE YOU DRAW, PANNING THE TIMELINE
+THE USER (2026-11-25, about 18:2x, pasted): "Hand test I1b-2 done: all steps looked right, and no crossing stuck. One
+request: the Perspective tool's note "Tap anywhere to create the first Vanishing Point." goes back to its original place
+on the canvas, as it was before round 1, and not in the status bar. This is a deliberate exception to "no notes over the
+canvas"; record it as such so it isn't moved again. Every other note stays in the bar. Read every Dev Recorder session
+made after 15:22 on 25 November, oldest first. Confirm from system.txt that it ran the Nov 25 2026 15:22:27 build (git
+d1e1dde63+dirty) and that the title bar named "TEST COPY - small pirate, I-1b round 1 bar", then report pass, fail or
+"not tested" per step of handtest_I1b_round1_bar.md. My answers: - The Camera note in the bar: plain grey, except its
+"Soft" warning, which shows in amber like the other warnings. - Esc and Space during playback: yes, build your fix. While
+the preview is up, a pointer that has left the window counts as over the preview. - Del after tapping a layer key: fix it
+in round 2, so Del deletes the selected layer key and never offers to delete the panel. If it ran the right build and
+nothing failed: 1. Commit and push I-1b round 1 with its HANDOFF notes, matching its hash list, git status clean. 2. Build
+I-1b round 2, as approved in I-1b (701:755): ... Don't commit round 2 until my hand test passes. If anything failed or the
+build is wrong, commit nothing and report."
+HAND TEST I1b-2 READ (Dev Recorder 20261125-175410, the only session after 15:22; read by a sub-agent, its key points
+checked by me): system.txt git d1e1dde63+dirty, built Nov 25 2026 15:22:27; the title bar "SANKO TV - TEST COPY - small
+pirate, I-1b round 1 bar" (t00018042.jpg, again before step 1 at t00065554.jpg). 2617.6 s; ended by the window's X, the
+"Save changes" box answered Discard (nothing saved; 19 recovery copies). Per step of handtest_I1b_round1_bar.md: PASS 1
+(the Move, Camera, Perspective and Brush notes in the bar, nothing on the canvas), 2 (the bar followed the playhead drag
+and the camera corner's zoom while the button was down; the closing Ctrl+Z not done), 4 (M during playback, "Camera key
+marked at ..." grey, the bar visible under the preview; Esc taken over the preview; the key not undone), 8, 9, 15 (with
+Layer 3's dim mark, not the seagulls'), 16; PARTLY 3 ("Layer 4 is locked" amber at once, the Brush's note back in grey;
+the SHOTS lock never tried), 6 (the Merge refusal in amber, whole; the docks never widened enough for a "..."), 7 (the
+zoom beside the corner, the timecode at the ruler; the angle not tried), 10 (Camera crossings OCEAN 1 -> 2 -> ISLAND
+BEACH only; worst stall 44 ms; nothing reached 100 ms in any drag), 11 (the diamond's key at frame 42 of 83, solid purple;
+Ctrl+Z not tried), 12 (shown on ISLAND BEACH panel 7 Layer 2: kept key back, none added, outline; not on Layer 6), 14
+(an opacity key at frame 125, 0.15, the seagulls faint by a scrub; Play not pressed); NOT TESTED 5, 13. No step FAILED;
+no warning, no issue marker. Report: Documents\SankoTV-Design\batch-I1b-2026-11-25\handtest_I1b-2\
+handtest_I1b-2_report.md (with its crops). Noted for the user: the preview's caption "PREVIEW · Scene 1 - Panel 2 · click
+to return to drawing" beside the picture during playback (as in I1b-1; not a note of the bar's kind).
+THIS COMMIT: batch I-1b round 1 as built and changed after hand test I1b-1 (the two sections below): app/src/
+AnimaticPage.cpp/.h, AnimaticTimeline.cpp/.h, DrawingCanvas.cpp/.h, StoryboardPage.cpp/.h, app/tests/
+ProjectLifecycleTest.cpp and this HANDOFF. Its tree is the one gate I1bBar ran on: the 9 source and test files hashed
+again against app/build/_probe/split/sha_I1bBar_gate.txt before committing and matched. HASH LIST: app/build/_probe/
+split/sha_I1b1_commit.txt (the 9 files and this HANDOFF). Made in the main tree on top of d1e1dde63 and pushed.
+NEXT: I-1b round 2 (the user's word above): note 5 (copy, cut and paste of layer keys), Del on a selected layer key, note
+7 (key colours in Preferences), the Esc and Space fix during playback, the Camera note's "Soft" in amber, the Perspective
+tool's prompt back on the canvas (the user's deliberate exception).
+
+## STATUS 2026-11-25 (16:2x): HAND TEST I1b-1 READ; ROUND 1 CHANGED - EVERY NOTE IN THE STATUS BAR; GATE I1bBar GREEN IN BOTH BUILDS; NOTHING COMMITTED
+
+THE USER (2026-11-25, about 14:1x, pasted): "Hand test I1b-1: read every Dev Recorder session made after 12:08 on 25 November, oldest first. Confirm from system.txt that it ran the Nov 25 2026 12:08:37 build (git d1e1dde63+dirty) and that the title bar named "TEST COPY - small pirate, I-1b round 1", then report pass, fail or "not tested" per step of handtest_I1b_round1.md. Commit nothing yet. One change to round 1 before it's committed: the notes are still distracting over the canvas, even at the top centre. Move every note to the bottom status bar instead, in the space between the Import Image button and "Recovery copy saved". ... Plain text in the bar's own font and grey, with vertical separators around each note ... It changes with the active tool and action. It holds every note that today goes to the top-centre slot ... Nothing appears over the canvas any more. A refusal or warning (for example "Layer 2 is locked") shows in amber for a few seconds, then the tool's own note comes back ... While the pen is down, the bar's text doesn't change; it updates when I lift. The Move and Camera chips may update live while I drag their boxes. A note too long for the space ends with "…" and shows whole as a tooltip. "Saving…", "Saved" and "Recovery copy saved" keep their place at the right. The live readouts that follow the pointer during a drag (camera zoom and angle, stage size, timecode) stay at the pointer. Checks with controls and a red run; old checks that change reported with old and new text. Quick check, full gate before stopping ..., a fresh TEST COPY, the exe stamp and a short hand-test list covering the notes in the bar and any step of I1b-1 that didn't pass or wasn't tested. Don't commit round 1 until my hand test passes. Round 2 (key copy and paste, key colours) comes after."
+HAND TEST I1b-1 (Dev Recorder 20261125-134108, the only session after 12:08; read by a sub-agent, its key points checked by me): system.txt d1e1dde63+dirty, built Nov 25 2026 12:08:37; title bar "SANKO TV - TEST COPY - small pirate, I-1b round 1" (t00017042.jpg). Per step of handtest_I1b_round1.md: PASS 1, 5, 7, 8, 9, 15, 16 (for what the stills show), 17; PARTLY 2 (Play opens it; "pause, then click the ruler" not done), 3 (Move, Brush; Camera not done), 10 (diamond's key made, on JUNGLE and TEMPLE; not on OCEAN panel 1, Ctrl+Z not tried), 11 (kept keys back, none added; the outline case shown on TEMPLE, not on Layer 6), 12 (pans by pen Ctrl, mouse Ctrl, middle button all right; Ctrl drag zoomed out and the open hand not seen), 18 (renames worked; "confirmed by tapping another brush" not done); NOT TESTED 6, 13, 14; step 4 the user's verdict (no stall of 100 ms or more in any workspace scrub; the 618 ms stalls were a drag on the preview's own progress bar during playback). No step FAILED. Report: Documents\SankoTV-Design\batch-I1b-2026-11-25\handtest_I1b-1_report.md.
+FOUND IN THE RECORDING, NOT IN THE LIST (reported, not changed):
+- ESC AND SPACE DID NOTHING DURING PLAYBACK (27 Esc and 5 Space at 157.9-167.2 s, more at 171, 412, 430, 452, 494 s): the "pointer decides" rule (StoryboardPage addKey: the timeline keys are enabled only while the pointer is over the timeline section or the preview). At 145.69 s the pen left proximity after pressing Play; Qt sent Leave up to the main window, so the pointer was "nowhere" and the keys were off. Not round 1's: the 06:46 session (build c1acffcf1+dirty) shows the same. Suggested fix, for the user to decide: while the preview is up, a pointer that has left the window counts as over the preview.
+- DEL AFTER TAPPING A LAYER KEY on the LAYER row (1268.4 s) offered "Delete this panel?" - Delete over the timeline deletes a selected CAMERA key first, else the panel. Belongs with round 2 (copy, cut and paste of keys: Delete of a selected layer key).
+- "Turn on Animate to change the camera at this point." stayed about 2.3 s after Animate was switched on (into the next drag). In the status bar now; not changed.
+WHAT CHANGED (main tree, uncommitted, on top of round 1 and d1e1dde63):
+- THE NOTE IN THE STATUS BAR. StoryboardPage.h/.cpp: class StatusNoteBar (objectName statusNote) in the bottom bar in place of its stretch, between Import Image and the recovery copy's word (stretch 1). Paints the note centred in its space, 12 px (the recovery word's size), #999999 (the bar's own grey: "Script Editor", "Saving..."), a 1 x 16 px #3a3a3a separator 12 px either side; amber #f5a623 (kCamSoft / kStageAmber) for a refusal or warning; elided right with "..." when too long, its tooltip then the whole note (plus the note's tip: the Camera tool's "Passed: a, b, c", which was the chip's hover on the canvas); nothing painted with no note. The bar's sizeHint is fixed, so a note never moves the right-hand word.
+- DrawingCanvas: the note slot is gone (NoteSaidLabel, noteSlotRect, chipSize, noteSlotFree, placeNoteSaid, raiseNoteSlot, setNoteObstacles, setChipObstacles and m_chipObstacles, shotCameraChipRect, drawingViewChipRect, their test hooks; the help-event tooltip over the chip). Nothing is painted for a note: not the Camera tool's mode chip (nor its DEPTH tint), not the Move tool's pose chip, not "Drawing view - ...", not the Perspective tool's "Tap anywhere to create the first Vanishing Point." (a chip at the canvas's centre since before I-1b). toolNoteText() works the tool's note out (the same order as before: the Camera tool, the Move tool on an animated layer, Perspective with no point, Drawing view). syncNoteBar() sets noteBarText/noteBarKind (Tool, Said, Warning)/noteBarTip and emits noteBarChanged when they change; called by showNote, expireNote, the hold and its release; queued (queueNoteBarSync, once per event) from paintEvent - whatever repainted may change the tool's note, as it changed the chips - and from setTool and setActivePanel. showNote(text, ms, warning). THE HOLD: holdNotesForStroke syncs, then freezes the bar's words until releaseHeldNotes (the release; a tool or panel change; and now finishInterruptedStroke - a lost grab, found in review: (nh4)); a note said meanwhile waits and is said at the release; a said note's time running out during the stroke changes nothing until then (the round-1 rule "the note goes at the press" is replaced by the user's "the bar's text doesn't change while the pen is down"). The Move box and the camera frame hold nothing: their notes follow the drag.
+- KEPT ON THE CANVAS (readouts and labels, not notes): the camera drag's zoom/angle and "Edge of ..." chips at the pointer, the stage mode's size chips at the pointer, the timeline's timecode chip while dragging, the Quick Shape's "Drag: Rotate | Scale" hint at the hold point, the depth outline's "in the shot (depth N %)" tag, ACTION SAFE / TITLE SAFE, "Select a panel to start drawing".
+- AMBER OR GREY: sayWarning (amber) is new beside sayNote (grey). Amber: sayLocked, sayEditRefused ("Layer N is locked", 2.5 s), the timeline's refuse (the sinks now carry (text, warning): AnimaticPage/AnimaticTimeline setNoteSink), and these sayNote calls turned sayWarning: Turn on Animate (x2), the 8,192 px limit, Finish ... before changing the stage (x3), Another camera key is at this frame (x3), a Quick Move's give-way/leaves-the-art note and its refusal (x2 each), the framing held inside (x2), Scene N already holds / already shows the whole canvas / already starts on, Panel N is 1 frame long, The copy / The pasted panel takes ... not its own, pinned keys stranded (insert, move, duration, roll), the cut stays, the only panel's length cannot change, the length limit (x2), Every scene's length is already locked / No scene's length is locked, unlock it to end it at the playhead, End Scene at Playhead when it strands keys, a removal that changes the camera move, Merge refused. Grey: Toolbars hidden, Camera key marked, a new panel taking its time in a locked scene (at the playhead / half of), Panel N gave / took ..., Scene N's length is locked at / unlocked (and all scenes'), Scene N now ends at the playhead, the frame-rate rounding note, a locked scene's removal (its time went to panel M), the transport's loop hint.
+- Test hooks: StoryboardPage::noteBarForTest, recoveryStatusLabelForTest, importButtonForTest (layersToolbarForTest, round 1's, removed); DrawingCanvas::noteBarText/Kind/Tip, toolNoteText, noteSaidShownForTest (the bar shows a said note).
+CHECKS (Lifecycle; old and new texts: Documents\SankoTV-Design\batch-I1b-2026-11-25\changed_checks_statusbar_old_new.md): changed - (cx10) x2, (cur8), (cur10), (sl12) x2, (do6) x2 (old, committed at HEAD); (ns1)-(ns4), (nh1)-(nh3) (round 1's, rewritten for the bar); new - (ns1) control, (ns5) + control, (ns6) + control, (nh4). Helpers barNote/barWarns in namespace workspace. The i1b slice: 30 checks.
+RED RUNS (batch folder red_runs\): C (six places undone at once - chips on the canvas, no repaint-driven sync, no hold, no amber, a label over the canvas and a window of its own, no elision; the full Lifecycle): 14 FAILED - (ns1) (ns2) (ns3) (ns5) (ns6) (nh1) (nh2) (nh3) (cur8) (cx10) (do6) x2 (sl12) x2; the controls passed except (sl12)'s, which itself reads the bar. (ns4) and (cur10) passed red - the checks' fault, tightened ((ns4) counts shown children; (cur10) starts with no note up and waits 0.3 s) and then FAILED red (C2 i1b slice, C5 batchg slice). D (no release in finishInterruptedStroke): (nh4) FAILED. Markers removed, 0 in the diff; rebuilt and green.
+QUICK CHECK (Release, 14:58 build): Lifecycle 1885/1885, Camera 348/348. Then (nh4): i1b slice 30/30.
+GATE I1bBar (app/build/_probe/split/fullgate_I1bBar.log, clean builds, 15:20-16:27): every family GREEN in both builds - Lifecycle 1886/1886, Camera 348/348, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3. HASH LISTS: app/build/_probe/split/sha_I1bBar_gate.txt (the 9 changed files) and sha_I1bBar_exes.txt (Release ab5aa7ee..., Debug 0764bed0...). CRLF: the 9 files line count = CR count.
+EXE STAMP: Release SankoTV.exe built "Nov 25 2026 15:22:27", "d1e1dde63+dirty" (15:22:47 on disk).
+TEST COPY: "TEST COPY - small pirate, I-1b round 1 bar" (C:\SankoTV-TestCopies; from Downloads\...\small_pirate_001 read only, its 94 files hashed the same before and after - pirate_original_hashes_*_bar.txt, the same as at 11:23; 93 copied (not the mp4), 79 paths rewritten, none missing; Layer 6 animated as before, version 6).
+HAND-TEST LIST: Documents\SankoTV-Design\handtest_I1b_round1_bar.md (7 steps for the bar + 9 for what I1b-1 did not pass or test; a tip on Esc with the pen).
+NEXT: the user's hand test I1b-2. Then commit round 1 (on the user's word), then round 2 (note 5 key copy/cut/paste with answer 4 - and Delete of a selected layer key; note 7 key colours).
+
+## STATUS 2026-11-25 (13:1x): I-1b ROUND 1 BUILT - NOTES 1, 2, 3, 4, 6 AND 8 (SCRUB IN THE WORKSPACE, ONE NOTE SLOT, THE MOVE BAR ON AN ANIMATED LAYER, THE DIAMOND'S KEY, NOTES GO WHILE YOU DRAW, PANNING THE TIMELINE); GATE I1B GREEN IN BOTH BUILDS; NOTHING COMMITTED - WAITING FOR HAND TEST I1b-1
+THE USER (2026-11-25, about 10:3x, pasted): "I-1b (701:755) is approved, with my answers: 1. Notes made away from the
+canvas (the timeline, a panel) go to the same top-centre slot: one place for every note. 2. On an animated layer with
+Animate on, the Move bar hides completely; the note slot says what the Move tool is doing. 3. On a layer whose keys
+were kept when Animate went off, the diamond's click brings those keys back and adds no new key. 4. Pasting a key into
+a panel whose camera frames the scene differently: the crab keeps its place in the scene (on the canvas), and panel
+2's camera shows it from its own framing. 5. Notes hide when I draw (Brush, Eraser, Fill, Shapes). The Move box's and
+the Camera tool's chips stay while I drag them, since they say what the drag edits. "Layer N is locked" still shows
+for a press that draws nothing. 6. If scrubbing across 4K panels is slower than a frame, the canvas may show the
+panel's picture while I drag and its layers once I stop. To get a hand test sooner, build I-1b in two rounds. This
+round, only: note 1 ..., note 2 ..., note 3 ..., note 4 ..., note 6 ..., note 8 .... Leave note 5 (copy, cut and paste
+of keys) and note 7 (key colours in Preferences) for the next round. Checks with controls and red runs, none judged by
+the clock; old checks that change reported with old and new text. Measure scrubbing on a scratch copy of my 4K song
+project (never the original) and report it. Quick check, full gate before stopping ..., a fresh TEST COPY, the exe
+stamp and a hand-test list. In that list, also cover what my last test didn't: an opacity key, a tap on a dim mark in
+the LAYER row, Duplicate Panel with an animated layer, PNG stills, Merge refused on an animated layer, and Rename Brush
+confirmed by tapping another brush. Don't commit until my hand test passes. No I-2 design this round."
+NOT IN THIS ROUND (the user's word): note 5 (copy, cut and paste of keys; answer 4 is for it) and note 7 (key colours).
+WHAT IS BUILT (main tree, uncommitted; on top of d1e1dde63):
+- NOTE 1, THE SCRUB STAYS IN THE WORKSPACE. StoryboardPage sets AnimaticPage::setScrubShowsCanvas(true) for every
+  tool (it was the Camera tool's alone): a drag or click on the ruler selects the panel under the playhead and the
+  canvas shows it at the playhead's frame (the Move tool and the Camera tool with the motion there, drawing tools
+  as drawn); no preview opens. onScrubbedTo: a scrub inside the panel under the playhead also leaves a PAUSED
+  preview and selects that panel if the film had played past the selected one. Only Play opens the preview. A
+  page with no workspace (the camera family's standalone AnimaticPage) still previews - its pins untouched.
+  ANSWER 6 / THE MEASUREMENT: a crossing with the Move tool lifted the active layer's pixels into its box at each
+  panel crossed (64-79 ms on the 4K song copy, more than a 24 fps frame, 41.7 ms). Now the timeline says when a
+  playhead drag starts and ends (playheadDragStarted/Ended -> AnimaticPage::scrubDragStarted/Ended ->
+  DrawingCanvas::setScrubbing) and liftDefaultTransformBox waits for the drag's end (m_liftAfterScrub); a press
+  on the canvas ends any scrub state that lost its release. The panel's picture fallback (answer 6) is NOT
+  built: with the lift deferred the medians are under a frame for every tool (see SCRUB COST).
+- NOTE 2 / ANSWER 1, ONE NOTE SLOT. DrawingCanvas::noteSlotRect: the top centre, 12 px below the canvas's top; a
+  floating BAR over it (<= 100 px tall): 8 px below it; a floating PANEL (taller): beside it, 8 px clear, on the
+  side nearer the centre that fits (below it only if neither side fits). The obstacles are every visible
+  FloatingToolWindow over the canvas (StoryboardPage's setNoteObstacles provider) plus the modifier bars. The
+  tools' chips are painted there: the Camera tool's mode chip (shotCameraChipRect - it was at y 12, under the
+  floating bar at the top), the Move tool's pose chip (it was just above the box, over the art), "Drawing view -
+  ..." (drawingViewChipRect - it was 36 px from the bottom, under the Zoom bar in hand test I1). SAID notes -
+  StoryboardPage::sayNote, sayEditRefused ("Layer N is locked", 2.5 s), sayLocked; AnimaticPage::sayNote (the
+  loop hint) and AnimaticTimeline::refuse (the locks' refusals) through setNoteSink - are shown by
+  DrawingCanvas::showNote in a label of their own (NoteSaidLabel: a child of the canvas, transparent to the
+  pointer, raised over the preview), 4 s (kNoteMs), one at a time, covering the tool's chip while up. Taken out:
+  the GROW-1 AfterNextEnter machinery, notePoint/setNotePointForTest, the refusal note's window (m_refusalNote,
+  refusalNoteForTest). KEPT AT THE POINTER (drag readouts, not notes): the camera drag's zoom/angle and depth-edge
+  chips, the stage mode's size chips, the timeline's timecode chip while dragging.
+- NOTE 6 / ANSWER 5, NOTES GO WHILE YOU DRAW. holdNotesForStroke on a Brush, Eraser, Shapes or Fill press (mouse;
+  the pen's stroke press in tabletEvent): the said note is dropped and the tool's chip not painted until
+  releaseHeldNotes (the release; also a tool or panel change); a note said meanwhile shows at the release. The
+  Move box's and the Camera tool's chips stay while dragged (they are not drawing tools); a press on a locked
+  layer draws nothing, so its note shows at once.
+- NOTE 3 / ANSWER 2, THE MOVE BAR. StoryboardPage::refreshMoveBar: shown with the Move tool (m_moveToolOn, from
+  the tool button) unless the active layer is animated with Animate on; called from the button, refreshLayerMotionUi,
+  updateLayerSelectionUi and rebuildLayerPanel.
+- NOTE 4 / ANSWER 3, THE DIAMOND'S KEY. layerToggleAnimate: switched on with no keys, one key at the playhead (rest
+  pose, the layer's opacity, the pivot its art's centre - writeLayerKeyAtPlayhead) in the same "Animate Layer"
+  step; kept keys come back as they were, none added.
+- NOTE 8, PANNING. AnimaticTimeline: Ctrl + left press (mouse or the pen's mouse) or a middle press anywhere on the
+  rows or the ruler starts Drag::Pan before anything else; moves set the scrollbar's position (m_panScrolling
+  makes it the user's scroll: the hold rule applies, as for the scrollbar); the release ends it. The open hand on
+  a hover with Ctrl when the view can scroll; the closed hand while panning. A Ctrl double-click pans too (it is
+  no duration-field double-click). CLASH CHECK (before building): Ctrl was read once on the timeline (Ctrl+wheel
+  zoom, unchanged), Alt on a press (the roll, unchanged), non-left presses ignored, no multi-select.
+NOT IN THIS ROUND: note 5 (copy, cut and paste of keys; answer 4) and note 7 (key colours).
+NEW CHECKS (ProjectLifecycleTest.cpp, runI1bPass, slice "i1b", in the full run after runLayerMotionPass; 25 checks
+on the layer-motion fixture): (ns1)-(ns4) the slot (the Move chip 8 px below the top bar, control 12 px with the bar
+hidden; the Camera chip there and under no window, control: its old place under the bar; the SHOTS lock's refusal
+from the timeline in the slot, control: its time up, the chip again; a note over the preview stays above it);
+(nh1)-(nh3) notes while drawing (a Brush press drops the note and the chip, a note said meanwhile waits for the
+release - control: the same note with no stroke shows at once; the pen through the window system; the Move box's
+chip stays while dragged and "Ground is locked" shows at once); (sc1)-(sc3) the scrub (no preview, panel 2
+selected at frame 10 - control: Play opens it; a ruler click leaves a paused preview; the Move tool shows the Boat
+posed at frame 12, the Brush as drawn - read at 200 %, as at the fitted zoom the box's own marks cover the 20 px
+Boat; the box waits for the drag's end - control: a strip click lifts it at once); (mb1) the Move bar (+ undo,
+control: Animate off shows it); (dk1) the diamond's key (control: kept keys, none added); (tp1)-(tp4) panning
+(Ctrl + drag 150 px, middle drag, the pen with Ctrl through the window system, the hands; control: a plain ruler
+drag moves the playhead, at full view nothing moves). None judged by the clock.
+RED RUNS (Documents\SankoTV-Design\batch-I1b-2026-11-25\red_runs\): A (scrub Camera-only again, the Move bar
+always shown, no diamond key, no pan; one build): (sc1) x2, (sc2), (sc3), (mb1) x2, (dk1), (tp1)-(tp3) FAIL; the
+controls (sc1) Play, (sc3), (dk1), (tp4) PASS. B (the slot's obstacles off, no hold while drawing, the box not
+waiting, the Move bar as before I-1b): (ns1), (ns2), (nh1), (nh2), (sc3), (mb1) x2 FAIL; their controls PASS.
+The panel-beside rule's red run is the first quick check itself (the old step-below put (sl12)'s Brush chip at y
+432). Markers removed, rebuilt, the slice green again before the quick check; 0 "RED RUN" in the diff.
+OLD CHECKS CHANGED (old and new text: Documents\SankoTV-Design\batch-I1b-2026-11-25\changed_checks_old_new.md;
+old blocks old_cur8.txt, old_cur10.txt, old_cx10.txt there): texts changed - (cur8) the locked layer's note in the
+slot, (cur10) the note no window, (cx10) the Quick Move's note in the slot (its heard-events control removed: the
+new check sends them heard as well), (cx10) the clip menu's, (sl12) both, (ct) the Brush's scrub, (af) the three
+scrub checks; ways in changed, texts not - (cur8) x2, (af) undo/redo through the preview and (qm.4) and (cr.9)
+raise the preview with previewForTest, (ed5) and (lm13) set the paused preview's frame with
+setPlayheadFrameInPanel, (ta4) puts the selection back after its scrub (else (ta5)-(ta7) chose another scene's
+panels). New test hook: AnimaticPage::previewForTest (the preview paused on a panel, as Play then Pause leaves it).
+SCRUB COST (Documents\SankoTV-Design\batch-I1b-2026-11-25\scrubcost\: measure_scrub.sh, results_scrub_cost.txt,
+the removed slice scrubcost_slice_removed.cpp.txt; a temporary Lifecycle slice "scrubcost" on a fresh scratch copy
+of the 4K song each run, 3 runs, Release, test window 1880 x 900 - canvas 1617 x 414; the song is 7 panels at 24
+fps, a frame 41.7 ms; the original's 24 files hash the same before and after, c2f35047...): a crossing into a
+panel, the select + paint + settle: BRUSH 23-25 ms median (max 26-28); CAMERA 35-37 ms (max 37-42); MOVE before
+the change 40-42 ms median, max 64-80 ms (its box lifts the 4K layer at every panel). IN A DRAG, with the lift
+waiting for the drag's end: Brush 26-28 ms (max 29-31), Move 32-33 ms (max 47-50), Camera 37-40 ms (max 43-46);
+the drag's end with the Move tool, the box lifted once: 38 ms. Inside one panel, frame by frame with a layer moving:
+6-9 ms median every tool. So every median is under a frame; the slowest Move and Camera crossings are 2-8 ms over
+it. The picture fallback (answer 6) is not built - the hand test says whether crossings stick (step 4).
+QUICK CHECK (Release, before the gate): Lifecycle first 9 FAILED - (af) x4 (the old scrub rule, and a knock-on),
+(ta5)-(ta7) x4 (knock-ons of (ta4)'s scrub now selecting) and (sl12)'s control (the slot under the Colors panel at
+y 432: the code changed, a panel is now passed beside) - each read and fixed as above; then Lifecycle 1881/1881,
+Camera 348/348.
+GATE I1B (app/build/_probe/split/fullgate_I1b.log, normal mode, 3428 s): every family GREEN in both builds -
+Lifecycle 1881/1881, Camera 348/348, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46,
+QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3. EXE STAMP: Release SankoTV.exe built "Nov 25 2026
+12:08:37", "d1e1dde63+dirty" (12:08:56 on disk). HASH LISTS: app/build/_probe/split/sha_I1b_gate.txt (the 9 changed
+files) and sha_I1b_exes.txt. CRLF: the 9 files' line counts equal their CR counts.
+TEST COPY: "TEST COPY - small pirate, I-1b round 1" (C:\SankoTV-TestCopies; from the original read only - its 94
+files hashed the same before and after, Documents\SankoTV-Design\batch-I1b-2026-11-25\pirate_original_hashes_*;
+93 copied (not the mp4), 79 paths rewritten, none missing; the seagulls (OCEAN panel 1, "Layer 6") animated as in
+I1: 3 keys, version 6). HAND-TEST LIST: Documents\SankoTV-Design\handtest_I1b_round1.md (12 I-1b steps + 6 that
+hand test I1 did not cover: an opacity key, a dim mark, Duplicate Panel, PNG stills, Merge refused, Rename Brush
+confirmed by another brush).
+
 ## 2026-11-25: BATCH I-1 (LAYER MOTION) COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1, ON TOP OF RENAME BRUSH (e73460ff6); THE USER'S EIGHT FOLLOW-UP NOTES (I-1b) DRAWN IN FIGMA I-1b (701:755) - WAITING FOR APPROVAL, NOTHING OF I-1b BUILT
 THE USER (2026-11-25, about 08:5x, pasted): "Hand test I1 done. Read every Dev Recorder session made after 22:36 on 24
 November, oldest first. Confirm from system.txt that it ran the Nov 24 2026 22:36:56 build (git c1acffcf1+dirty) and
