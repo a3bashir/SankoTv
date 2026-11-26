@@ -29,7 +29,10 @@ this fence."
 #include <QTimer>
 #endif
 
+#include "SankoColorPicker.h" // Preferences > Keyframes' Custom... (batch I-1b round 2)
+#include "SankoKeyColors.h"
 #include "SankoNoteStyle.h"
+#include "SankoTimelineTheme.h"
 #include "SankoTip.h"
 #include "AnimaticPage.h"
 #include "AnimaticTimeline.h"
@@ -54,7 +57,11 @@ this fence."
 #include "export/ProjectExport.h"
 
 #include <QAction>
+#include <QAbstractButton>
 #include <QDialog>
+#include <QEnterEvent>
+#include <QPainter>
+#include <QPolygonF>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -228,6 +235,7 @@ MainWindow::MainWindow(QWidget *parent)
     // the note style (Phase 1B) that sizes and places it.
     installSankoTips();
     applySankoNoteStyle();
+    loadKeyColors(); // Preferences > Keyframes, before anything paints a key (batch I-1b round 2)
 
     setupMenuBar();
 
@@ -308,11 +316,12 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     connect(m_storyboard, &StoryboardPage::panelClipboardChanged, this, [this](bool available) {
-        if (m_pastePanelAct)
-            m_pastePanelAct->setEnabled(available);
+        m_panelPasteAvailable = available;
+        refreshPasteAction();
         if (m_pastePanelInPlaceAct)
             m_pastePanelInPlaceAct->setEnabled(available);
     });
+    connect(m_storyboard, &StoryboardPage::layerKeyPasteChanged, this, &MainWindow::refreshPasteAction);
 
     m_stack->addWidget(m_dashboard);        // index 0
     m_stack->addWidget(m_scriptEditor);     // index 1
@@ -917,6 +926,127 @@ void MainWindow::setupMenuBar()
     });
 }
 
+namespace {
+
+// Preferences > Keyframes (batch I-1b round 2): one colour as a diamond; chosen, ringed in white.
+class KeySwatch : public QAbstractButton
+{
+public:
+    KeySwatch(const QColor &color, const QString &name, QWidget *parent = nullptr)
+        : QAbstractButton(parent), m_color(color)
+    {
+        setCheckable(true);
+        setFixedSize(24, 24);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+        setToolTip(name);
+        setAccessibleName(name);
+    }
+    QColor color() const { return m_color; }
+    void setColor(const QColor &color)
+    {
+        m_color = color;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QPointF c(width() / 2.0, height() / 2.0);
+        auto diamond = [&c](qreal h) {
+            QPolygonF d;
+            d << c + QPointF(0, -h) << c + QPointF(h, 0) << c + QPointF(0, h) << c + QPointF(-h, 0);
+            return d;
+        };
+        if (isChecked() || underMouse()) {
+            p.setPen(QPen(isChecked() ? QColor(Qt::white) : QColor(255, 255, 255, 90), isChecked() ? 1.5 : 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawPolygon(diamond(10.5));
+        }
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_color);
+        p.drawPolygon(diamond(7.0));
+    }
+    void enterEvent(QEnterEvent *e) override
+    {
+        QAbstractButton::enterEvent(e);
+        update();
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        QAbstractButton::leaveEvent(e);
+        update();
+    }
+
+private:
+    QColor m_color;
+};
+
+// The two rows as the timeline paints them, in the colours chosen now: the CAMERA row's line and
+// keys, one of them selected; the LAYER row's line, keys and a dim mark of another layer.
+class KeyColorPreview : public QWidget
+{
+public:
+    explicit KeyColorPreview(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("prefsKeysPreview"));
+        setFixedHeight(56);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        using SankoKeyColors::Row;
+        using namespace SankoTimelineTheme;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+        p.setBrush(kCameraRowBg);
+        p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
+        QFont f = font();
+        f.setPixelSize(9);
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        const qreal rowH = height() / 2.0, x0 = 104.0, span = width() - x0 - 18.0;
+        auto diamond = [](const QPointF &c, qreal h) {
+            QPolygonF d;
+            d << c + QPointF(0, -h) << c + QPointF(h, 0) << c + QPointF(0, h) << c + QPointF(-h, 0);
+            return d;
+        };
+        for (int i = 0; i < 2; ++i) {
+            const Row row = i == 0 ? Row::Camera : Row::Layer;
+            const qreal cy = rowH * i + rowH / 2.0;
+            p.setPen(QColor(0x99, 0x99, 0x99));
+            p.drawText(QRectF(12, rowH * i, x0 - 12, rowH), Qt::AlignVCenter | Qt::AlignLeft,
+                       i == 0 ? QStringLiteral("CAMERA") : QStringLiteral("LAYER ") + QChar(0x00B7)
+                                                               + QStringLiteral(" Boat"));
+            const QVector<qreal> at = i == 0 ? QVector<qreal>{0.0, 0.45, 1.0} : QVector<qreal>{0.1, 0.4, 0.7};
+            // As the rows paint them (AnimaticTimeline): the line and the resting keys the colour,
+            // their outline the colour toward white; the CAMERA row's selected key and its move the
+            // lighter shade, the key ringed white.
+            for (int k = 0; k + 1 < at.size(); ++k)
+                p.fillRect(QRectF(x0 + span * at.at(k) + 6, cy - 1.0, span * (at.at(k + 1) - at.at(k)) - 12, 2.0),
+                           i == 0 && k == 0 ? SankoKeyColors::keyEdge(row) : SankoKeyColors::key(row));
+            for (int k = 0; k < at.size(); ++k) {
+                const bool selected = i == 0 && k == 0;
+                p.setPen(QPen(selected ? QColor(Qt::white) : SankoKeyColors::keyEdge(row), 1.5, Qt::SolidLine,
+                              Qt::FlatCap, Qt::RoundJoin));
+                p.setBrush(selected ? SankoKeyColors::keyEdge(row) : SankoKeyColors::key(row));
+                p.drawPolygon(diamond(QPointF(x0 + span * at.at(k), cy), 5.0));
+            }
+            if (i == 1) { // another layer's key, dim
+                p.setPen(QPen(SankoKeyColors::dim(row), 1.2));
+                p.setBrush(Qt::NoBrush);
+                p.drawPolygon(diamond(QPointF(x0 + span * 0.92, cy), 3.0));
+            }
+        }
+    }
+};
+
+} // namespace
+
 // Modal Preferences dialog: category list on the left, settings pane on the
 // right. Currently one category (Camera) with the safe-area guide opacities;
 // values persist in QSettings and push into the canvas live while dragging.
@@ -924,7 +1054,7 @@ void MainWindow::onPreferences()
 {
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Preferences"));
-    dialog.setFixedSize(520, 300);
+    dialog.setFixedSize(520, 370); // 300 until the Keyframes page (batch I-1b round 2)
     dialog.setStyleSheet(SankoTheme::themed("QDialog { background-color: #161616; }"
         "QLabel { color: #cccccc; font-size: 11px; }"
         "QListWidget { background-color: #111111; color: #cccccc; font-size: 12px;"
@@ -942,6 +1072,7 @@ void MainWindow::onPreferences()
     QListWidget *categories = new QListWidget;
     categories->setFixedWidth(130);
     categories->addItem(QStringLiteral("Camera"));
+    categories->addItem(QStringLiteral("Keyframes")); // batch I-1b round 2: the list is alphabetical
     categories->addItem(QStringLiteral("Playback"));
     categories->addItem(QStringLiteral("Recovery"));
     categories->setCurrentRow(0);
@@ -993,6 +1124,119 @@ void MainWindow::onPreferences()
     cameraLayout->addLayout(buttonRow);
 
     pages->addWidget(cameraPage);
+
+    // --- Keyframes page (batch I-1b round 2, 2026-11-25; the user's note 7, Figma I-1b 701:755
+    // section 5) ---------------------------------------------------------------------------------
+    // The colour of the camera's keys and of the layers' keys, each on its own: the eight presets
+    // (purple, the default, first; the chosen one ringed in white), the row's custom colour as its
+    // own diamond once Custom... has picked one, and Custom... - the SankoTV colour picker, with
+    // the row's colour in it. A choice shows at once, as on the other pages; it is a setting of
+    // SankoTV on this computer, never in the project file (SankoKeyColors.h).
+    QWidget *keysPage = new QWidget;
+    QVBoxLayout *keysLayout = new QVBoxLayout(keysPage);
+    keysLayout->setContentsMargins(16, 14, 16, 12);
+    keysLayout->setSpacing(4);
+    auto *keysPreview = new KeyColorPreview;
+    QVector<std::function<void()>> keySyncers;
+    auto refreshKeysPage = [&keySyncers, keysPreview] {
+        for (const std::function<void()> &sync : std::as_const(keySyncers))
+            sync();
+        keysPreview->update();
+    };
+    auto applyKeyColor = [this, &refreshKeysPage](SankoKeyColors::Row row, const QColor &color) {
+        SankoKeyColors::setBase(row, color);
+        sankoSettings().setValue(SankoKeyColors::settingsKey(row), SankoKeyColors::base(row).name());
+        if (m_storyboard)
+            m_storyboard->keyColorsChanged();
+        refreshKeysPage();
+    };
+    const QString keyHeadStyle = QStringLiteral("QLabel { color: #e6e6e6; font-size: 11px; font-weight: 600; }");
+    const QString keyNoteStyle = QStringLiteral("QLabel { color: #8a8a90; font-size: 10px; }");
+    auto addKeyRow = [&](SankoKeyColors::Row row, const QString &title, const QString &caption,
+                         const QString &prefix) {
+        QLabel *head = new QLabel(title);
+        head->setStyleSheet(keyHeadStyle);
+        keysLayout->addWidget(head);
+        auto *line = new QHBoxLayout;
+        line->setSpacing(4);
+        QVector<KeySwatch *> swatches;
+        for (const SankoKeyColors::Preset &preset : SankoKeyColors::presets()) {
+            auto *swatch = new KeySwatch(preset.color, preset.name);
+            swatch->setObjectName(prefix + preset.name);
+            connect(swatch, &QAbstractButton::clicked, &dialog,
+                    [applyKeyColor, row, color = preset.color] { applyKeyColor(row, color); });
+            line->addWidget(swatch);
+            swatches.append(swatch);
+        }
+        auto *custom = new KeySwatch(QColor(), QStringLiteral("Your custom colour"));
+        custom->setObjectName(prefix + QStringLiteral("Custom"));
+        connect(custom, &QAbstractButton::clicked, &dialog,
+                [applyKeyColor, row, custom] { applyKeyColor(row, custom->color()); });
+        line->addWidget(custom);
+        line->addSpacing(6);
+        QPushButton *pick = new QPushButton(QStringLiteral("Custom..."));
+        pick->setObjectName(prefix + QStringLiteral("Pick"));
+        pick->setStyleSheet(QStringLiteral("QPushButton { padding: 3px 10px; }"));
+        connect(pick, &QPushButton::clicked, &dialog, [&dialog, applyKeyColor, row, title] {
+            const QColor chosen =
+                SankoColorPicker::getColor(SankoKeyColors::base(row), &dialog, title + QStringLiteral(" - Custom Colour"));
+            if (!chosen.isValid())
+                return;
+            sankoSettings().setValue(SankoKeyColors::customSettingsKey(row), QColor(chosen.rgb()).name());
+            applyKeyColor(row, chosen);
+        });
+        line->addWidget(pick);
+        line->addStretch(1);
+        keysLayout->addLayout(line);
+        QLabel *note = new QLabel(caption);
+        note->setWordWrap(true);
+        note->setStyleSheet(keyNoteStyle);
+        keysLayout->addWidget(note);
+        keySyncers.append([row, swatches, custom] {
+            const QColor now = SankoKeyColors::base(row);
+            const QColor saved =
+                QColor::fromString(sankoSettings().value(SankoKeyColors::customSettingsKey(row)).toString());
+            custom->setColor(saved);
+            custom->setVisible(saved.isValid());
+            bool preset = false;
+            for (KeySwatch *s : swatches) {
+                const bool on = s->color().rgb() == now.rgb();
+                s->setChecked(on);
+                preset = preset || on;
+            }
+            custom->setChecked(!preset && saved.isValid() && saved.rgb() == now.rgb());
+        });
+    };
+    addKeyRow(SankoKeyColors::Row::Camera, QStringLiteral("Camera keys"),
+              QStringLiteral("The CAMERA row's keys and lines, and the Camera tool's key marks."),
+              QStringLiteral("prefsCameraKey"));
+    keysLayout->addSpacing(6);
+    addKeyRow(SankoKeyColors::Row::Layer, QStringLiteral("Layer keys"),
+              QStringLiteral("The LAYER row's keys, lines and dim marks, the Layers panel's diamond, and the "
+                             "Move tool's path and key marks on the canvas."),
+              QStringLiteral("prefsLayerKey"));
+    keysLayout->addSpacing(6);
+    keysLayout->addWidget(keysPreview);
+    keysLayout->addStretch(1);
+    QHBoxLayout *keysButtons = new QHBoxLayout;
+    QPushButton *keysDefault = new QPushButton(QStringLiteral("Use the default (purple for both)"));
+    keysDefault->setObjectName(QStringLiteral("prefsKeysDefault"));
+    keysDefault->setCursor(Qt::PointingHandCursor);
+    keysDefault->setStyleSheet(SankoTheme::themed(
+        "QPushButton { background: transparent; border: none; color: %ACCENT%; padding: 6px 0px; }"
+        "QPushButton:hover { background: transparent; text-decoration: underline; }"));
+    connect(keysDefault, &QPushButton::clicked, &dialog, [applyKeyColor] {
+        applyKeyColor(SankoKeyColors::Row::Camera, SankoKeyColors::kDefault);
+        applyKeyColor(SankoKeyColors::Row::Layer, SankoKeyColors::kDefault);
+    });
+    keysButtons->addWidget(keysDefault);
+    keysButtons->addStretch(1);
+    QPushButton *closeKeys = new QPushButton(QStringLiteral("Close"));
+    connect(closeKeys, &QPushButton::clicked, &dialog, &QDialog::accept);
+    keysButtons->addWidget(closeKeys);
+    keysLayout->addLayout(keysButtons);
+    refreshKeysPage();
+    pages->addWidget(keysPage);
 
     // --- Playback page (2026-11-02) ------------------------------------------
     // The one switch of the stage clear, the same as View's; each follows
@@ -1121,6 +1365,24 @@ void MainWindow::onPreferences()
     pages->addWidget(savingPage);
 
     dialog.exec();
+}
+
+void MainWindow::loadKeyColors()
+{
+    QSettings settings = sankoSettings();
+    for (SankoKeyColors::Row row : {SankoKeyColors::Row::Camera, SankoKeyColors::Row::Layer}) {
+        const QColor color = QColor::fromString(settings.value(SankoKeyColors::settingsKey(row)).toString());
+        SankoKeyColors::setBase(row, color.isValid() ? color : SankoKeyColors::kDefault);
+    }
+}
+
+// Edit > Paste: a panel or a drawing is copied - or, while the LAYER row is the last thing
+// pressed, a layer key is (batch I-1b round 2). Paste in Place stays the panel's and the drawing's.
+void MainWindow::refreshPasteAction()
+{
+    if (m_pastePanelAct)
+        m_pastePanelAct->setEnabled(m_panelPasteAvailable
+                                    || (m_storyboard && m_storyboard->layerKeyPasteReady()));
 }
 
 // --- Auto-save and crash recovery (2026-11-04) ----------------------------------

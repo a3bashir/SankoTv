@@ -311,13 +311,22 @@ public:
     // the bar is brought up to date then. The readouts that follow the pointer through a drag
     // (the camera's zoom or turn, the depth layer that holds a frame, the stage's size) stay
     // at the pointer.
+    // The Camera tool's note is grey but for its "Soft 1.43x" warning, which is amber like the
+    // other warnings (batch I-1b round 2, the user's answer): noteBarAmberFrom is where the
+    // amber part of the words starts (-1: none).
+    // THE ONE EXCEPTION, the user's deliberate choice (2026-11-25, after hand test I1b-2): the
+    // Perspective tool's "Tap anywhere to create the first Vanishing Point." is painted at the
+    // canvas's centre, as before round 1, never in the bar (perspectivePromptRect).
     static constexpr int kNoteMs = 4000;
     void showNote(const QString &text, int ms = kNoteMs, bool warning = false);
     enum class NoteKind { Tool, Said, Warning };
     QString noteBarText() const { return m_noteBarText; } // what the bar says now ("" nothing)
     NoteKind noteBarKind() const { return m_noteBarKind; }
     QString noteBarTip() const { return m_noteBarTip; }   // more than the words: the passed layers
+    int noteBarAmberFrom() const { return m_noteBarAmberFrom; }
     QString toolNoteText() const; // the active tool's own note, worked out now
+    QRectF perspectivePromptRectForTest() const { return perspectivePromptRect(); }
+    static QString perspectivePromptText();
     bool noteSaidShownForTest() const { return m_noteBarKind != NoteKind::Tool; } // a said note
     bool notesHeldForTest() const { return m_notesHeld; }
     QString notePendingForTest() const { return m_notePending; }
@@ -1724,7 +1733,10 @@ private:
     QString m_noteBarText;        // what the bar says now (syncNoteBar)
     NoteKind m_noteBarKind = NoteKind::Tool;
     QString m_noteBarTip;
+    int m_noteBarAmberFrom = -1;  // the Camera tool's "Soft" warning in its note: amber from here
     bool m_noteBarSyncQueued = false;
+    QRectF perspectivePromptRect() const; // the Perspective tool's prompt chip (null: none)
+    static QFont perspectivePromptFont();
     bool m_scrubbing = false;      // setScrubbing (batch I-1b)
     bool m_liftAfterScrub = false; // the Move tool's box waits for the drag's end
     void shotCameraPress(const QPointF &widgetPos);

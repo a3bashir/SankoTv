@@ -274,6 +274,12 @@ public:
     void refreshCamera();
     // What the CAMERA row's Animate shows (the workspace's state, Phase 1C).
     void setCameraAnimate(bool on);
+    // A press lands on the LAYER row (batch I-1b round 2; AnimaticTimeline::pressOnLayerRow).
+    bool pressOnLayerRow(const QObject *receiver, const QPoint &globalPos) const;
+    // ...on the timecode row, or a handed-on copy of a press on the rows (after hand test I1b-3;
+    // AnimaticTimeline::pressOnTimecodeRow, pressPassedOnFromRows).
+    bool pressOnTimecodeRow(const QObject *receiver, const QPoint &globalPos) const;
+    bool pressPassedOnFromRows(const QObject *receiver, const QPoint &globalPos) const;
     // The CAMERA row's selected key (scene and key indices; false: none).
     bool selectedCameraKey(int *sceneIndex, int *keyIndex) const;
     void setSelectedCameraKey(int sceneIndex, int keyIndex);
@@ -363,6 +369,8 @@ signals:
     void layerKeyMoveRequested(int flatPanelIndex, int layerIndex, int keyIndex, int frameInPanel);
     void layerKeyContextMenuRequested(int flatPanelIndex, int layerIndex, int keyIndex, const QPoint &globalPos);
     void layerEaseMarkClicked(int flatPanelIndex, int layerIndex, int keyIndex, const QRect &globalMarkRect);
+    void layerRowPressed(int flatPanelIndex, int layerIndex, int keyIndex); // batch I-1b round 2
+    void layerRowContextMenuRequested(const QPoint &globalPos);
 
 public:
     // THE LAYER ROW (batch I-1): a layer's motion or the selected layer changed - the row

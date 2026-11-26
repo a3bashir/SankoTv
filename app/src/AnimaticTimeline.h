@@ -229,6 +229,15 @@ public:
     // bar's switch, the same state) and eye.
     void setCameraAnimate(bool on); // what the Animate button shows
     bool cameraAnimateShown() const { return m_cameraAnimate; }
+    // A press at `globalPos` delivered to `receiver` lands on the LAYER row (batch I-1b round 2:
+    // any other press hands the edit keys back).
+    bool pressOnLayerRow(const QObject *receiver, const QPoint &globalPos) const;
+    // ...or on the timecode row, the ruler and its label: it moves the playhead, and the LAYER
+    // row keeps the edit keys through that (the user's answer after hand test I1b-3) ...
+    bool pressOnTimecodeRow(const QObject *receiver, const QPoint &globalPos) const;
+    // ...or is the copy of a press on the rows that Qt hands on to the rows' parents (a pen's
+    // press the rows did not take, before the mouse press Qt makes of it): not a press anywhere.
+    bool pressPassedOnFromRows(const QObject *receiver, const QPoint &globalPos) const;
     // The selected key: false when none (or it has gone).
     bool selectedCameraKey(int *sceneIndex, int *keyIndex) const;
     void setSelectedCameraKey(int sceneIndex, int keyIndex); // -1, -1: none
@@ -341,6 +350,12 @@ signals:
     void layerKeyMoveRequested(int flatPanelIndex, int layerIndex, int keyIndex, int frameInPanel);
     void layerKeyContextMenuRequested(int flatPanelIndex, int layerIndex, int keyIndex, const QPoint &globalPos);
     void layerEaseMarkClicked(int flatPanelIndex, int layerIndex, int keyIndex, const QRect &globalMarkRect);
+    // THE LAYER ROW TAKES THE EDIT KEYS (batch I-1b round 2, the user's note 5): any press on the
+    // row - on a key (its indices), or on its empty track or an ease mark (keyIndex -1) - makes it
+    // the last thing pressed, so Ctrl+C, X and V are its; a right-click off a key asks for the
+    // row's own menu (Paste Key at the Playhead).
+    void layerRowPressed(int flatPanelIndex, int layerIndex, int keyIndex);
+    void layerRowContextMenuRequested(const QPoint &globalPos);
     // Right-click on the SCENES track (Phase 1D): that scene's menu.
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos);
     // A press on a scene's lock on the SCENES row (batch F1): lock or unlock its length.

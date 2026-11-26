@@ -1,5 +1,284 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-26 (15:2x): BATCH I-1b ROUND 2 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1b-4 - COPY, CUT AND PASTE OF LAYER KEYS, DEL ON A LAYER KEY, KEY COLOURS IN PREFERENCES, SPACE AND ESC WHEREVER THE POINTER IS WHILE THE FILM IS UP, THE CAMERA NOTE'S "SOFT" IN AMBER, THE PERSPECTIVE PROMPT BACK ON THE CANVAS; FIGMA I-2 (727:757) APPROVED WITH EIGHT ANSWERS - TO BE BUILT NEXT
+THE USER'S WORD (pasted 2026-11-26, about 15:05): "Hand test I1b-4 done: all steps looked right. Read every Dev Recorder
+session made after 12:54 on 26 November, oldest first (two, because of the restart). Confirm from system.txt that each ran
+the Nov 26 2026 12:54:03 build (git 2a69c13a6+dirty) and that the title bar named "TEST COPY - small pirate, I-1b round 2
+retest", then report pass, fail or "not tested" per step of handtest_I1b_round2_retest.md. If it ran the right build and
+nothing failed, commit and push I-1b round 2 with its HANDOFF notes, matching its hash list, git status clean. Mark I-1b
+BUILT in Figma."
+HAND TEST I1b-4 (read 2026-11-26; report and crops in Documents\SankoTV-Design\batch-I1b-2026-11-25\handtest_I1b-4\):
+THREE sessions, not two - 20261126-144218 (1266.8 s, the test, ended by the window's X and Discard), 20261126-150335
+(18.7 s) and 20261126-150411 (9.2 s) after the restart. Each: Release, built Nov 26 2026 12:54:03, git 2a69c13a6+dirty,
+the title bar "TEST COPY - small pirate, I-1b round 2 retest". No step failed:
+- 1 PASS: Paste grey in the row's menu (78 s, 86 s) and the key's (103 s), the other three bright.
+- 2 PASS: Copy Key from the menu six times (158.98 ... 616.88 s), never an amber note, each next paste carrying the key.
+- 3 PASS (Cut Key at 736.28 s: the key gone, a grey note); the Ctrl+Z after the cut NOT TESTED.
+- 4 PASS: Ctrl+C on a tapped key, a tap on the timecode row, Ctrl+V: the key at the playhead (998.7-1000.4 s).
+- 5 PASS for what was done (five menu pastes into other panels, Ctrl+V after a tap on the LAYER row there, Ctrl+V after
+  a menu paste); the list's exact sequence (timecode tap over another panel, then Ctrl+V) NOT TESTED.
+- 6 PASS: a clip pressed, Ctrl+C / Ctrl+V: the panel (989.1-991.9 s).
+- 7 PASS: pointer on the bottom bar, Space x4 and Esc (1056.1-1065.2 s). 8 PASS: over the Layers panel (1076.7,
+  1089.4-1093.0 s) and the Scenes panel (1082.2, 1083.1 s); also the pen lifted away (Esc 461.96 s, Space x5 661-670 s).
+- 9 (typing in a text field with the film up) NOT TESTED.
+- 10 PASS: Del twice (486.2, 487.7 s), no box; Ctrl+Z twice (534.5, 537.8 s) brings both keys back.
+- 11 PASS: Custom... a dark navy - its own diamond, as dark as picked; the CAMERA row lightened (1175-1187 s).
+- 12 PASS for what could be shown: blue camera keys and the yellow layer diamond after the restart. Blue had been
+  chosen again before the quit, so a custom colour across a restart was NOT TESTED.
+No amber note anywhere in the three sessions (every screenshot's status bar scanned; the scan first proved on the 10:56
+session's known amber note - the first version of the scan missed that note and its "nothing" was thrown away).
+SEEN OUTSIDE THE LIST, NOT CHANGED:
+- 953 s: after three taps on layer names in the Layers panel one Ctrl+X cut OCEAN panel 2 (the rule: a press there
+  hands the keys back to the panels) and at once the box "A scene must keep at least one panel." came up. Cut ran twice:
+  the Edit menu's actions keep Qt's auto-repeat (MainWindow.cpp editAction; only the timeline's QShortcuts switch it
+  off) and the recorder drops a repeat inside 250 ms, so one "Cut" is logged. Older than round 2. The user pressed OK
+  and Ctrl+Z; the panel came back. OFFERED: no auto-repeat on Cut (and Copy / Paste), on their word.
+- Ctrl+V after choosing a layer in the Layers panel pasted the copied DRAWING as a new layer three times (519.6, 611.2,
+  938.8 s), by the same rule; each undone, the key then pasted from the row's menu.
+- After the restart the right dock column is about 32 px narrower (216 against 248; layer names cut to "La...") in
+  both short sessions. Not looked into.
+WHAT THIS COMMIT IS: the 12 files of app/build/_probe/split/sha_I1b2d_gate.txt, byte for byte as gate I1b2d ran them
+(checked again before the commit: all OK), and this HANDOFF. The two sections below describe it: "STATUS 2026-11-25
+(night)" (round 2 as first built: copy / cut / paste of layer keys, Del, the Keyframes page, Soft amber, the Perspective
+prompt, the keys in full colour) and "STATUS 2026-11-26 (afternoon)" (the two faults of hand test I1b-3 and their fixes,
+the timecode row, Space and Esc while the film is up; gate I1b2d GREEN IN BOTH BUILDS: Lifecycle 1918, Camera 348,
+BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13,
+CanvasBrushLock 3).
+FIGMA: I-1b (701:755) renamed "BUILT" after the push.
+I-2 APPROVED (the same message; the user's answers to the frame's section 7, word for word): "Then I-2 (727:757) is
+approved, with my answers to its section 7: 1. The LAYER row with drawings: two lanes in a 46 px row, keys above,
+drawings below. 2. New Drawing: blank by default, with "New Drawing from This One" for a copy. Key: N for New Drawing.
+Also Ctrl+Shift+N for New Layer, as in Photoshop. Check that both are free and tell me if not. 3. New Drawing in the
+middle of a run splits the drawing under the playhead; nothing later moves. 4. Dragging a cut moves the later drawings
+with it; Alt+drag moves the cut alone, as the SHOTS clips do. 5. The onion skin, changed from my earlier answer: - On a
+run's first drawing: the previous panel's drawing as a ghost, as today. - On drawings in between: both the previous and
+the next drawings. - On the last drawing: the previous drawing. - A new page, Edit > Preferences > Onion Skin, in the
+style of the Keyframes page: the number of previous drawings and of next drawings shown, and separate ghost colours and
+separate opacities for previous and next. Today's blue stays the default for previous; choose a clear default for next.
+Remembered by the app. 6. Retiming a panel: the drawings keep their frames and the last one holds, while the keys
+stretch. 7. Deleting a drawing: the one before it holds over its frames; nothing else moves. 8. Repeating a run to the
+panel's end (cycles), and copy and paste of drawings: later, not in I-2. First update I-2 in Figma with the onion-skin
+changes (section 3) and the Preferences > Onion Skin page, and screenshot it. Then build I-2 without waiting for me;
+I'll look at the Figma while you build. Measure a 4K panel with 24 drawings on a scratch copy of my song project (never
+the original) and report memory and playback. Checks with controls and red runs, none judged by the clock, quick check,
+full gate before stopping (every family green in both builds), a fresh TEST COPY with a layer of drawings ready to try,
+the exe stamp and a hand-test list. Don't commit until my hand test passes."
+NEXT: the Figma update of I-2, then I-2 itself (uncommitted until the user's hand test passes).
+
+## STATUS 2026-11-26 (afternoon): HAND TEST I1b-3 FOUND TWO FAULTS - ROUND 2 NOT COMMITTED; THE FAULTS FIXED, CTRL+V AFTER A PLAYHEAD MOVE, SPACE AND ESC WHEREVER THE POINTER IS WHILE THE FILM IS UP; GATE I1b2d GREEN IN BOTH BUILDS; STILL NOTHING COMMITTED - WAITING FOR HAND TEST I1b-4. FIGMA I-2 (727:757) MADE - WAITING FOR APPROVAL, NOTHING OF I-2 BUILT
+HAND TEST I1b-3 (read 2026-11-26; report and crops in Documents\SankoTV-Design\batch-I1b-2026-11-25\handtest_I1b-3\):
+one session, 20261126-105645, the right build (Nov 25 2026 21:51:56), on the OLDER copy ("... I-1b round 2", not "...
+full colour"); the "restart" was File > Close Project and a reopen. The user said all steps looked right; the recording
+showed two faults, so nothing was committed (their rule: anything failed = commit nothing and report):
+- "Copy Key" from the key's right-click menu copied nothing: seven picks, each answered in amber by "No layer key is
+  selected: tap a key on the LAYER row to copy it."; the pastes after them carried the key of an earlier Ctrl+C.
+- "Paste Key at the Playhead" was off before any copy but drawn as bright as the other entries (20 dead presses).
+Also seen: Ctrl+V did nothing after the playhead was moved by a tap on the ruler (the approved "last thing pressed"
+rule; expected to work twice, seven presses); one Esc ignored in playback with the mouse on the bottom bar.
+THE USER'S ANSWERS (2026-11-26, pasted): "1. Yes, fix both faults in round 2: a press on a menu no longer clears the
+selected key, so Copy Key and Cut Key from the right-click menu work; and a switched-off Paste Key at the Playhead is
+drawn greyed. Each with a check that uses a real press on the menu (not a test hook), judges "greyed" from the picture,
+has a control and a red run. 2. Yes: moving the playhead (taps or drags on the timecode row and the ruler) keeps a copied
+key ready for Ctrl+V; it no longer hands the keys back to the panels. 3. During playback, Space pauses the film (and
+pressed again, plays on from there), and Esc stops it and returns me to the workspace. Both work wherever the pointer is
+in the SankoTV window (the preview, the timeline, the bottom bar, the panels, or the pen lifted away), except while I'm
+typing in a text field. 4. Yes, make the I-2 Figma frame now ... Build nothing of I-2. Then for round 2: quick check,
+full gate before stopping (every family green in both builds), a fresh TEST COPY, the exe stamp and a short re-test list
+... Don't commit round 2 until my re-test passes."
+WHY THE GATE HAD PASSED THEM: (kc5) chose the menus' entries through setClipMenuHookForTest - no press at all - and read
+isEnabled() for "greyed". The press is what broke Copy Key, and a QMenu sheet draws an off entry like the others unless
+it says the off colour itself.
+WHAT IS BUILT ON TOP OF ROUND 2 (main tree, uncommitted; every edit with the Edit tool, CRLF kept: lines = CRs in all
+seven files touched):
+- ONLY A WIDGET'S PRESS IS JUDGED. StoryboardPage::noteLayerRowPress returns for a receiver that is not a widget. Qt
+  sends each press to the QWindow first (QWidgetWindow) and then to the widget; the walk up receiver->parent() for a
+  QMenu found none above the menu's WINDOW, so the press on the entry ended the LAYER row's hold before the entry acted
+  on its release. Red run G1 gives the hand test's amber note word for word.
+- A PEN'S PRESS HANDED ON. Qt hands a tablet press the rows do not take to the rows' parents, one by one, before the
+  mouse press it makes of it. AnimaticTimeline::pressPassedOnFromRows(receiver, global): an ancestor of the rows' canvas,
+  the point inside the canvas - judged already when the canvas had it. Red run G3b: without it the pen's tap on the
+  ruler loses the hold (the mouse's does not).
+- THE TIMECODE ROW KEEPS THE KEYS (answer 2). AnimaticTimeline::pressOnTimecodeRow: the ruler and its label, kRulerY to
+  kRulerH, the whole row. noteLayerRowPress keeps the row held and drops the selected key (setLayerKeyFocus(true)): the
+  playhead has left it and nothing on the row marks it, so Ctrl+C / Ctrl+X say "No layer key is selected..." and Del
+  does nothing until a key is tapped again; Ctrl+V pastes the copied key at the new place. Both forwarded by
+  AnimaticPage. A press anywhere else hands the keys back as before - the Layers panel too.
+- AN OFF ENTRY IS GREY. layerKeyMenuSheet() (StoryboardPage.cpp, static) = kSpeedMenuSheet + "QMenu::item:disabled {
+  color: #5c5c62; } QMenu::item:disabled:selected { background: transparent; color: #5c5c62; }", on the key's menu and
+  the row's. kSpeedMenuSheet itself is unchanged (eleven users).
+- SPACE AND ESC ARE THE FILM'S WHILE IT IS UP (answer 3). TimelineKey::filmKey (Space, Esc). updateTimelineKeys: filmUp
+  = the preview visible or playing; then those two are armed iff !typingInTextField() - wherever the pointer is - and
+  with no film up they follow the pointer as before (m_timelineKeysArmed keeps its meaning: the pointer's; new
+  m_filmKeysArmed / filmKeysArmedForTest()). typingInTextField(): QApplication::focusWidget() (else this window's own) is
+  a QLineEdit / QTextEdit / QPlainTextEdit that is not read-only, or a QAbstractSpinBox. Re-judged on
+  AnimaticPage::previewShownChanged and playingChanged and QApplication::focusChanged. Stage mode's Esc steps aside
+  whenever the timeline's is armed (escArmed), as before. The floating bars are Qt::Tool windows that take no focus, so
+  the main window's shortcuts hold over them.
+CHECKS (slice "i1b2", 22 -> 32; Documents\SankoTV-Design\batch-I1b-2026-11-25\round2\changed_checks_round2_old_new.md
+has the table, the old and new text of the one older check changed, and my two mistakes on the way): realMenu() in
+runI1b2Pass right-clicks the LAYER row and presses an entry through the window system (libbox::pointerTo) and grabs the
+menu's picture; wordsPeak()/groundAt() read it.
+- (km3) + control: the off Paste measures 98, the others 204; under the pointer still grey, ground unlit; a press does
+  nothing; on, it measures 204, 255 on a lit ground under the pointer.
+- (km1) + control, (km2): Copy Key / Cut Key pressed for real - told by what the next paste carries.
+- (km4) + control: the mouse's drag and the pen's tap on the ruler keep the keys; a clip or the SCENES row hands them back.
+- (es2) + two controls: Space, Space, Esc with the pointer on the bottom bar and over the Layers panel; typing keeps its
+  keys (the film up and PAUSED, so no clock); no film, nobody's shortcut.
+- (es1) control reworded: its second half described the rule the user replaced.
+RED RUNS (round2\red_runs\red_G*.txt): G1 (widget-only off) km1, km2, km4 FAIL; G3 (timecode row off) km4 FAIL - it
+pasted a panel; G3b (handed-on press off) km4 FAIL in its pen part only; G4b (typing off) es2 control 1 FAIL; G2 (grey
+off) km3 FAIL at 204; G4a (film rule off) es2 FAIL. Controls PASS in each. es2's control 1 first leaned on the film's Esc
+to go back and failed in G4a too: that clause was taken out and G2 + G4a run again.
+SEEN, NOT CHANGED: AnimaticPage::play() emits playingChanged(true) before it restarts the panel's clock (scheduleTick),
+so playheadFrameInPanel() read INSIDE that signal is the pause's length ahead (23 for a film paused at 19). The film
+itself goes on from 19. Nothing in the app reads it there today; (es2) reads on the next turn of the loop.
+QUICK CHECK (Release, 12:31-12:51): Lifecycle 1918/1918, Camera 348/348.
+GATE I1b2d (2026-11-26 12:52-13:51, 3535 s, normal mode): GREEN IN BOTH BUILDS - Lifecycle 1918, Camera 348,
+BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13,
+CanvasBrushLock 3, Release and Debug alike. Hash list app/build/_probe/split/sha_I1b2d_gate.txt (12 files; all OK after
+the gate), exes sha_I1b2d_exes.txt. EXE: built "Nov 26 2026 12:54:03", 2a69c13a6+dirty (12:54:23 on disk).
+FOR THE HAND TEST (I1b-4): Documents\SankoTV-Design\handtest_I1b_round2_retest.md, on "TEST COPY - small pirate, I-1b
+round 2 retest" (C:\SankoTV-TestCopies; 93 files, 79 paths rewritten, none missing; the original's 94 files hashed
+before and after, unchanged). The user's key colours are Blue (camera) and Yellow (layers) since I1b-3.
+FIGMA I-2 (the user's answer 4): node 727:757, "PROPOSAL 2026-11-26 I-2 - Frame-by-frame drawings in a layer ...", in
+area 002 under I-1b (the area's rectangle 571:698 grown to hold it); screenshot Documents\SankoTV-Design\figma-I2\
+I-2_full.png. Seven sections: the LAYER row with a run of drawings as blocks at two zooms (two lanes in a 46 px row -
+the keys above as built, the drawings below); New Drawing on 2s (the + on the row, the lane's menu); drawing and the
+onion skin (the previous drawing only, today's blue); the cut between blocks (drag = the later drawings move, Alt = the
+cut alone) and Delete Drawing; drawings and keys together; what else it means (saving, memory, what shows where,
+retiming); eight questions. WAITS FOR THE USER'S APPROVAL. NOTHING OF I-2 IS BUILT.
+NEXT: the user's hand test I1b-4; if it passes and they say so, commit round 2 (the 12 files of sha_I1b2d_gate.txt +
+this HANDOFF) and mark I-1b BUILT in Figma. Commit nothing before their word.
+
+## STATUS 2026-11-25 (night): I-1b ROUND 2 BUILT - COPY, CUT AND PASTE OF LAYER KEYS, DELETE ON A LAYER KEY, KEY COLOURS IN PREFERENCES, ESC AND SPACE WITH THE POINTER OUT OF THE WINDOW, THE CAMERA NOTE'S "SOFT" IN AMBER, THE PERSPECTIVE PROMPT BACK ON THE CANVAS; THEN THE KEYS IN FULL COLOUR (THE USER'S CHANGE); GATE I1b2c GREEN IN BOTH BUILDS; NOTHING COMMITTED - WAITING FOR HAND TEST I1b-3
+THE USER'S WORD: the round 1 commit section below (pasted 2026-11-25, about 18:2x): "Build I-1b round 2, as approved in
+I-1b (701:755): - Note 5: copy, cut and paste of layer keys, including between panels and scenes, from the LAYER row's
+right-click and with Ctrl+C, Ctrl+X and Ctrl+V while the LAYER row is the last thing I pressed. A pasted key keeps the
+layer's place in the scene, even when its art is drawn elsewhere (your d2 rule). Turn, size, opacity and ease copy as they
+are. Each paste or cut is one Undo. - Del on a selected layer key deletes that key, as one Undo, and never offers to
+delete the panel. - Note 7: Edit > Preferences > Keyframes, with the colour of camera keys and of layer keys chosen
+separately (presets and Custom... with the SankoTV colour picker), purple the default, remembered by the app. - The Esc
+and Space fix during playback. - The Camera note's "Soft" warning in amber. - The Perspective tool's vanishing-point note
+back in its original place on the canvas. Checks with controls and red runs, none judged by the clock, quick check, full
+gate before stopping (every family green in both builds), a fresh TEST COPY, the exe stamp and a short hand-test list.
+Don't commit round 2 until my hand test passes."
+WHAT IS BUILT (main tree, uncommitted, on top of 2a69c13a6):
+- COPY, CUT AND PASTE OF LAYER KEYS (note 5, answer 4; Figma I-1b section 4). AnimaticTimeline: any press on the LAYER
+  row emits layerRowPressed(flat, layer, key) - a key's indices, or -1 for the empty track or an ease mark - and ends a
+  camera key's selection (one selection at a time); a right-click off a key asks for layerRowContextMenuRequested;
+  pressOnLayerRow(receiver, global) says whether a press lands there. StoryboardPage: m_layerKeyFocus (the row is the
+  last thing pressed, its key) set by that signal and ended by noteLayerRowPress - CanvasKeyRouter (the app's event
+  filter) hands every MouseButtonPress / DblClick / TabletPress to it; one anywhere but the LAYER row or a menu (QMenu,
+  QMenuBar - Edit's own) ends the hold. editCopy / editCut / editPaste go to copyLayerKey / cutLayerKey / pasteLayerKey
+  while it lasts (Paste in Place stays the panel's and the drawing's). m_layerKeyClip: the key as copied and its PLACE -
+  pivot + (dx, dy), frame space. PASTE: the layer selected in the Layers panel, the panel under the playhead (refused,
+  amber, if the playhead is not on the current panel), at the playhead: pivot2 = the layer's pivot, or (no keys) the
+  centre of its art minus frameAt; pose = the copied one with (dx, dy) = place - pivot2; written by
+  writeLayerKeyAtPlayhead (a key at the playhead replaced), the copied ease set, Animate on (also for a layer whose keys
+  were kept with Animate off - a pasted key is used at once: a decision, see the report); one step "Paste Layer Key".
+  Refused, amber: a folder, the paper, a locked layer ("<name> is locked", sayEditRefused), nothing copied, no key
+  selected for Copy/Cut. CUT: copy, then layerDeleteKey(..., "Cut Layer Key"); the row stays chosen with no key. MENUS:
+  a key's - Copy Key / Cut Key / Paste Key at the Playhead (greyed until a key is copied) / Delete Key (objectNames
+  layerKeyCopy, layerKeyCut, layerKeyPaste, layerKeyDelete); the empty track's (layerRowMenu) - Paste Key at the Playhead
+  alone. EDIT > PASTE: MainWindow::refreshPasteAction - enabled when a panel or a drawing is copied, or
+  layerKeyPasteReady (the row held and a key copied), on StoryboardPage::layerKeyPasteChanged.
+- DELETE ON A SELECTED LAYER KEY (the user's answer after I1b-1): timelineDelete - while the LAYER row holds the keys,
+  its selected key (one step "Delete Layer Key"), and with no key nothing at all; never the panel. Otherwise as before:
+  the selected camera key, else the panel (its "Delete the selected panel?" box).
+- KEY COLOURS (note 7; Figma I-1b section 5): new header app/src/SankoKeyColors.h (LF, written with Write; not in
+  CMakeLists, header-only as SankoTimelineTheme.h is). Row::Camera / Row::Layer, base() (purple #7C6EF6 the default),
+  presets() - Purple, Blue #4C9AFF, Teal #2EC4B6, Green #6CC04A, Yellow #F2B33D, Orange #F27A3D, Pink #E76FB4, White
+  #E5E5ED (sampled from the approved frame's picture). IN FULL (the user's change before hand test I1b-3, 2026-11-25
+  evening: "drawn clearly in that colour, as the Figma preview I-1b showed, not mapped to today's purple brightness" -
+  the first build mapped each part to its tone of the old purple look and blue barely showed; pictures round2\pictures
+  (that one) and round2\pictures_full (this one)): key(row) = the colour, or - too dark for the timeline's ground
+  #15161C - its lightness raised just to WCAG 3:1 (readable(); every preset is 4.66:1 or more and drawn as it is);
+  keyEdge(row) = key a third of the way to white; dim(row) = key at 60 %. Timeline: the line and a resting key's fill
+  key, its outline keyEdge; the CAMERA row's selected key and its move keyEdge, the selected key ringed white; a hover
+  rings it white; another layer's dim mark key at 60 %, 1.2 px; greyed stays grey; the key at the playhead the
+  playhead's lavender; pinned camera keys the AUDIO row's blue. Canvas: the Move path's dots key (alpha 230, 1.6 px),
+  every key mark filled key with a white outline - the one at the playhead larger (6.5) with a 2 px ring (it was the
+  accent there, #2A2456 away); Stage mode's key frames key at 55 %. The Layers panel's diamond key. Today's purple keys
+  are a little stronger (the user: "that's fine"). Settings (sankoSettings, never the project): keyframes/
+  cameraKeyColor, layerKeyColor, cameraKeyCustom, layerKeyCustom. Not: the playhead, the Move box (its accent), the
+  CAMERA row's Animate dot (a button), the ease pills. MainWindow: loadKeyColors() at the start of the constructor; Preferences' new page "Keyframes"
+  (index 1 - the list is alphabetical; the dialog 520 x 370, was 300): two rows of eight KeySwatch diamonds (chosen:
+  white ring) + the row's custom diamond once one is picked + Custom... (SankoColorPicker::getColor with the row's
+  colour), the captions of the design, KeyColorPreview (both rows painted as the timeline paints them), "Use the default
+  (purple for both)" (objectName prefsKeysDefault). A choice applies at once: StoryboardPage::keyColorsChanged repaints the
+  timeline, the canvas and the diamonds.
+- ESC AND SPACE WITH THE POINTER OUT OF THE WINDOW (the user's answer after I1b-1): StoryboardPage::m_pointerLeftWindow,
+  set by a Leave / Enter to the top-level window (the same filter as the modal watch; under the gate only the test's
+  own); updateTimelineKeys counts it as over the preview while the preview is up.
+- THE CAMERA NOTE'S "SOFT" IN AMBER (the user's answer): DrawingCanvas::noteBarAmberFrom (the index of "Soft " when
+  shotCameraSoft) beside the words; StatusNoteBar::setNote(..., amberFrom) paints the head grey and the rest amber
+  (amberShownText; elided: amber up to and with the "..." when the cut falls inside the warning).
+- THE PERSPECTIVE PROMPT BACK ON THE CANVAS - THE USER'S DELIBERATE EXCEPTION to "no notes over the canvas" (2026-11-25,
+  after hand test I1b-2: "record it as such so it isn't moved again"): DrawingCanvas paints "Tap anywhere to create the
+  first Vanishing Point." in its dark chip at the display rect's centre exactly as d1e1dde63 did
+  (perspectivePromptRect / perspectivePromptText / perspectivePromptFont), and toolNoteText no longer says it. With the
+  Perspective tool the bar now says what any drawing tool's would (the Drawing view note on a panel with motion).
+  Recorded in the code (DrawingCanvas.h's note comment, paintEvent) and in memory (feedback_notes_in_status_bar).
+CHECKS (Lifecycle, runI1b2Pass, slice "i1b2", 22 checks; also in the full run after runI1bPass): (kc1) + control, (kc2),
+(kc3), (kc4) x2, (kc5), (kd1) + control, (es1) + control, (sf1) + control, (vp1) + control, (kp1) x2 + control, and for
+the full colours (kf1) + control (#7C6EF6 / #4C9AFF themselves on the LAYER row and the canvas's key marks; the
+playhead and the Move box's accent kept) and (kf2) + control (a navy #141A3C kept as chosen, drawn lifted to 3:1 -
+#475AC2; every preset 4.66:1 or more; Blue drawn exactly). CHANGED: (ss11) - the pages are Camera, Keyframes, Playback,
+Recovery, Saving; (kp1) (new this round) now counts the colours themselves. Old and new texts, and every new check's
+account: Documents\SankoTV-Design\batch-I1b-2026-11-25\round2\changed_checks_round2_old_new.md.
+RED RUNS (round2\red_runs\): E1 (Ctrl+C's routing, Delete's, the key menu's entries, the paste's place) - (kc1) (kc2) (kc4)
+(kc5) (kd1) FAILED, (kd1)'s control passed; E1b (the place alone: the bare numbers) - (kc1) (the Gull's centre at 780,220)
+and (kc2) FAILED, (kc1)'s control passed; E2 - three controls leaned on what the red took away and were made to stand on
+their own; E2b (the out-of-window rule, the Soft amber, the Perspective chip, the colours) - (es1) (sf1) (vp1) (kp1)
+FAILED, every control passed; E3 (the hand-back alone) - (kc1) (kc4) FAILED and (kd1)'s control (which rests on it).
+The first green run failed (kc1)/(kc2) on a reference the undo left on the old layer list: the checks now copy the layer.
+FULL COLOUR: F1 (key() given back the first build's tone mapping) - (kf1) FAILED (the line #577294), and (kp1)'s three
+(they count the colours themselves) and (kf2)'s control (it asserts the full colour); (kf1)'s control passed. F2
+(readable() returning the colour as it is) - (kf2) FAILED (the navy drawn at 1.07:1), its control passed. The first
+full-colour run failed (kf1) on the check's set-up: (vp1) had set the Brush directly, the Move button stayed checked and
+(kp1)'s click toggled nothing (bindTool sets the tool on toggled) - both now set the tool directly.
+Markers removed, 0 in the diff; rebuilt (exe times checked) and green.
+THE FIRST BUILD (tone mapping) - quick check 19:13-19:33 Lifecycle 1904/1904, Camera 348/348; its gate I1b2 below.
+THE FULL-COLOUR BUILD - see GATE I1b2c further below.
+GATE I1b2 (the first build; app/build/_probe/split/fullgate_I1b2.log, clean builds, normal mode, 19:33-20:32, 3507 s): every family GREEN
+in both builds - Lifecycle 1904/1904, Camera 348/348, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74,
+DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3. HASH LISTS: app/build/_probe/split/
+sha_I1b2_gate.txt (the 12 changed or new source and test files; checked again after the gate, all OK) and
+sha_I1b2_exes.txt (Release aea9240e..., Debug b2342def...). CRLF: every CRLF file line count = CR count; MainWindow.h and
+SankoKeyColors.h LF (0 CR); git diff --stat = --ignore-cr-at-eol --stat (12 files, +1500 -50).
+The first build's exe: "Nov 25 2026 19:35:28", "2a69c13a6+dirty" (never tested by the user). PICTURES of it
+(round2\pictures\): in blue the LAYER row's line was slate blue instead of purple-grey and its resting keys near-white
+outlines - shown to the user, who asked for the keys in full colour (THE USER, 2026-11-25, about 20:5x, pasted: "Before I
+test round 2, one change: the key colours in full. With a colour chosen in Edit > Preferences > Keyframes, these are
+drawn clearly in that colour, as the Figma preview I-1b showed, not mapped to today's purple brightness: the keys, their
+line and the dim marks on the timeline rows, the Layers panel's diamond, the Move tool's path and key marks on the
+canvas. Today's purple keys may become a little stronger; that's fine. Resting keys must stay easy to read against the
+timeline's dark ground, and the playhead, buttons and other purple accents keep their own colours. Pasting a key turning
+Animate on: fine. Make the change in round 2, with a check, its control and a red run. Then quick check, full gate
+before stopping ..., a fresh TEST COPY, the exe stamp and the round 2 hand-test list with its colour step updated.
+Commit nothing yet; I'll test round 2 once, on the new build."). PICTURES of the full colours: round2\pictures_full\.
+THE FULL-COLOUR BUILD: QUICK CHECK (Release, 21:09-21:29): Lifecycle 1905/1908 - three COMMITTED checks described the
+old camera-key look and changed by design: (pk10) control (a resting key's fill #252330 -> #7c6ef6), (pk10) selected
+(the accent fill #7c6ef6 -> the lighter shade #a79ef9, ringed white) and the (rp) CAMERA row pin, re-recorded from a
+full Lifecycle run (never a slice: the pin rests on the Layers dock's width the earlier passes leave) - bd989a38... ->
+8c07e3dbdb0c59995b6062273891865126de0f2ef84dcfb50470d5ca90e56b64 (picture round2\pictures_full\rp_camera_row.png; the
+check now prints the whole hash it drew on a mismatch). Old and new texts in changed_checks_round2_old_new.md. Camera
+348/348. The recording run: Lifecycle 1907/1908, (rp) alone failing with the new hash.
+GATE I1b2c (app/build/_probe/split/fullgate_I1b2c.log, clean builds, normal mode, 21:50-22:48, 3474 s): every family
+GREEN in both builds - Lifecycle 1908/1908, Camera 348/348, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74,
+DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3. HASH LISTS: app/build/_probe/split/
+sha_I1b2c_gate.txt (the 12 changed or new source and test files; checked again after the gate, all OK) and
+sha_I1b2c_exes.txt (Release ba621f3a..., Debug 2c4ac50a...). CRLF: every CRLF file line count = CR count; MainWindow.h and
+SankoKeyColors.h LF (0 CR); git diff --stat = --ignore-cr-at-eol --stat (12 files, +1655 -64).
+EXE STAMP: Release SankoTV.exe built "Nov 25 2026 21:51:56", "2a69c13a6+dirty" (21:52:15 on disk).
+TEST COPY: "TEST COPY - small pirate, I-1b round 2 full colour" (C:\SankoTV-TestCopies; from Downloads\...\small_pirate_001
+read only, its 94 files hashed the same before and after - round2\pirate_original_hashes_*_r2full.txt, the same as
+after the last copy; 93 copied (not the mp4), 79 paths rewritten, none missing; Layer 6 animated as before, version 6).
+The earlier "TEST COPY - small pirate, I-1b round 2" (never opened) is left where it is.
+HAND-TEST LIST: Documents\SankoTV-Design\handtest_I1b_round2.md (11 steps + 3 left from I1b-2 if there is time; step 8,
+the colours, rewritten for the full colours).
+NEXT: the user's hand test I1b-3; then commit round 2 on the user's word.
+
 ## 2026-11-25 (evening): BATCH I-1b ROUND 1 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1b-2 - THE SCRUB STAYS IN THE WORKSPACE, EVERY NOTE IN THE STATUS BAR, NO MOVE BAR ON AN ANIMATED LAYER, THE DIAMOND'S KEY, NOTES HELD WHILE YOU DRAW, PANNING THE TIMELINE
 THE USER (2026-11-25, about 18:2x, pasted): "Hand test I1b-2 done: all steps looked right, and no crossing stuck. One
 request: the Perspective tool's note "Tap anywhere to create the first Vanishing Point." goes back to its original place

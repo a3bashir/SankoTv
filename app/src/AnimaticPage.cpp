@@ -885,6 +885,21 @@ bool AnimaticPage::selectedCameraKey(int *sceneIndex, int *keyIndex) const
     return m_timeline && m_timeline->selectedCameraKey(sceneIndex, keyIndex);
 }
 
+bool AnimaticPage::pressOnLayerRow(const QObject *receiver, const QPoint &globalPos) const
+{
+    return m_timeline && m_timeline->pressOnLayerRow(receiver, globalPos);
+}
+
+bool AnimaticPage::pressOnTimecodeRow(const QObject *receiver, const QPoint &globalPos) const
+{
+    return m_timeline && m_timeline->pressOnTimecodeRow(receiver, globalPos);
+}
+
+bool AnimaticPage::pressPassedOnFromRows(const QObject *receiver, const QPoint &globalPos) const
+{
+    return m_timeline && m_timeline->pressPassedOnFromRows(receiver, globalPos);
+}
+
 void AnimaticPage::setSelectedCameraKey(int sceneIndex, int keyIndex)
 {
     if (m_timeline)
@@ -1353,6 +1368,9 @@ QWidget *AnimaticPage::createTimingStrip()
     connect(m_timeline, &AnimaticTimeline::layerKeyContextMenuRequested, this,
             &AnimaticPage::layerKeyContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::layerEaseMarkClicked, this, &AnimaticPage::layerEaseMarkClicked);
+    connect(m_timeline, &AnimaticTimeline::layerRowPressed, this, &AnimaticPage::layerRowPressed);
+    connect(m_timeline, &AnimaticTimeline::layerRowContextMenuRequested, this,
+            &AnimaticPage::layerRowContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::artExitChipClicked,
             this, &AnimaticPage::artExitChipClicked);
     connect(m_timeline, &AnimaticTimeline::cameraAnimateToggled,

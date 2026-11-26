@@ -72,6 +72,7 @@
 #include "ProjectMedia.h"
 #include "RecentProjects.h"
 #include "SankoIcons.h"
+#include "SankoKeyColors.h" // Preferences > Keyframes (batch I-1b round 2)
 #include "SankoTimelineTheme.h"
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
@@ -13895,7 +13896,11 @@ void runMovingStripPinPass(const QString &scratch)
 // track changes in 2D by design (the waveform, Figma 2D-1), so its value
 // here is the record of what it was, replaced when 2D lands.
 namespace rowpins {
-const char *const kCameraRow = "bd989a38ad162d560b14b82c4256db2d46b05720c874bcc05762e09194842830";
+// Re-recorded 2026-11-25 (batch I-1b round 2) from a full Lifecycle run: the camera keys and their line drawn in the
+// keys' colour itself, the user's change before hand test I1b-3 (pictures_full\rp_camera_row.png). It was
+// bd989a38ad162d560b14b82c4256db2d46b05720c874bcc05762e09194842830 (recorded on 2d8116226: the dark keys, the
+// purple-grey line).
+const char *const kCameraRow = "8c07e3dbdb0c59995b6062273891865126de0f2ef84dcfb50470d5ca90e56b64";
 const char *const kAudioRowNone = "a4994d6287c27421f8034eaa0a6896e06bff6f3b79d50e874a5b6be43f65935e";
 // Before 2D (the plain bar, recorded on 2d8116226 in the worktree):
 // 0a0484390c785677788cbc0e0223ced658b96c9f1cb0812d619d30f4bb216668.
@@ -13925,11 +13930,16 @@ void runRowPinPass(const QString &scratch)
     pump(300);
     const QString cam = rowSha(r.timeline->cameraRowForTest());
     const QString none = rowSha(r.timeline->audioRowForTest());
+    // A picture of the CAMERA row, when asked for (batch I-1b round 2: the row re-recorded for the keys in full colour).
+    if (const QString pictures = qEnvironmentVariable("SANKO_I1B2_PICTURES"); !pictures.isEmpty())
+        r.surface->grab().toImage().copy(r.timeline->cameraRowForTest()).save(pictures
+                                                                            + QStringLiteral("/rp_camera_row.png"));
     auto pin = [&](const char *label, const char *wantC, const QString &sha) {
         const QString want = QString::fromLatin1(wantC);
         check(QStringLiteral("(rp) %1 draws its pinned bytes").arg(QLatin1String(label)),
               !want.isEmpty() && sha == want,
-              want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha) : sha.left(16));
+              want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha)
+                             : (sha == want ? sha.left(16) : QStringLiteral("drew %1").arg(sha)));
     };
     pin("the CAMERA row (two anchored keys, zoom 100)", rowpins::kCameraRow, cam);
     pin("the AUDIO row with no track (the hint)", rowpins::kAudioRowNone, none);
@@ -14434,9 +14444,11 @@ void runPinnedKeysPass(const QString &scratch)
                                       + QStringLiteral("Linear")
                   && keyMap(0, 1).value(QStringLiteral("pinned")).toBool(),
               QStringLiteral("%1 line %2 tip '%3'").arg(pinnedPx.name()).arg(linePinned).arg(tipPinned));
-        check(QStringLiteral("(pk10) control: the anchored key beside it is the key fill #252330 "
-                             "with no line under it, and its tooltip names its panel"),
-              anchoredPx == SankoTimelineTheme::kCameraKeyFill && lineAnchored == 0
+        // The camera keys' colour in full (batch I-1b round 2, the user's change before I1b-3): a resting key is
+        // filled with it - the default purple #7C6EF6 (it was the dark fill #252330).
+        check(QStringLiteral("(pk10) control: the anchored key beside it is filled with the camera keys' colour "
+                             "(the default purple #7c6ef6) with no line under it, and its tooltip names its panel"),
+              anchoredPx == QColor(0x7c, 0x6e, 0xf6) && lineAnchored == 0
                   && keyMap(0, 0).value(QStringLiteral("tip")).toString().contains(QStringLiteral("panel 1"))
                   && !keyMap(0, 0).value(QStringLiteral("pinned")).toBool(),
               QStringLiteral("%1 line %2").arg(anchoredPx.name()).arg(lineAnchored));
@@ -14464,12 +14476,16 @@ void runPinnedKeysPass(const QString &scratch)
         const QColor selPx = img.pixelColor(keyX(0, 1) - 2, cy);
         const QColor stemPx = img.pixelColor(keyX(0, 1), cy + 7);
         const int lineSel = blueInColumn(img, keyX(0, 1));
-        check(QStringLiteral("(pk10) SELECTED the pinned key takes the accent fill - under the "
-                             "playhead and away from it - and keeps its blue stem and dotted line"),
-              selAt && selAtPx == SankoTimelineTheme::kCameraAccent
+        // Selected (batch I-1b round 2, the keys in full colour): resting keys are filled with the colour now, so a
+        // selected key takes its lighter shade - the colour a third of the way to white, #a79ef9 for the default
+        // purple - ringed white (it took the accent fill #7c6ef6 when resting keys were dark).
+        check(QStringLiteral("(pk10) SELECTED the pinned key takes the lighter shade of the camera keys' colour "
+                             "(#a79ef9 for the default purple) - under the playhead and away from it - and keeps "
+                             "its blue stem and dotted line"),
+              selAt && selAtPx == QColor(0xa7, 0x9e, 0xf9)
                   && keyMap(0, 1).value(QStringLiteral("selected")).toBool()
                   && !keyMap(0, 1).value(QStringLiteral("atPlayhead")).toBool()
-                  && selPx == SankoTimelineTheme::kCameraAccent && stemPx == QColor(0x4d, 0x9f, 0xff)
+                  && selPx == QColor(0xa7, 0x9e, 0xf9) && stemPx == QColor(0x4d, 0x9f, 0xff)
                   && lineSel >= 4,
               QStringLiteral("at playhead %1 %2; away %3 stem %4 line %5").arg(selAt).arg(selAtPx.name())
                   .arg(selPx.name(), stemPx.name()).arg(lineSel));
@@ -37165,6 +37181,1250 @@ void runI1bPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// --- batch I-1b ROUND 2 (2026-11-25): copy, cut and paste of layer keys (note 5, answer 4), Delete on a selected
+// layer key, the keys' colours in Preferences (note 7), Esc and Space with the pointer out of the window during
+// playback, the Camera note's "Soft" in amber, the Perspective tool's prompt back on the canvas (the user's exception).
+void runI1b2Pass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lmui;
+    using camtool::mouse;
+    out() << "--- (k2) batch I-1b round 2: layer keys copied, cut and pasted; Delete; key colours; Esc and Space out "
+             "of the window; Soft in amber; the vanishing-point prompt ---" << Qt::endl;
+    const QString project = writeMotionProject(scratch + QStringLiteral("/i1b2"), true);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    auto *moveBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolMove")) : nullptr;
+    auto *cameraBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolCamera")) : nullptr;
+    QAction *pasteAct = nullptr, *prefsAct = nullptr;
+    for (QAction *a : r.window.findChildren<QAction *>()) {
+        if (a->text() == QLatin1String("Paste"))
+            pasteAct = a;
+        if (a->text() == QLatin1String("Preferences..."))
+            prefsAct = a;
+    }
+    if (!r.ok || !scene || scene->panels.size() != 2 || !stack || !moveBtn || !cameraBtn || !pasteAct || !prefsAct
+        || scene->panels.at(0)->layers.size() != 3 || scene->panels.at(0)->layers.at(2).keys.size() != 2
+        || scene->panels.at(1)->layers.size() != 2 || scene->panels.at(1)->layers.at(1).keys.size() != 2) {
+        check(QStringLiteral("(k2) the round-2 fixture opens, with the Move and Camera tools, Edit > Paste and "
+                             "Preferences"),
+              false);
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scene->panels.at(0);
+    Panel *pb = scene->panels.at(1);
+    // The Boat's second key (panel 1, frame 12: 300 right, 100 down of its art at (200, 200)) turned, sized, faded and
+    // eased, so a paste can show all four copied as they are.
+    {
+        shotcam::LayerKey &k = pa->layers[2].keys[1];
+        k.pose.rotation = 15.0;
+        k.pose.scale = 0.8;
+        k.pose.opacity = 0.6;
+        k.ease = shotcam::Ease::EaseOut;
+    }
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(2); // the Boat
+    moveBtn->click();
+    r.timeline->setZoomForTest(400); // 4 px a frame: panel 1 is film frames 0-23, panel 2 24-47
+    r.animatic->setPlayheadFrameInPanel(0, 0);
+    pump(200);
+    const int rowY = r.timeline->layerRowForTest().center().y();
+    // A press on the LAYER row at a film frame, through the timeline's own events.
+    auto pressRow = [&](int filmFrame) {
+        const QPointF at(r.timeline->frameScreenXForTest(filmFrame), rowY);
+        mouse(r.surface, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+        pump(150);
+    };
+    auto ctrlKey = [&](int key) { return keyClaimed(&r.window, key, Qt::ControlModifier); };
+    // A right-click on the LAYER row: the menu's entries (name, enabled), one of them triggered.
+    auto rowMenu = [&](int filmFrame, const QString &trigger = QString()) {
+        QStringList entries;
+        r.storyboard->setClipMenuHookForTest([&entries, trigger](QMenu *menu) {
+            for (QAction *a : menu->actions()) {
+                if (a->isSeparator())
+                    continue;
+                entries << a->objectName() + (a->isEnabled() ? QString() : QStringLiteral("(greyed)"));
+                if (!trigger.isEmpty() && a->objectName() == trigger && a->isEnabled())
+                    a->trigger();
+            }
+        });
+        const QPoint at(r.timeline->frameScreenXForTest(filmFrame), rowY);
+        QContextMenuEvent menuEvent(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+        QCoreApplication::sendEvent(r.surface, &menuEvent);
+        pump(150);
+        r.storyboard->setClipMenuHookForTest(nullptr);
+        return entries;
+    };
+    auto keyAtFrame = [](const Layer &layer, int frame, int frames) -> const shotcam::LayerKey * {
+        for (const shotcam::LayerKey &k : layer.keys)
+            if (layerKeyFrame(k, frames) == frame)
+                return &k;
+        return nullptr;
+    };
+    auto nearly = [](double a, double b) { return qAbs(a - b) < 1e-6; };
+
+    // THE ROW'S MENU, USED AS THE PEN USES IT (after hand test I1b-3, 2026-11-26: "Copy Key" chosen from the key's
+    // menu copied nothing, seven times, and "Paste Key at the Playhead" was off but not drawn greyed - and both had
+    // passed here, because rowMenu() above chooses an entry through a hook, with no press, and reads isEnabled()).
+    // Qt's pointer moves onto the LAYER row at a film frame and right-clicks there, through the window system; the
+    // menu that opens is looked at - its PICTURE grabbed - then Qt's pointer moves onto one entry (the picture
+    // grabbed again) and, if asked, presses and releases there, through the window system too: the press reaches
+    // the menu's window first and the menu after it, as a real one does. The real pointer is never moved.
+    struct RealMenu
+    {
+        bool opened = false, found = false, enabled = false, stillUp = false;
+        QStringList entries;  // the entries' object names, in order
+        QVector<QRect> rects; // ...and their rectangles in the pictures
+        QImage picture;       // the menu as it painted itself, the pointer on none of its entries' words
+        QImage pictureOver;   // ...and with Qt's pointer on the entry
+        int index = -1;       // the entry's place among them
+    };
+    auto realMenu = [&](int filmFrame, const QString &entry, bool pressIt) {
+        RealMenu m;
+        bool looked = false;
+        QTimer::singleShot(200, r.surface, [&m, &looked, &entry, pressIt] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            m.opened = menu != nullptr;
+            if (!menu) {
+                looked = true;
+                return;
+            }
+            QAction *chosen = nullptr;
+            for (QAction *a : menu->actions()) {
+                if (a->isSeparator())
+                    continue;
+                m.entries << a->objectName();
+                m.rects << menu->actionGeometry(a);
+                if (a->objectName() == entry) {
+                    chosen = a;
+                    m.index = m.entries.size() - 1;
+                }
+            }
+            m.found = chosen != nullptr;
+            m.enabled = chosen && chosen->isEnabled();
+            m.picture = menu->grab().toImage();
+            if (chosen) {
+                const QPointF at = menu->actionGeometry(chosen).center();
+                libbox::pointerTo(menu, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+                QCoreApplication::processEvents();
+                m.pictureOver = menu->grab().toImage();
+                if (pressIt) {
+                    libbox::pointerTo(menu, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+                    libbox::pointerTo(menu, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+                    QCoreApplication::processEvents();
+                }
+            }
+            // An entry that is off does not close its menu, and one only looked at was never pressed: the check
+            // closes the menu then, marked so that Qt replays no press (see libbox::pickFromRowMenu).
+            auto *still = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            m.stillUp = still != nullptr;
+            if (still) {
+                still->setAttribute(Qt::WA_NoMouseReplay);
+                still->close();
+            }
+            looked = true;
+        });
+        const QPointF at(r.timeline->frameScreenXForTest(filmFrame), rowY);
+        libbox::pointerTo(r.surface, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::RightButton);
+        QElapsedTimer guard;
+        guard.start();
+        while (!looked && guard.elapsed() < 15000)
+            pump(20);
+        pump(150);
+        return m;
+    };
+    // The brightest pixel of an entry's words in a menu's picture (0-255): #cccccc on, white under the pointer,
+    // #5c5c62 off. And the entry's ground at its left edge, where no words are: #161616 at rest, #262626 lit.
+    auto wordsPeak = [](const QImage &img, const QRect &rect) {
+        int peak = 0;
+        const QRect in = rect.adjusted(20, 2, -4, -2).intersected(img.rect());
+        for (int y = in.top(); y <= in.bottom(); ++y)
+            for (int x = in.left(); x <= in.right(); ++x) {
+                const QColor c(img.pixel(x, y));
+                peak = qMax(peak, qMax(c.red(), qMax(c.green(), c.blue())));
+            }
+        return peak;
+    };
+    auto groundAt = [](const QImage &img, const QRect &rect) {
+        const QPoint p(rect.left() + 6, rect.center().y());
+        return img.rect().contains(p) ? QColor(img.pixel(p)).red() : -1;
+    };
+    auto peaksOf = [&](const RealMenu &m, const QImage &img) {
+        QStringList s;
+        for (const QRect &rect : m.rects)
+            s << QString::number(wordsPeak(img, rect));
+        return s.join(QLatin1Char('/'));
+    };
+
+    // (kc5) THE MENUS (Figma I-1b section 4): a key's right-click gives Copy Key, Cut Key, Paste Key at the Playhead
+    // and Delete Key - Paste greyed until a key is copied; the row's empty track gives Paste Key at the Playhead alone.
+    // Edit > Paste is greyed too while the LAYER row is chosen and no key is copied.
+    QStringList keyMenuBefore, rowMenuBefore;
+    bool pasteGreyedBefore = false;
+    // (km3)'s pictures, taken here because nothing is copied yet: the key's menu with its Paste pressed, the row's.
+    RealMenu keyMenuOff, rowMenuOff;
+    int stepsOffBefore = 0, stepsOffAfter = 0, keysOffAfter = 0;
+    {
+        keyMenuBefore = rowMenu(12);
+        rowMenuBefore = rowMenu(21);
+        pasteGreyedBefore = r.storyboard->layerRowFocusedForTest() && !pasteAct->isEnabled();
+        stepsOffBefore = stack->index();
+        keyMenuOff = realMenu(12, QStringLiteral("layerKeyPaste"), true);
+        stepsOffAfter = stack->index();
+        keysOffAfter = pa->layers.at(2).keys.size();
+        rowMenuOff = realMenu(21, QStringLiteral("layerKeyPaste"), false);
+    }
+
+    // (kc1) COPY AND PASTE ACROSS PANELS, THE PLACE KEPT (note 5, answer 4).
+    {
+        pressRow(12); // the Boat's second key: chosen, the playhead on it
+        const int chosenKey = r.storyboard->layerRowFocusKeyForTest();
+        const bool copyTaken = ctrlKey(Qt::Key_C);
+        const bool copied = r.storyboard->layerKeyCopiedForTest();
+        const bool noPanelCopied = !r.storyboard->hasPanelClipboard();
+        const bool pasteReady = pasteAct->isEnabled();
+        clickClip(r, 1); // panel 2: a press elsewhere hands the keys back
+        const bool handedBack = !r.storyboard->layerRowFocusedForTest();
+        r.animatic->setPlayheadFrameInPanel(1, 6);
+        pump(150);
+        pressRow(33); // the row's empty track in panel 2 (the Gull's keys are at film frames 24 and 36)
+        const bool rowChosen = r.storyboard->layerRowFocusedForTest() && r.storyboard->layerRowFocusKeyForTest() == -1;
+        const int steps = stack->index();
+        const bool pasteTaken = ctrlKey(Qt::Key_V);
+        // A copy: the undo below puts a whole layer list back, so a reference would be left on the old one.
+        const Layer gull = pb->layers.at(1);
+        const shotcam::LayerKey *pasted = keyAtFrame(gull, 6, 24);
+        const QString step = stack->index() == steps + 1 ? stack->text(stack->count() - 1) : QString();
+        // The Boat's art centre at that key: (200, 200) + (300, 100) = (500, 300) on the scene's canvas; the Gull's is
+        // at (480, 120), so its pasted move is (20, 180) and its art's centre lands at (500, 300) too.
+        const QPointF centre = pasted ? gull.pivot + QPointF(pasted->pose.dx, pasted->pose.dy) : QPointF();
+        const bool placeKept = pasted && nearly(pasted->pose.dx, 20.0) && nearly(pasted->pose.dy, 180.0)
+            && centre == QPointF(500, 300);
+        const bool asCopied = pasted && nearly(pasted->pose.rotation, 15.0) && nearly(pasted->pose.scale, 0.8)
+            && nearly(pasted->pose.opacity, 0.6) && pasted->ease == shotcam::Ease::EaseOut;
+        const int keysWith = gull.keys.size();
+        if (!step.isEmpty())
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(kc1) COPY AND PASTE ACROSS PANELS (your note 5, answer 4): the Boat's key pressed on the "
+                             "LAYER row and Ctrl+C - the key copied, no panel; a press on panel 2's clip hands the keys "
+                             "back; the row's empty track pressed in panel 2 at frame 6 and Ctrl+V pastes it on the Gull "
+                             "there, one step (\"Paste Layer Key\"), keeping the PLACE - the Gull's art centre where the "
+                             "Boat's was, (500, 300): its move (20, 180) - with the turn, size, opacity and ease as "
+                             "copied; undone, two keys again"),
+              chosenKey == 1 && copyTaken && copied && noPanelCopied && pasteReady && handedBack && rowChosen
+                  && pasteTaken && step == QLatin1String("Paste Layer Key") && keysWith == 3 && placeKept && asCopied
+                  && pb->layers.at(1).keys.size() == 2,
+              QStringLiteral("chosen key %1; Ctrl+C taken %2, copied %3, no panel %4, Paste ready %5; handed back %6; "
+                             "row chosen %7; Ctrl+V taken %8, step '%9', keys %10; pasted move %11,%12 (centre %13,%14), "
+                             "turn %15 size %16 opacity %17 ease %18; after undo %19 keys")
+                  .arg(chosenKey).arg(copyTaken).arg(copied).arg(noPanelCopied).arg(pasteReady).arg(handedBack)
+                  .arg(rowChosen).arg(pasteTaken).arg(step).arg(keysWith)
+                  .arg(pasted ? pasted->pose.dx : -1).arg(pasted ? pasted->pose.dy : -1).arg(centre.x())
+                  .arg(centre.y()).arg(pasted ? pasted->pose.rotation : -1).arg(pasted ? pasted->pose.scale : -1)
+                  .arg(pasted ? pasted->pose.opacity : -1)
+                  .arg(pasted ? shotcam::easeLabel(pasted->ease) : QStringLiteral("-")).arg(pb->layers.at(1).keys.size()));
+        // Control: on the same layer (the Boat, panel 1, frame 18) the pivot is the same, so the move is the copied one.
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        r.animatic->setPlayheadFrameInPanel(0, 18);
+        pump(150);
+        pressRow(21);
+        ctrlKey(Qt::Key_V);
+        const shotcam::LayerKey *sameKey = keyAtFrame(pa->layers.at(2), 18, 24);
+        const bool pastedSame = sameKey != nullptr;
+        const QPointF sameMoveIs = sameKey ? QPointF(sameKey->pose.dx, sameKey->pose.dy) : QPointF(-1, -1);
+        const bool sameMove = pastedSame && nearly(sameMoveIs.x(), 300.0) && nearly(sameMoveIs.y(), 100.0);
+        if (pastedSame)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(kc1) control: pasted on the Boat itself (frame 18) the move is the copied one, (300, 100)"),
+              sameMove && pa->layers.at(2).keys.size() == 2,
+              QStringLiteral("pasted %1: %2,%3").arg(pastedSame).arg(sameMoveIs.x()).arg(sameMoveIs.y()));
+    }
+
+    // (kc2) A LAYER WITH NO KEYS: Animate switches on, its pivot the centre of its art, the pasted key its first.
+    {
+        r.storyboard->layerRowClickedForTest(1); // the Ground: no keys, a 30 px square at (700, 380)
+        r.animatic->setPlayheadFrameInPanel(0, 6);
+        pump(150);
+        pressRow(9);
+        const int steps = stack->index();
+        ctrlKey(Qt::Key_V);
+        const Layer ground = pa->layers.at(1); // a copy: the undo puts a whole layer list back
+        const bool animated = ground.animate && ground.keys.size() == 1;
+        const shotcam::LayerKey *first = keyAtFrame(ground, 6, 24);
+        const QPointF pivot = ground.pivot;
+        const bool placeKept = first && pivot == QPointF(700, 380) && nearly(first->pose.dx, -200.0)
+            && nearly(first->pose.dy, -80.0);
+        const bool oneStep = stack->index() == steps + 1;
+        if (oneStep)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(kc2) A LAYER WITH NO KEYS (Figma I-1b section 4): pasted on the Ground at frame 6, Animate "
+                             "switches on and the key is its first, its pivot the centre of its art (700, 380), its move "
+                             "(-200, -80) to the copied place (500, 300); one step - undone, no keys and Animate off"),
+              animated && placeKept && oneStep && !pa->layers.at(1).animate && pa->layers.at(1).keys.isEmpty(),
+              QStringLiteral("animate %1, keys %2; pivot %3,%4, move %5,%6; one step %7; after undo animate %8 keys %9")
+                  .arg(animated).arg(ground.keys.size()).arg(pivot.x()).arg(pivot.y())
+                  .arg(first ? first->pose.dx : -1).arg(first ? first->pose.dy : -1).arg(oneStep)
+                  .arg(pa->layers.at(1).animate).arg(pa->layers.at(1).keys.size()));
+        r.storyboard->layerRowClickedForTest(2);
+        pump(100);
+    }
+
+    // (kc3) CUT: the Gull's dim mark pressed (its panel and layer chosen), Ctrl+X - one step, the key copied; the row
+    // stays chosen for a paste.
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(100);
+        pressRow(36); // the Gull's second key, panel 2 frame 12
+        const bool onGull = r.storyboard->currentPanelForTest() == pb && pb->activeLayerIndex == 1
+            && r.storyboard->layerRowFocusKeyForTest() == 1;
+        const int steps = stack->index();
+        const bool cutTaken = ctrlKey(Qt::Key_X);
+        const QString step = stack->index() == steps + 1 ? stack->text(stack->count() - 1) : QString();
+        const int keysAfter = pb->layers.at(1).keys.size();
+        const bool rowStays = r.storyboard->layerRowFocusedForTest() && r.storyboard->layerRowFocusKeyForTest() == -1;
+        const bool clip = r.storyboard->layerKeyCopiedForTest();
+        if (!step.isEmpty())
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(kc3) CUT: the Gull's mark pressed and Ctrl+X - the key goes, one step (\"Cut Layer Key\"), "
+                             "and is copied; the row stays chosen; undone, back"),
+              onGull && cutTaken && step == QLatin1String("Cut Layer Key") && keysAfter == 1 && rowStays && clip
+                  && pb->layers.at(1).keys.size() == 2,
+              QStringLiteral("on the Gull %1; Ctrl+X taken %2, step '%3', keys %4, row stays %5, copied %6; after undo %7")
+                  .arg(onGull).arg(cutTaken).arg(step).arg(keysAfter).arg(rowStays).arg(clip)
+                  .arg(pb->layers.at(1).keys.size()));
+    }
+
+    // (kc4) THE KEYS GO BACK TO THEIR JOBS: after a press on a clip, or on another row, Ctrl+C copies the panel
+    // (today's job) and the copied key stays as it was; control: with the LAYER row chosen it copied no panel (kc1).
+    {
+        clickClip(r, 0);
+        const bool clipGives = !r.storyboard->layerRowFocusedForTest();
+        pressRow(21);
+        const bool chosenAgain = r.storyboard->layerRowFocusedForTest();
+        const QPointF onCamera(r.timeline->frameScreenXForTest(30), r.timeline->cameraRowForTest().center().y());
+        mouse(r.surface, QEvent::MouseButtonPress, onCamera, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, onCamera, Qt::LeftButton, Qt::NoButton);
+        pump(150);
+        const bool rowGives = !r.storyboard->layerRowFocusedForTest();
+        const bool panelBefore = r.storyboard->hasPanelClipboard();
+        ctrlKey(Qt::Key_C);
+        const bool panelCopied = r.storyboard->hasPanelClipboard();
+        const bool keyKept = r.storyboard->layerKeyCopiedForTest();
+        check(QStringLiteral("(kc4) THE KEYS GO BACK TO THEIR JOBS: a press on a clip, or on the CAMERA row, ends the LAYER "
+                             "row's hold; Ctrl+C then copies the panel, as before, and the copied key stays ready"),
+              clipGives && chosenAgain && rowGives && !panelBefore && panelCopied && keyKept,
+              QStringLiteral("clip %1, chosen again %2, CAMERA row %3; panel copied %4 -> %5; key kept %6")
+                  .arg(clipGives).arg(chosenAgain).arg(rowGives).arg(panelBefore).arg(panelCopied).arg(keyKept));
+        // With a panel copied as well, Ctrl+V on the LAYER row still pastes the key, never a panel.
+        r.storyboard->layerRowClickedForTest(2);
+        r.animatic->setPlayheadFrameInPanel(0, 18);
+        pump(100);
+        pressRow(21);
+        const int panels = scene->panels.size();
+        ctrlKey(Qt::Key_V);
+        const bool keyPasted = keyAtFrame(pa->layers.at(2), 18, 24) != nullptr;
+        const bool noPanel = scene->panels.size() == panels;
+        if (keyPasted)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(kc4) ...and with a panel copied too, Ctrl+V with the LAYER row chosen pastes the key, not "
+                             "the panel"),
+              keyPasted && noPanel, QStringLiteral("key %1, panels %2 -> %3").arg(keyPasted).arg(panels)
+                                        .arg(scene->panels.size()));
+    }
+
+    // (kc5), judged now that a key is copied: the row's menu pastes.
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 6);
+        pump(100);
+        const QStringList rowMenuAfter = rowMenu(21, QStringLiteral("layerKeyPaste"));
+        const bool pastedFromMenu = keyAtFrame(pa->layers.at(2), 6, 24) != nullptr;
+        if (pastedFromMenu)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(kc5) THE MENUS (Figma I-1b section 4): a key's right-click gives Copy Key, Cut Key, Paste "
+                             "Key at the Playhead (greyed until a key is copied) and Delete Key; the row's empty track "
+                             "Paste Key at the Playhead alone, which pastes once a key is copied; Edit > Paste is greyed "
+                             "while the LAYER row is chosen and no key is copied"),
+              keyMenuBefore == QStringList({QStringLiteral("layerKeyCopy"), QStringLiteral("layerKeyCut"),
+                                            QStringLiteral("layerKeyPaste(greyed)"), QStringLiteral("layerKeyDelete")})
+                  && rowMenuBefore == QStringList({QStringLiteral("layerKeyPaste(greyed)")})
+                  && rowMenuAfter == QStringList({QStringLiteral("layerKeyPaste")}) && pastedFromMenu
+                  && pasteGreyedBefore,
+              QStringLiteral("key menu [%1]; row menu before [%2], after [%3]; pasted %4; Edit > Paste greyed %5")
+                  .arg(keyMenuBefore.join(QLatin1Char(',')), rowMenuBefore.join(QLatin1Char(',')),
+                       rowMenuAfter.join(QLatin1Char(',')))
+                  .arg(pastedFromMenu).arg(pasteGreyedBefore));
+    }
+
+    // ---- AFTER HAND TEST I1b-3 (2026-11-26): the menus pressed as the pen presses them, the off entry judged from
+    // the menu's picture, and the playhead moved between a copy and its paste. ----
+
+    // (km3) A SWITCHED-OFF "PASTE KEY AT THE PLAYHEAD" IS DRAWN GREYED. In the hand test it was off before any copy
+    // but as bright as the entries around it, and was pressed twenty times. Judged from the menus' own pictures,
+    // taken at the top of this pass while nothing was copied: the entry's words are the off grey (#5c5c62: no pixel
+    // above 120), the other entries' the menu's own (#cccccc: 150 or more); under the pointer it stays grey and its
+    // ground is not lit; and a press on it, through the window system, does nothing.
+    {
+        const QStringList four({QStringLiteral("layerKeyCopy"), QStringLiteral("layerKeyCut"),
+                                QStringLiteral("layerKeyPaste"), QStringLiteral("layerKeyDelete")});
+        const bool keyShape = keyMenuOff.opened && keyMenuOff.entries == four && keyMenuOff.index == 2
+            && keyMenuOff.rects.size() == 4 && !keyMenuOff.picture.isNull() && !keyMenuOff.pictureOver.isNull();
+        int offPeak = -1, othersMin = 255, offOverPeak = -1, restGround = -1, overGround = -1;
+        if (keyShape) {
+            offPeak = wordsPeak(keyMenuOff.picture, keyMenuOff.rects.at(2));
+            for (int i : {0, 1, 3})
+                othersMin = qMin(othersMin, wordsPeak(keyMenuOff.picture, keyMenuOff.rects.at(i)));
+            offOverPeak = wordsPeak(keyMenuOff.pictureOver, keyMenuOff.rects.at(2));
+            restGround = groundAt(keyMenuOff.picture, keyMenuOff.rects.at(2));
+            overGround = groundAt(keyMenuOff.pictureOver, keyMenuOff.rects.at(2));
+        }
+        const bool rowShape = rowMenuOff.opened && rowMenuOff.entries == QStringList({QStringLiteral("layerKeyPaste")})
+            && rowMenuOff.rects.size() == 1 && !rowMenuOff.picture.isNull();
+        const int rowOffPeak = rowShape ? wordsPeak(rowMenuOff.picture, rowMenuOff.rects.at(0)) : -1;
+        const bool pressDidNothing = stepsOffAfter == stepsOffBefore && keysOffAfter == 2;
+        check(QStringLiteral("(km3) A SWITCHED-OFF PASTE IS DRAWN GREYED (hand test I1b-3): before any copy, the key's "
+                             "menu opened by a real right-click paints \"Paste Key at the Playhead\" in the off grey "
+                             "(no pixel of its words above 120) beside Copy Key, Cut Key and Delete Key in the menu's "
+                             "own colour (150 or more); under the pointer it stays grey with no lit ground; a press on "
+                             "it does nothing; and the row's own menu paints its one entry greyed too"),
+              keyShape && !keyMenuOff.enabled && offPeak >= 0 && offPeak <= 120 && othersMin >= 150
+                  && offOverPeak <= 120 && restGround >= 0 && overGround == restGround && pressDidNothing && rowShape
+                  && !rowMenuOff.enabled && rowOffPeak >= 0 && rowOffPeak <= 120,
+              QStringLiteral("key menu opened %1 [%2], Paste on %3; words' peaks %4 (off %5, the others' least %6); "
+                             "under the pointer %7, ground %8 -> %9; steps %10 -> %11, keys %12; row menu opened %13 "
+                             "[%14], on %15, peak %16")
+                  .arg(keyMenuOff.opened).arg(keyMenuOff.entries.join(QLatin1Char(','))).arg(keyMenuOff.enabled)
+                  .arg(peaksOf(keyMenuOff, keyMenuOff.picture)).arg(offPeak).arg(othersMin).arg(offOverPeak)
+                  .arg(restGround).arg(overGround).arg(stepsOffBefore).arg(stepsOffAfter).arg(keysOffAfter)
+                  .arg(rowMenuOff.opened).arg(rowMenuOff.entries.join(QLatin1Char(','))).arg(rowMenuOff.enabled)
+                  .arg(rowOffPeak));
+        // Control: now that a key is copied, the same pictures show the same entry on - its words the menu's own
+        // colour, white on a lit ground under the pointer. The picture tells on from off.
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(100);
+        const RealMenu keyMenuOn = realMenu(12, QStringLiteral("layerKeyPaste"), false);
+        const RealMenu rowMenuOn = realMenu(21, QStringLiteral("layerKeyPaste"), false);
+        const bool onShape = keyMenuOn.opened && keyMenuOn.entries == four && keyMenuOn.rects.size() == 4
+            && rowMenuOn.opened && rowMenuOn.rects.size() == 1;
+        const int onPeak = onShape ? wordsPeak(keyMenuOn.picture, keyMenuOn.rects.at(2)) : -1;
+        const int onOverPeak = onShape ? wordsPeak(keyMenuOn.pictureOver, keyMenuOn.rects.at(2)) : -1;
+        const int onRest = onShape ? groundAt(keyMenuOn.picture, keyMenuOn.rects.at(2)) : -1;
+        const int onOver = onShape ? groundAt(keyMenuOn.pictureOver, keyMenuOn.rects.at(2)) : -1;
+        const int rowOnPeak = onShape ? wordsPeak(rowMenuOn.picture, rowMenuOn.rects.at(0)) : -1;
+        check(QStringLiteral("(km3) control: with a key copied the same entry is on and painted so - its words 150 or "
+                             "more at rest, white on a lit ground under the pointer - in both menus"),
+              onShape && keyMenuOn.enabled && rowMenuOn.enabled && onPeak >= 150 && onOverPeak >= 230 && onOver > onRest
+                  && rowOnPeak >= 150,
+              QStringLiteral("on %1/%2; words %3 at rest, %4 under the pointer; ground %5 -> %6; the row's %7")
+                  .arg(keyMenuOn.enabled).arg(rowMenuOn.enabled).arg(onPeak).arg(onOverPeak).arg(onRest).arg(onOver)
+                  .arg(rowOnPeak));
+    }
+
+    // (km1) COPY KEY FROM THE KEY'S MENU, PRESSED AS THE PEN PRESSES IT. In the hand test it copied nothing: the
+    // press on the menu's entry counted as "a press somewhere else" (it reaches the menu's window before the menu)
+    // and the selected key was forgotten before the entry acted. Told by the EFFECT: what the next paste carries.
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(100);
+        pressRow(12);
+        ctrlKey(Qt::Key_C); // the Boat's second key is the copied one: turned 15, sized 80 %
+        const shotcam::LayerKey firstKey = pa->layers.at(2).keys.at(0);
+        r.canvas->expireNoteForTest();
+        pump(80);
+        const RealMenu copy = realMenu(0, QStringLiteral("layerKeyCopy"), true); // the Boat's FIRST key
+        const QString said = barNote(r);
+        const bool amber = barWarns(r);
+        const int chosenKey = r.storyboard->layerRowFocusKeyForTest();
+        r.animatic->setPlayheadFrameInPanel(0, 18);
+        pump(150);
+        pressRow(21);
+        const int steps = stack->index();
+        ctrlKey(Qt::Key_V);
+        const Layer boat = pa->layers.at(2); // a copy: the undo puts a whole layer list back
+        const shotcam::LayerKey *pasted = keyAtFrame(boat, 18, 24);
+        const bool isFirst = pasted && nearly(pasted->pose.dx, firstKey.pose.dx) && nearly(pasted->pose.dy, firstKey.pose.dy)
+            && nearly(pasted->pose.rotation, firstKey.pose.rotation) && nearly(pasted->pose.scale, firstKey.pose.scale);
+        const bool notSecond = pasted && !nearly(pasted->pose.rotation, 15.0);
+        const QString pastedIs = pasted ? QStringLiteral("%1,%2 turned %3 sized %4").arg(pasted->pose.dx).arg(pasted->pose.dy)
+                                              .arg(pasted->pose.rotation).arg(pasted->pose.scale)
+                                        : QStringLiteral("nothing");
+        if (stack->index() == steps + 1)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(km1) COPY KEY FROM THE MENU, PRESSED AS THE PEN PRESSES IT (hand test I1b-3): with the "
+                             "Boat's second key copied (turned 15), a real right-click on its FIRST key and a real press "
+                             "on \"Copy Key\" copies that key - the bar says nothing in amber, and the next paste carries "
+                             "the first key (not turned), not the second"),
+              copy.opened && copy.found && copy.enabled && !copy.stillUp && chosenKey == 0 && !amber
+                  && !said.contains(QLatin1String("No layer key")) && isFirst && notSecond,
+              QStringLiteral("menu opened %1, entry found %2 on %3, still up %4; selected key %5; the bar '%6' (amber "
+                             "%7); pasted %8 (the first key: %9,%10 turned %11 sized %12)")
+                  .arg(copy.opened).arg(copy.found).arg(copy.enabled).arg(copy.stillUp).arg(chosenKey).arg(said)
+                  .arg(amber).arg(pastedIs).arg(firstKey.pose.dx).arg(firstKey.pose.dy).arg(firstKey.pose.rotation)
+                  .arg(firstKey.pose.scale));
+        // Control: what the hand test showed is something this check can see - with the row chosen and NO key, a copy
+        // copies nothing and the bar says so in amber.
+        pressRow(21);
+        r.canvas->expireNoteForTest();
+        pump(80);
+        ctrlKey(Qt::Key_C);
+        const QString saidNoKey = barNote(r);
+        const bool amberNoKey = barWarns(r);
+        check(QStringLiteral("(km1) control: with the row chosen and no key selected, Ctrl+C copies nothing and the bar "
+                             "says so in amber (\"No layer key is selected...\") - the note the menu's Copy Key gave in "
+                             "the hand test"),
+              amberNoKey && saidNoKey.startsWith(QLatin1String("No layer key is selected")),
+              QStringLiteral("'%1' (amber %2)").arg(saidNoKey).arg(amberNoKey));
+        r.canvas->expireNoteForTest();
+        pump(80);
+    }
+
+    // (km2) CUT KEY FROM THE MENU, the same way: the Gull's second key (panel 2, film frame 36) goes in one step and
+    // is the copied one - pasted back on the Gull at frame 6 it has the cut key's move.
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(100);
+        const shotcam::LayerKey gullKey = pb->layers.at(1).keys.at(1);
+        r.canvas->expireNoteForTest();
+        pump(80);
+        const int steps = stack->index();
+        const RealMenu cut = realMenu(36, QStringLiteral("layerKeyCut"), true);
+        const QString step = stack->index() == steps + 1 ? stack->text(stack->count() - 1) : QString();
+        const int keysAfter = pb->layers.at(1).keys.size();
+        const bool amber = barWarns(r);
+        const QString said = barNote(r);
+        r.animatic->setPlayheadFrameInPanel(1, 6);
+        pump(150);
+        pressRow(33);
+        ctrlKey(Qt::Key_V);
+        const Layer gull = pb->layers.at(1); // a copy, as above
+        const shotcam::LayerKey *pasted = keyAtFrame(gull, 6, 24);
+        const bool isCut = pasted && nearly(pasted->pose.dx, gullKey.pose.dx) && nearly(pasted->pose.dy, gullKey.pose.dy);
+        while (stack->index() > steps)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(km2) CUT KEY FROM THE MENU, the same way: a real right-click on the Gull's second key and a "
+                             "real press on \"Cut Key\" - the key goes, one step (\"Cut Layer Key\"), nothing in amber, "
+                             "and it is the copied one: pasted on the Gull at frame 6 it has the cut key's move; undone, "
+                             "two keys again"),
+              cut.opened && cut.found && cut.enabled && step == QLatin1String("Cut Layer Key") && keysAfter == 1 && !amber
+                  && isCut && pb->layers.at(1).keys.size() == 2,
+              QStringLiteral("menu opened %1, entry found %2 on %3; step '%4', keys %5; the bar '%6' (amber %7); pasted "
+                             "the cut key %8; after undo %9 keys")
+                  .arg(cut.opened).arg(cut.found).arg(cut.enabled).arg(step).arg(keysAfter).arg(said).arg(amber).arg(isCut)
+                  .arg(pb->layers.at(1).keys.size()));
+        r.canvas->expireNoteForTest();
+        pump(80);
+    }
+
+    // (km4) THE PLAYHEAD MOVED BETWEEN A COPY AND ITS PASTE (the user's answer after hand test I1b-3, where twice a
+    // key was copied, the playhead moved by a tap on the ruler, and Ctrl+V did nothing - seven presses): a tap or a
+    // drag on the timecode row keeps the LAYER row's hold on the keys, so Ctrl+V pastes the copied key at the new
+    // place. The presses go through the window system, the mouse's and the pen's.
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(100);
+        pressRow(12);
+        ctrlKey(Qt::Key_C); // the Boat's second key: its move (300, 100), turned 15
+        auto ruler = [&](int filmFrame) { return QPointF(r.timeline->frameScreenXForTest(filmFrame), 10); };
+        // The mouse: pressed on the ruler at frame 15, dragged to 18, let go.
+        libbox::pointerTo(r.surface, ruler(15), QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, ruler(15), QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(r.surface, ruler(17), QEvent::MouseMove, Qt::LeftButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, ruler(18), QEvent::MouseMove, Qt::LeftButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, ruler(18), QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(200);
+        const bool rowKept = r.storyboard->layerRowFocusedForTest();
+        const int keyAfterMove = r.storyboard->layerRowFocusKeyForTest();
+        const int frameAfterDrag = r.animatic->playheadFrameInPanel();
+        const int steps = stack->index();
+        const bool pasteTaken = ctrlKey(Qt::Key_V);
+        const QString step = stack->index() == steps + 1 ? stack->text(stack->count() - 1) : QString();
+        const Layer boat = pa->layers.at(2); // a copy, as above
+        const shotcam::LayerKey *pasted = keyAtFrame(boat, 18, 24);
+        const bool asCopied = pasted && nearly(pasted->pose.dx, 300.0) && nearly(pasted->pose.dy, 100.0)
+            && nearly(pasted->pose.rotation, 15.0);
+        const int panelsAfterPaste = scene->panels.size();
+        while (stack->index() > steps)
+            stack->undo();
+        pump(100);
+        // The keys were not handed back to the panels: Ctrl+C now has no key to copy and says so - it copies no panel.
+        r.canvas->expireNoteForTest();
+        pump(80);
+        ctrlKey(Qt::Key_C);
+        const QString saidAfterMove = barNote(r);
+        const bool noKeyToCopy = barWarns(r) && saidAfterMove.startsWith(QLatin1String("No layer key is selected"));
+        r.canvas->expireNoteForTest();
+        pump(80);
+        // The pen: a tap on the ruler at frame 6, through the window system (Qt makes the mouse of it).
+        pressRow(12);
+        constexpr qint64 kPen = 7043;
+        r.storyboard->setPointerDeviceForTest(kPen);
+        auto penOn = [&](const QPointF &onSurface, Qt::MouseButtons buttons, qreal pressure) {
+            QWindow *target = r.surface->window()->windowHandle();
+            if (!target)
+                return;
+            const QPointF global = r.surface->mapToGlobal(onSurface);
+            const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleTabletEvent(target, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                      int(QPointingDevice::PointerType::Pen), buttons, pressure, 0, 0,
+                                                      0, 0, 0, kPen, Qt::NoModifier);
+            QCoreApplication::processEvents();
+        };
+        penOn(ruler(6), Qt::NoButton, 0.0);
+        penOn(ruler(6), Qt::LeftButton, 0.6);
+        penOn(ruler(6), Qt::NoButton, 0.0);
+        pump(200);
+        r.storyboard->setPointerDeviceForTest(-1);
+        const bool rowKeptPen = r.storyboard->layerRowFocusedForTest();
+        const int frameAfterPen = r.animatic->playheadFrameInPanel();
+        const int stepsPen = stack->index();
+        ctrlKey(Qt::Key_V);
+        const Layer boatPen = pa->layers.at(2);
+        const bool pastedPen = keyAtFrame(boatPen, 6, 24) != nullptr && stack->index() == stepsPen + 1
+            && stack->text(stack->count() - 1) == QLatin1String("Paste Layer Key");
+        const int panelsAfterPen = scene->panels.size();
+        while (stack->index() > stepsPen)
+            stack->undo();
+        pump(100);
+        check(QStringLiteral("(km4) THE PLAYHEAD MOVED BETWEEN A COPY AND ITS PASTE (your answer after I1b-3): the Boat's "
+                             "key copied, then a real drag on the ruler from frame 15 to 18 - the LAYER row keeps the "
+                             "keys (no key selected any more), and Ctrl+V pastes the copied key at frame 18, one step "
+                             "(\"Paste Layer Key\"), no panel pasted; Ctrl+C then has no key and copies no panel; and the "
+                             "pen's tap on the ruler at frame 6 keeps the keys the same way - Ctrl+V pastes at frame 6"),
+              rowKept && keyAfterMove == -1 && frameAfterDrag == 18 && pasteTaken && step == QLatin1String("Paste Layer Key")
+                  && asCopied && panelsAfterPaste == 2 && noKeyToCopy && rowKeptPen && frameAfterPen == 6 && pastedPen
+                  && panelsAfterPen == 2 && pa->layers.at(2).keys.size() == 2,
+              QStringLiteral("mouse: row kept %1, key %2, playhead %3; Ctrl+V taken %4, step '%5', as copied %6, panels "
+                             "%7; then Ctrl+C: '%8' (no key to copy %9); pen: row kept %10, playhead %11, pasted %12, "
+                             "panels %13; keys after undo %14")
+                  .arg(rowKept).arg(keyAfterMove).arg(frameAfterDrag).arg(pasteTaken).arg(step).arg(asCopied)
+                  .arg(panelsAfterPaste).arg(saidAfterMove).arg(noKeyToCopy).arg(rowKeptPen).arg(frameAfterPen)
+                  .arg(pastedPen).arg(panelsAfterPen).arg(pa->layers.at(2).keys.size()));
+        // Control: a press anywhere else still hands the keys back - a clip on the SHOTS row and the SCENES row, pressed
+        // through the window system too.
+        auto realPress = [&](const QPointF &at) {
+            libbox::pointerTo(r.surface, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+            libbox::pointerTo(r.surface, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+            libbox::pointerTo(r.surface, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+            pump(150);
+        };
+        pressRow(12);
+        const bool heldBefore = r.storyboard->layerRowFocusedForTest();
+        realPress(QPointF(r.timeline->frameScreenXForTest(6), 48 + 30)); // panel 1's clip
+        const bool clipGives = !r.storyboard->layerRowFocusedForTest();
+        pressRow(12);
+        realPress(QPointF(r.timeline->frameScreenXForTest(6), 24 + 12)); // the SCENES row
+        const bool scenesGives = !r.storyboard->layerRowFocusedForTest();
+        check(QStringLiteral("(km4) control: a real press on a clip, or on the SCENES row, still hands the keys back to "
+                             "the panels"),
+              heldBefore && clipGives && scenesGives,
+              QStringLiteral("held before %1; after the clip %2, after the SCENES row %3").arg(heldBefore).arg(clipGives)
+                  .arg(scenesGives));
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(100);
+    }
+
+    // (kd1) DELETE ON A SELECTED LAYER KEY (the user's answer after hand test I1b-1): the key goes, one step, and no
+    // "Delete this panel?" is offered.
+    {
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(100);
+        pressRow(0); // the Boat's first key
+        hover(r, r.animatic, true); // Delete is the timeline's while the pointer is over it
+        const int panels = scene->panels.size();
+        const int steps = stack->index();
+        QStringList boxes;
+        bool taken = false;
+        {
+            travel::Warnings warnings;
+            taken = keyClaimed(&r.window, Qt::Key_Delete);
+            pump(300);
+            boxes = warnings.texts;
+        }
+        const QString step = stack->index() == steps + 1 ? stack->text(stack->count() - 1) : QString();
+        const int keysAfter = pa->layers.at(2).keys.size();
+        if (!step.isEmpty())
+            stack->undo();
+        pump(100);
+        // The row chosen with no key: Delete does nothing at all.
+        pressRow(21);
+        QStringList boxesNoKey;
+        const int stepsNoKey = stack->index();
+        {
+            travel::Warnings warnings;
+            keyClaimed(&r.window, Qt::Key_Delete);
+            pump(300);
+            boxesNoKey = warnings.texts;
+        }
+        const bool nothing = stack->index() == stepsNoKey && boxesNoKey.isEmpty() && pa->layers.at(2).keys.size() == 2;
+        check(QStringLiteral("(kd1) DELETE ON A SELECTED LAYER KEY (your answer after I1b-1): the Boat's key pressed, "
+                             "Delete over the timeline takes that key - one step (\"Delete Layer Key\") - and offers "
+                             "nothing about the panel; with the row chosen and no key, Delete does nothing"),
+              taken && step == QLatin1String("Delete Layer Key") && keysAfter == 1 && boxes.isEmpty()
+                  && scene->panels.size() == panels && pa->layers.at(2).keys.size() == 2 && nothing,
+              QStringLiteral("taken %1, step '%2', keys %3, boxes [%4], panels %5 -> %6; no key: nothing %7 (boxes [%8])")
+                  .arg(taken).arg(step).arg(keysAfter).arg(boxes.join(QLatin1Char('|'))).arg(panels)
+                  .arg(scene->panels.size()).arg(nothing).arg(boxesNoKey.join(QLatin1Char('|'))));
+        // Control: after a press on the clip, Delete is the panel's again - it asks (answered No by the guard).
+        clickClip(r, 0);
+        QStringList boxesPanel;
+        {
+            travel::Warnings warnings;
+            keyClaimed(&r.window, Qt::Key_Delete);
+            pump(300);
+            boxesPanel = warnings.texts;
+        }
+        hover(r, r.animatic, false);
+        check(QStringLiteral("(kd1) control: after a press on the clip, Delete over the timeline asks about the panel, as "
+                             "before (answered No: both panels stay)"),
+              boxesPanel.join(QLatin1Char('|')).contains(QLatin1String("Delete the selected panel"))
+                  && scene->panels.size() == panels,
+              QStringLiteral("boxes [%1], panels %2").arg(boxesPanel.join(QLatin1Char('|'))).arg(scene->panels.size()));
+    }
+
+    // (es1) ESC AND SPACE WITH THE POINTER OUT OF THE WINDOW (the user's answer after hand test I1b-1, where a pen lifted
+    // away after Play left 27 presses of Esc unanswered): while the preview is up, a pointer that has left the window
+    // counts as over the preview.
+    {
+        hover(r, r.animatic, false);
+        hover(r, r.animatic->previewSurface(), false);
+        r.animatic->togglePlay();
+        pump(250);
+        const bool playing = r.animatic->isPlaying() && r.animatic->previewVisible();
+        const bool armedInside = r.storyboard->timelineKeysArmedForTest();
+        hover(r, &r.window, false); // the pointer leaves the window - as a pen lifted out of reach does
+        const bool armedOut = r.storyboard->timelineKeysArmedForTest();
+        const bool spaceTaken = keyClaimed(&r.window, Qt::Key_Space);
+        const bool paused = !r.animatic->isPlaying() && r.animatic->previewVisible();
+        const bool escTaken = keyClaimed(&r.window, Qt::Key_Escape);
+        const bool back = !r.animatic->previewVisible();
+        check(QStringLiteral("(es1) ESC AND SPACE WITH THE POINTER OUT OF THE WINDOW (your answer after I1b-1): with the film "
+                             "playing in the preview and the pointer gone from the window, Space pauses it and Esc goes back "
+                             "to drawing"),
+              playing && !armedInside && armedOut && spaceTaken && paused && escTaken && back,
+              QStringLiteral("playing %1; armed with the pointer nowhere in it %2, out of the window %3; Space taken %4 "
+                             "(paused %5); Esc taken %6 (back %7)")
+                  .arg(playing).arg(armedInside).arg(armedOut).arg(spaceTaken).arg(paused).arg(escTaken).arg(back));
+        // Control: with no preview, out of the window arms nothing. (Its own start: the film stopped and the preview
+        // gone - which the Esc above did, but a control does not lean on what it checks.) Changed after hand test I1b-3
+        // (2026-11-26): this control also said "with the preview up and the pointer back in the window, over the canvas,
+        // nothing" - the old rule, which the user has replaced: with the film up Space and Esc are the film's wherever
+        // the pointer is ((es2) below, which has that case with the opposite answer).
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        r.animatic->leavePreview();
+        pump(150);
+        const bool armedNoPreview = r.storyboard->timelineKeysArmedForTest();
+        const bool spaceFree = !keyClaimed(&r.window, Qt::Key_Space) && !r.animatic->isPlaying();
+        hover(r, &r.window, true);
+        check(QStringLiteral("(es1) control: with no preview the pointer out of the window arms nothing (Space is not "
+                             "taken)"),
+              !armedNoPreview && spaceFree,
+              QStringLiteral("no preview: armed %1, Space free %2").arg(armedNoPreview).arg(spaceFree));
+    }
+
+    // (es2) SPACE AND ESC ARE THE FILM'S WHEREVER THE POINTER IS (the user's answer after hand test I1b-3, where an Esc
+    // pressed during playback with the mouse resting on the bottom bar did nothing): while the film is up, Space
+    // pauses it, Space again plays on from there, and Esc goes back to the workspace - with the pointer in the window
+    // over neither the timeline nor the preview (the bottom bar, a panel). Not while a text field is typed in.
+    {
+        QWidget *bottomBar = r.storyboard->noteBarForTest();
+        auto *layersPanel = r.window.findChild<QWidget *>(QStringLiteral("layersToolbar"));
+        // The pointer comes to rest on `on`: inside the window, off the timeline and off the preview.
+        auto restOn = [&](QWidget *on) {
+            hover(r, &r.window, true);
+            hover(r, r.animatic, false);
+            hover(r, r.animatic->previewSurface(), false);
+            if (on)
+                hover(r, on, true);
+        };
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        r.animatic->leavePreview();
+        r.canvas->setFocus();
+        pump(150);
+        restOn(bottomBar);
+        r.animatic->togglePlay();
+        pump(300);
+        const bool playing = r.animatic->isPlaying() && r.animatic->previewVisible();
+        const bool pointerArmsNothing = !r.storyboard->timelineKeysArmedForTest();
+        const bool filmKeys = r.storyboard->filmKeysArmedForTest();
+        const bool spaceTaken = keyClaimed(&r.window, Qt::Key_Space);
+        const bool paused = !r.animatic->isPlaying() && r.animatic->previewVisible();
+        // "Plays on from there": where the playhead is as soon as the film has started again - at the film frame it
+        // was paused at or just past it, never back at the start. Read on the first turn of the event loop after the
+        // film's own "playing" signal, so the answer does not depend on how long the machine takes afterwards. (Not
+        // read INSIDE that signal: play() sends it before it restarts the panel's clock, and for that instant
+        // playheadFrameInPanel() still reads the old clock - the pause's length ahead. The first version of this
+        // check read it there and said frame 23 for a film paused at 19; the film itself went on from 19.)
+        auto filmFrame = [&] {
+            return (r.animatic->playheadPanel() == pb ? 24 : 0) + r.animatic->playheadFrameInPanel();
+        };
+        const int pausedAt = filmFrame();
+        int resumedAt = -1;
+        const QMetaObject::Connection watch =
+            QObject::connect(r.animatic, &AnimaticPage::playingChanged, r.animatic, [&](bool on) {
+                if (on)
+                    QTimer::singleShot(0, r.animatic, [&] {
+                        if (resumedAt < 0)
+                            resumedAt = filmFrame();
+                    });
+            });
+        const bool spaceAgain = keyClaimed(&r.window, Qt::Key_Space);
+        QObject::disconnect(watch);
+        const bool playsOn = resumedAt >= pausedAt && r.animatic->previewVisible();
+        const bool escTaken = keyClaimed(&r.window, Qt::Key_Escape);
+        const bool back = !r.animatic->previewVisible() && !r.animatic->isPlaying();
+        // ...and over a panel (the Layers panel): the film playing again, Space pauses, Esc goes back.
+        restOn(layersPanel);
+        r.animatic->togglePlay();
+        pump(300);
+        const bool playing2 = r.animatic->isPlaying();
+        const bool spacePanel = keyClaimed(&r.window, Qt::Key_Space) && !r.animatic->isPlaying()
+            && r.animatic->previewVisible();
+        const bool escPanel = keyClaimed(&r.window, Qt::Key_Escape) && !r.animatic->previewVisible();
+        check(QStringLiteral("(es2) SPACE AND ESC ARE THE FILM'S WHEREVER THE POINTER IS (your answer after I1b-3): the "
+                             "film playing and the pointer resting on the bottom bar - over neither the timeline nor the "
+                             "preview - Space pauses it, Space again plays on from there, Esc goes back to the workspace; "
+                             "and over the Layers panel the same: Space pauses, Esc goes back"),
+              bottomBar && layersPanel && playing && pointerArmsNothing && filmKeys && spaceTaken && paused && spaceAgain
+                  && playsOn && escTaken && back && playing2 && spacePanel && escPanel,
+              QStringLiteral("bar %1, panel %2; playing %3; the pointer arms nothing %4, the film's keys armed %5; Space "
+                             "taken %6 (paused %7 at film frame %8), again %9 (played on from film frame %10: %11); Esc "
+                             "taken %12 (back %13); over the panel: playing %14, Space pauses %15, Esc goes back %16")
+                  .arg(bottomBar != nullptr).arg(layersPanel != nullptr).arg(playing).arg(pointerArmsNothing).arg(filmKeys)
+                  .arg(spaceTaken).arg(paused).arg(pausedAt).arg(spaceAgain).arg(resumedAt).arg(playsOn).arg(escTaken)
+                  .arg(back).arg(playing2).arg(spacePanel).arg(escPanel));
+        // Control 1: TYPING KEEPS ITS KEYS. With the film playing and a text field holding the keyboard, neither Space
+        // nor Esc is the film's; the keyboard back on the canvas, Esc is.
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        r.animatic->leavePreview();
+        pump(150);
+        auto *notes = r.storyboard->findChild<QPlainTextEdit *>();
+        if (auto *shotInfo = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockShotInfo")))
+            shotInfo->raise();
+        pump(200);
+        bool focused = false, spaceTyped = false, escTyped = false, filmHeld = false, keysOff = false, keysOnAgain = false;
+        if (notes) {
+            notes->setFocus();
+            pump(150);
+            restOn(bottomBar);
+            // The film up, PAUSED in the preview (played and paused at once): the same rule as while it plays, and
+            // nothing in this control waits on the film's clock - the fixture's film is two seconds long and goes back
+            // to the workspace by itself at its end.
+            r.animatic->togglePlay();
+            r.animatic->togglePlay();
+            pump(150);
+            filmHeld = !r.animatic->isPlaying() && r.animatic->previewVisible();
+            focused = r.window.focusWidget() == notes;
+            spaceTyped = !keyClaimed(notes, Qt::Key_Space) && !r.animatic->isPlaying();
+            escTyped = !keyClaimed(notes, Qt::Key_Escape) && r.animatic->previewVisible();
+            keysOff = !r.storyboard->filmKeysArmedForTest();
+            r.canvas->setFocus();
+            pump(150);
+            keysOnAgain = r.storyboard->filmKeysArmedForTest();
+            r.animatic->leavePreview(); // by the page's own call: this control does not lean on the film's Esc
+            pump(100);
+        }
+        check(QStringLiteral("(es2) control: while a text field is typed in (Shot Info's notes) with the film up, neither "
+                             "Space nor Esc is the film's - it stays as it is, paused in the preview; with the keyboard "
+                             "back on the canvas they are the film's again"),
+              notes && focused && filmHeld && spaceTyped && escTyped && keysOff && keysOnAgain,
+              QStringLiteral("field %1 focused %2; the film up and paused %3; Space left to the field %4, Esc left to it "
+                             "%5, the film's keys off %6; the keyboard on the canvas again: the film's keys on %7")
+                  .arg(notes != nullptr).arg(focused).arg(filmHeld).arg(spaceTyped).arg(escTyped).arg(keysOff)
+                  .arg(keysOnAgain));
+        // Control 2: WITH NO FILM UP the pointer decides, as before: resting on the bottom bar, Space and Esc are
+        // nobody's shortcut and nothing plays.
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        r.animatic->leavePreview();
+        r.canvas->setFocus();
+        pump(150);
+        restOn(bottomBar);
+        const bool noFilmKeys = !r.storyboard->filmKeysArmedForTest();
+        const bool spaceFree = !keyClaimed(&r.window, Qt::Key_Space) && !r.animatic->isPlaying();
+        const bool escFree = !keyClaimed(&r.window, Qt::Key_Escape);
+        check(QStringLiteral("(es2) control: with no film up and the pointer on the bottom bar, Space and Esc are no "
+                             "shortcut's - nothing plays"),
+              noFilmKeys && spaceFree && escFree,
+              QStringLiteral("the film's keys %1; Space free %2, Esc free %3").arg(!noFilmKeys).arg(spaceFree).arg(escFree));
+    }
+
+    // (sf1) THE CAMERA NOTE'S "SOFT" IN AMBER (the user's answer): the fixture's frame rests past the sharp limit
+    // ("Soft 1.00x") - that part amber, the rest of the note grey.
+    StatusNoteBar *noteBar = r.storyboard->noteBarForTest();
+    auto amberPx = [](const QImage &img, int fromX, int toX) {
+        int n = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = qMax(0, fromX); x < qMin(img.width(), toX); ++x) {
+                const QColor c(img.pixel(x, y));
+                if (c.red() > 150 && c.red() - c.blue() > 90 && c.green() > 80) // #f5a623 and its edges
+                    ++n;
+            }
+        return n;
+    };
+    if (noteBar) {
+        cameraBtn->click();
+        pump(150);
+        r.canvas->expireNoteForTest();
+        pump(80);
+        const QString said = barNote(r);
+        const QString amber = noteBar->amberShownText();
+        const QString shown = noteBar->shownText();
+        QFont f = noteBar->font();
+        f.setPixelSize(12);
+        const int headEnd = noteBar->textRect().left()
+            + QFontMetrics(f).horizontalAdvance(shown.left(shown.size() - amber.size()));
+        const QImage img = noteBar->grab().toImage();
+        const int amberLeft = amberPx(img, 0, headEnd - 2), amberRight = amberPx(img, headEnd - 2, img.width());
+        const QString softZoom = QStringLiteral("Soft 1.00") + QChar(0x00D7);
+        check(QStringLiteral("(sf1) THE CAMERA NOTE'S SOFT IN AMBER (your answer): with the frame past the sharp limit the "
+                             "bar says the Camera tool's note in grey with its \"Soft 1.00x\" in amber - amber only there"),
+              said.endsWith(softZoom) && amber == softZoom && !noteBar->warning()
+                  && noteBar->textColor() == QColor(0x99, 0x99, 0x99) && amberLeft == 0 && amberRight > 20,
+              QStringLiteral("'%1'; amber part '%2' (warning %3); amber px before the Soft %4, in it %5")
+                  .arg(said, amber).arg(noteBar->warning()).arg(amberLeft).arg(amberRight));
+        moveBtn->click();
+        pump(150);
+        const QString moveNote = barNote(r);
+        const int moveAmber = amberPx(noteBar->grab().toImage(), 0, noteBar->width());
+        check(QStringLiteral("(sf1) control: the Move tool's note on the Boat has no amber part and no amber pixel"),
+              !moveNote.isEmpty() && noteBar->amberShownText().isEmpty() && moveAmber == 0,
+              QStringLiteral("'%1', amber px %2").arg(moveNote).arg(moveAmber));
+    }
+
+    // (vp1) THE VANISHING-POINT PROMPT ON THE CANVAS (the user's deliberate exception, after hand test I1b-2): the
+    // Perspective tool with no vanishing point shows "Tap anywhere to create the first Vanishing Point." in its dark
+    // chip at the canvas's centre, as before round 1 - and the status bar does not say it.
+    {
+        auto chipGrey = [](const QImage &img, const QRect &area) {
+            int n = 0; // the chip's dark fill over the paper: an even grey of 90-140
+            for (int y = qMax(0, area.top()); y <= qMin(img.height() - 1, area.bottom()); ++y)
+                for (int x = qMax(0, area.left()); x <= qMin(img.width() - 1, area.right()); ++x) {
+                    const QColor c(img.pixel(x, y));
+                    if (qAbs(c.red() - c.green()) <= 3 && qAbs(c.green() - c.blue()) <= 3 && c.red() >= 90
+                        && c.red() <= 140)
+                        ++n;
+                }
+            return n;
+        };
+        r.canvas->setTool(DrawingCanvas::Perspective);
+        pump(150);
+        const bool noPoint = r.canvas->perspective() && r.canvas->perspective()->count() == 0;
+        const QRectF chip = r.canvas->perspectivePromptRectForTest();
+        // Where the chip goes, measured on its own: 280 x 20 px at the canvas's centre (the chip is 332 x 30 there).
+        const QRect area(r.canvas->width() / 2 - 140, r.canvas->height() / 2 - 10, 280, 20);
+        const int greyWith = chipGrey(r.canvas->grab().toImage(), area);
+        const QString said = barNote(r);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(150);
+        const bool noChip = r.canvas->perspectivePromptRectForTest().isNull();
+        const int greyWithout = chipGrey(r.canvas->grab().toImage(), area);
+        const QPointF centre = chip.center();
+        const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+        check(QStringLiteral("(vp1) THE VANISHING-POINT PROMPT ON THE CANVAS (your exception): with the Perspective tool and "
+                             "no vanishing point, its dark chip is painted in the canvas, and the bar does not say it"),
+              noPoint && !chip.isNull() && greyWith > area.width() * area.height() / 3
+                  && !said.contains(QLatin1String("Vanishing Point")),
+              QStringLiteral("no point %1; chip %2,%3 %4x%5 (canvas centre %6,%7); chip grey px %8 of %9; the bar '%10'")
+                  .arg(noPoint).arg(chip.x()).arg(chip.y()).arg(chip.width()).arg(chip.height()).arg(mid.x())
+                  .arg(mid.y()).arg(greyWith).arg(area.width() * area.height()).arg(said));
+        check(QStringLiteral("(vp1) control: with the Brush there is no chip and the same place has none of its grey"),
+              noChip && greyWithout < area.width() * area.height() / 10,
+              QStringLiteral("no chip %1; grey px %2 of %3").arg(noChip).arg(greyWithout)
+                  .arg(area.width() * area.height()));
+        Q_UNUSED(centre);
+        r.canvas->setTool(DrawingCanvas::Move); // set as above: the Move button is still the checked one
+        pump(100);
+    }
+
+    // (kp1) EDIT > PREFERENCES > KEYFRAMES (note 7, Figma I-1b section 5).
+    {
+        using SankoKeyColors::Row;
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(2); // the Boat: its line on the LAYER row, its diamond solid at frame 0
+        // ...and its path and key marks on the canvas. (The tool set directly: (vp1) left the Move button checked
+        // while it set the Brush itself, and a click on a checked tool button toggles nothing.)
+        r.canvas->setTool(DrawingCanvas::Move);
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(200);
+        // The colours judged, written out here - never asked of the code under test: the presets' Blue, a red for
+        // Custom..., a navy too dark for the timeline's ground (#15161C: 1.1 to 1), the default purple, the playhead.
+        const QColor blue(0x4c, 0x9a, 0xff), custom(0xff, 0x40, 0x40), navy(0x14, 0x1a, 0x3c);
+        const QColor purpleKey(0x7c, 0x6e, 0xf6), playheadInk(0xd5, 0xcb, 0xff);
+        auto exact = [](const QImage &img, const QRect &area, const QColor &c) {
+            int n = 0;
+            for (int y = qMax(0, area.top()); y <= qMin(img.height() - 1, area.bottom()); ++y)
+                for (int x = qMax(0, area.left()); x <= qMin(img.width() - 1, area.right()); ++x)
+                    n += (img.pixel(x, y) & 0xffffff) == (c.rgb() & 0xffffff) ? 1 : 0;
+            return n;
+        };
+        struct Page
+        {
+            QStringList categories;
+            int cameraPresets = 0, layerPresets = 0;
+            bool purpleChosen = false, customHidden = false, pickers = false, defaultLink = false;
+            int purpleLineBefore = -1, blueLineBefore = -1;
+            QColor afterBlue, cameraAfterBlue;
+            QString savedBlue;
+            bool blueChosen = false;
+            int purpleLineAfter = -1, blueLineAfter = -1, diamondBlue = -1, previewCameraPurple = -1, previewLayerBlue = -1;
+            QColor remembered, forgotten;
+            QColor afterCustom;
+            bool customShown = false;
+            QString savedCustom;
+            QColor cameraDefault, layerDefault;
+            int purpleLineDefault = -1;
+            // In full (the user's change before I1b-3).
+            int playheadBefore = -1, playheadAfter = -1, canvasBlueBefore = -1, canvasBlueAfter = -1,
+                canvasPurpleBefore = -1, canvasAccentAfter = -1;
+            QColor navyChosen, navyLine, blueLineSample;
+            int navyExact = -1;
+            bool navyReadable = false;
+            double navyLineContrast = 0.0;
+        };
+        auto page = std::make_shared<Page>();
+        Rig *rp = &r;
+        // Pictures for the report, when asked for (nothing is judged by them).
+        const QString pictures = qEnvironmentVariable("SANKO_I1B2_PICTURES");
+        // WCAG's contrast, computed here.
+        auto contrastOnGround = [](const QColor &c) {
+            auto lum = [](const QColor &k) {
+                auto ch = [](int v) {
+                    const double s = v / 255.0;
+                    return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+                };
+                return 0.2126 * ch(k.red()) + 0.7152 * ch(k.green()) + 0.0722 * ch(k.blue());
+            };
+            const double a = lum(c), g = lum(QColor(0x15, 0x16, 0x1c));
+            return (qMax(a, g) + 0.05) / (qMin(a, g) + 0.05);
+        };
+        QTimer::singleShot(400, [page, rp, blue, custom, navy, purpleKey, playheadInk, exact, pictures,
+                                 contrastOnGround] {
+            Rig &r = *rp;
+            QWidget *dialog = QApplication::activeModalWidget();
+            if (!dialog)
+                return;
+            if (auto *list = dialog->findChild<QListWidget *>()) {
+                for (int i = 0; i < list->count(); ++i)
+                    page->categories << list->item(i)->text();
+                list->setCurrentRow(1);
+            }
+            QCoreApplication::processEvents();
+            auto button = [dialog](const QString &name) { return dialog->findChild<QAbstractButton *>(name); };
+            for (const SankoKeyColors::Preset &p : SankoKeyColors::presets()) {
+                page->cameraPresets += button(QStringLiteral("prefsCameraKey") + p.name) ? 1 : 0;
+                page->layerPresets += button(QStringLiteral("prefsLayerKey") + p.name) ? 1 : 0;
+            }
+            QAbstractButton *camPurple = button(QStringLiteral("prefsCameraKeyPurple"));
+            QAbstractButton *layPurple = button(QStringLiteral("prefsLayerKeyPurple"));
+            QAbstractButton *layBlue = button(QStringLiteral("prefsLayerKeyBlue"));
+            QAbstractButton *camCustom = button(QStringLiteral("prefsCameraKeyCustom"));
+            QAbstractButton *camPick = button(QStringLiteral("prefsCameraKeyPick"));
+            QAbstractButton *keysDefault = button(QStringLiteral("prefsKeysDefault"));
+            QWidget *preview = dialog->findChild<QWidget *>(QStringLiteral("prefsKeysPreview"));
+            page->purpleChosen = camPurple && layPurple && camPurple->isChecked() && layPurple->isChecked();
+            page->customHidden = camCustom && !camCustom->isVisible();
+            page->pickers = camPick && button(QStringLiteral("prefsLayerKeyPick"));
+            page->defaultLink = keysDefault != nullptr;
+            if (!layBlue || !camPick || !keysDefault || !preview || !camCustom) {
+                dialog->close();
+                return;
+            }
+            // The LAYER row's track, its label column left out.
+            const QRect rowRect = r.timeline->layerRowForTest();
+            const int trackLeft = r.timeline->frameScreenXForTest(0) - 8;
+            const QRect layerRow(trackLeft, rowRect.top(), rowRect.right() - trackLeft + 1, rowRect.height());
+            const QColor blueLine = blue; // in full: the line and the resting keys are the colour itself
+            const QImage before = r.surface->grab().toImage();
+            page->purpleLineBefore = exact(before, layerRow, purpleKey);
+            page->blueLineBefore = exact(before, layerRow, blueLine);
+            page->playheadBefore = exact(before, before.rect(), playheadInk);
+            const QImage canvasBefore = r.canvas->grab().toImage();
+            page->canvasBlueBefore = exact(canvasBefore, canvasBefore.rect(), blue);
+            page->canvasPurpleBefore = exact(canvasBefore, canvasBefore.rect(), purpleKey);
+            if (!pictures.isEmpty()) {
+                dialog->grab().save(pictures + QStringLiteral("/keyframes_page_default.png"));
+                before.save(pictures + QStringLiteral("/timeline_default.png"));
+            }
+            layBlue->click();
+            QCoreApplication::processEvents();
+            if (!pictures.isEmpty()) {
+                dialog->grab().save(pictures + QStringLiteral("/keyframes_page_layer_blue.png"));
+                r.surface->grab().save(pictures + QStringLiteral("/timeline_layer_blue.png"));
+                if (QWidget *layers = r.storyboard->layerAnimateButtonForTest(2))
+                    layers->parentWidget()->grab().save(pictures + QStringLiteral("/layers_row_layer_blue.png"));
+            }
+            page->afterBlue = SankoKeyColors::base(SankoKeyColors::Row::Layer);
+            page->cameraAfterBlue = SankoKeyColors::base(SankoKeyColors::Row::Camera);
+            page->savedBlue = sankoSettings().value(SankoKeyColors::settingsKey(SankoKeyColors::Row::Layer)).toString();
+            page->blueChosen = layBlue->isChecked() && !layPurple->isChecked() && camPurple->isChecked();
+            const QImage after = r.surface->grab().toImage();
+            page->purpleLineAfter = exact(after, layerRow, purpleKey);
+            page->blueLineAfter = exact(after, layerRow, blueLine);
+            page->playheadAfter = exact(after, after.rect(), playheadInk);
+            const QPoint onBlueLine(r.timeline->frameScreenXForTest(3), rowRect.center().y());
+            page->blueLineSample = after.valid(onBlueLine) ? QColor(after.pixel(onBlueLine)) : QColor();
+            const QImage canvasAfter = r.canvas->grab().toImage();
+            page->canvasBlueAfter = exact(canvasAfter, canvasAfter.rect(), blue);
+            page->canvasAccentAfter = exact(canvasAfter, canvasAfter.rect(), purpleKey); // the Move box's own accent
+            if (QAbstractButton *diamond = r.storyboard->layerAnimateButtonForTest(2))
+                page->diamondBlue = exact(diamond->grab().toImage(), diamond->rect(), blue);
+            const QImage shot = preview->grab().toImage();
+            page->previewCameraPurple = exact(shot, QRect(0, 0, shot.width(), shot.height() / 2), purpleKey);
+            page->previewLayerBlue = exact(shot, QRect(0, shot.height() / 2, shot.width(), shot.height() / 2), blueLine);
+            // Remembered: read back from the settings, as a launch does.
+            SankoKeyColors::setBase(SankoKeyColors::Row::Layer, SankoKeyColors::kDefault);
+            r.window.loadKeyColorsForTest();
+            page->remembered = SankoKeyColors::base(SankoKeyColors::Row::Layer);
+            // Custom... on the camera row: the SankoTV colour picker, OK with a red.
+            SankoColorPicker::setOpenHookForTest([custom](SankoColorPicker *p) {
+                p->setColor(custom);
+                colourpicker::pressButton(p, "colorPickerOk");
+            });
+            camPick->click();
+            SankoColorPicker::setOpenHookForTest({});
+            QCoreApplication::processEvents();
+            page->afterCustom = SankoKeyColors::base(SankoKeyColors::Row::Camera);
+            page->customShown = camCustom->isVisible() && camCustom->isChecked() && !camPurple->isChecked();
+            page->savedCustom =
+                sankoSettings().value(SankoKeyColors::customSettingsKey(SankoKeyColors::Row::Camera)).toString();
+            // A navy too dark for the ground, by Custom... on the layer row: kept as chosen, drawn lifted to read.
+            if (QAbstractButton *layPick = button(QStringLiteral("prefsLayerKeyPick"))) {
+                SankoColorPicker::setOpenHookForTest([navy](SankoColorPicker *p) {
+                    p->setColor(navy);
+                    colourpicker::pressButton(p, "colorPickerOk");
+                });
+                layPick->click();
+                SankoColorPicker::setOpenHookForTest({});
+                QCoreApplication::processEvents();
+                page->navyChosen = SankoKeyColors::base(SankoKeyColors::Row::Layer);
+                const QImage dark = r.surface->grab().toImage();
+                page->navyExact = exact(dark, layerRow, navy);
+                // The Boat's line itself, a quarter of the way from its key at frame 0 (under the playhead) to its
+                // key at frame 12 - clear of the playhead and of the move's ease mark in the middle.
+                const QPoint onLine(r.timeline->frameScreenXForTest(3), rowRect.center().y());
+                const QColor line = dark.valid(onLine) ? QColor(dark.pixel(onLine)) : QColor();
+                page->navyLine = line;
+                page->navyReadable = line.isValid() && contrastOnGround(line) >= 3.0
+                    && line.blue() > line.red() + 20 && line.blue() > line.green() + 10;
+                page->navyLineContrast = line.isValid() ? contrastOnGround(line) : 0.0;
+                sankoSettings().remove(SankoKeyColors::customSettingsKey(SankoKeyColors::Row::Layer));
+            }
+            // Use the default: purple for both.
+            keysDefault->click();
+            QCoreApplication::processEvents();
+            page->cameraDefault = SankoKeyColors::base(SankoKeyColors::Row::Camera);
+            page->layerDefault = SankoKeyColors::base(SankoKeyColors::Row::Layer);
+            page->purpleLineDefault = exact(r.surface->grab().toImage(), layerRow, purpleKey);
+            sankoSettings().remove(SankoKeyColors::customSettingsKey(SankoKeyColors::Row::Camera));
+            dialog->close();
+        });
+        prefsAct->trigger();
+        pump(300);
+        // Forgotten: with nothing in the settings, a launch reads the default.
+        sankoSettings().remove(SankoKeyColors::settingsKey(Row::Layer));
+        sankoSettings().remove(SankoKeyColors::settingsKey(Row::Camera));
+        r.window.loadKeyColorsForTest();
+        page->forgotten = SankoKeyColors::base(Row::Layer);
+        const QColor purple = SankoKeyColors::kDefault;
+        check(QStringLiteral("(kp1) EDIT > PREFERENCES > KEYFRAMES (your note 7): a page between Camera and Playback; the "
+                             "camera keys' row and the layer keys' row of eight presets each, purple chosen for both, "
+                             "Custom... for each, \"Use the default\"; Blue chosen for layer keys repaints the LAYER row's "
+                             "line in blue (none of the purple left) and the Layers panel's diamond, the preview shows "
+                             "both rows, the camera keys stay purple; the choice is remembered by the app"),
+              page->categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"),
+                                               QStringLiteral("Playback"), QStringLiteral("Recovery"),
+                                               QStringLiteral("Saving")})
+                  && page->cameraPresets == 8 && page->layerPresets == 8 && page->purpleChosen && page->customHidden
+                  && page->pickers && page->defaultLink && page->afterBlue == blue && page->cameraAfterBlue == purple
+                  && page->savedBlue == blue.name() && page->blueChosen && page->blueLineAfter > 10
+                  && page->purpleLineAfter == 0 && page->diamondBlue > 10 && page->previewCameraPurple > 10
+                  && page->previewLayerBlue > 10 && page->remembered == blue,
+              QStringLiteral("categories [%1]; presets %2 + %3; purple chosen %4, custom hidden %5, Custom... %6, default "
+                             "link %7; after Blue: layer %8, camera %9, saved '%10', chosen %11; LAYER row line px purple "
+                             "%12 -> %13, blue %14 -> %15; diamond blue px %16; preview camera purple %17, layer blue %18; "
+                             "remembered %19")
+                  .arg(page->categories.join(QLatin1Char(','))).arg(page->cameraPresets).arg(page->layerPresets)
+                  .arg(page->purpleChosen).arg(page->customHidden).arg(page->pickers).arg(page->defaultLink)
+                  .arg(page->afterBlue.name(), page->cameraAfterBlue.name(), page->savedBlue).arg(page->blueChosen)
+                  .arg(page->purpleLineBefore).arg(page->purpleLineAfter).arg(page->blueLineBefore)
+                  .arg(page->blueLineAfter).arg(page->diamondBlue).arg(page->previewCameraPurple)
+                  .arg(page->previewLayerBlue).arg(page->remembered.name()));
+        check(QStringLiteral("(kp1) CUSTOM... AND THE DEFAULT: Custom... on the camera row opens the SankoTV colour picker; "
+                             "its colour is the camera keys', shown as its own diamond, chosen, and kept in the settings; "
+                             "\"Use the default\" puts purple back for both"),
+              page->afterCustom == custom && page->customShown && page->savedCustom == custom.name()
+                  && page->cameraDefault == purple && page->layerDefault == purple && page->purpleLineDefault > 10,
+              QStringLiteral("custom %1, its diamond chosen %2, saved '%3'; default: camera %4, layer %5, LAYER row purple "
+                             "px %6")
+                  .arg(page->afterCustom.name()).arg(page->customShown).arg(page->savedCustom)
+                  .arg(page->cameraDefault.name(), page->layerDefault.name()).arg(page->purpleLineDefault));
+        check(QStringLiteral("(kp1) control: before the choice the LAYER row is drawn in the default purple, and with no "
+                             "setting a launch reads the default"),
+              page->purpleLineBefore > 10 && page->forgotten == purple,
+              QStringLiteral("purple px %1, blue px %2; with no setting %3").arg(page->purpleLineBefore)
+                  .arg(page->blueLineBefore).arg(page->forgotten.name()));
+        // (kf1) THE KEYS IN FULL COLOUR (the user's change before hand test I1b-3: "drawn clearly in that colour, as the
+        // Figma preview I-1b showed, not mapped to today's purple brightness").
+        check(QStringLiteral("(kf1) THE KEYS IN FULL COLOUR (your change before I1b-3): the default draws the LAYER row's "
+                             "line and resting keys and the Move tool's key marks in #7C6EF6 itself; with Blue chosen for "
+                             "layer keys, in #4C9AFF itself; the playhead keeps its own colour and the Move box its purple "
+                             "accent"),
+              page->purpleLineBefore > 40 && page->canvasPurpleBefore > 20 && page->blueLineAfter > 40
+                  && page->blueLineSample == blue && page->canvasBlueAfter > 20
+                  && page->playheadAfter == page->playheadBefore && page->playheadBefore > 0
+                  && page->canvasAccentAfter > 0,
+              QStringLiteral("default: LAYER row px of #7C6EF6 %1, canvas %2; Blue: LAYER row px of #4C9AFF %3, its line %4, "
+                             "canvas %5; playhead px %6 -> %7; the Move box's purple px %8")
+                  .arg(page->purpleLineBefore).arg(page->canvasPurpleBefore).arg(page->blueLineAfter)
+                  .arg(page->blueLineSample.name()).arg(page->canvasBlueAfter).arg(page->playheadBefore)
+                  .arg(page->playheadAfter).arg(page->canvasAccentAfter));
+        check(QStringLiteral("(kf1) control: before the choice there is no #4C9AFF on the LAYER row or the canvas - the blue "
+                             "counted after is the choice's"),
+              page->blueLineBefore == 0 && page->canvasBlueBefore == 0,
+              QStringLiteral("LAYER row px blue %1; canvas px blue %2").arg(page->blueLineBefore).arg(page->canvasBlueBefore));
+        // (kf2) RESTING KEYS STAY READABLE on the timeline's dark ground (the user's condition): a colour too dark for it
+        // is kept as chosen and drawn lifted to 3:1; every preset already reads at 3:1 or more as it is.
+        double minPreset = 99.0;
+        for (const SankoKeyColors::Preset &p : SankoKeyColors::presets())
+            minPreset = qMin(minPreset, contrastOnGround(p.color));
+        check(QStringLiteral("(kf2) RESTING KEYS STAY READABLE (your condition): a navy chosen by Custom... (1.1 to 1 on the "
+                             "timeline's dark ground) is kept as chosen and drawn lifted - its line reads at 3 to 1 or more, "
+                             "bluish, and no pixel is the navy itself; every preset reads at 3 to 1 or more as it is"),
+              page->navyChosen == navy && page->navyExact == 0 && page->navyReadable && minPreset >= 3.0,
+              QStringLiteral("chosen %1; navy px %2; the line %3 (contrast %4); the presets' lowest contrast %5")
+                  .arg(page->navyChosen.name()).arg(page->navyExact).arg(page->navyLine.name())
+                  .arg(page->navyLineContrast, 0, 'f', 2).arg(minPreset, 0, 'f', 2));
+        check(QStringLiteral("(kf2) control: a bright preset is drawn exactly as chosen - Blue's line is #4C9AFF, not lifted"),
+              page->blueLineSample == blue, QStringLiteral("the line %1").arg(page->blueLineSample.name()));
+        SankoKeyColors::setBase(Row::Camera, purple);
+        SankoKeyColors::setBase(Row::Layer, purple);
+        r.storyboard->keyColorsChanged();
+    }
+    r.window.markCleanForTest();
+}
+
 // ---- (ss) THE SAFE SAVE (saving step 1, 2026-11-23; approved by the user that day) -------------
 // Until this step a save wrote each changed picture OVER its own file and then replaced the
 // project file. Cut short between the two - a crash, the app ended, the power gone - it left the
@@ -38457,12 +39717,13 @@ void runSafeSavePass(const QString &scratch)
         const Page first = viaPreferences(2);
         const bool afterDelete = window.keepPreviousVersionForTest();
         const bool nothingAtTheClick = stateOf(f.work) == diskBefore && QFileInfo::exists(previousFile);
-        check(QStringLiteral("(ss11) PREFERENCES > SAVING: a fourth page, \"Saving\", after Camera, Playback and "
-                             "Recovery - \"After each save\", \"Keep the previous saved version\" (chosen, the "
+        check(QStringLiteral("(ss11) PREFERENCES > SAVING: the last page, \"Saving\", after Camera, Keyframes, Playback "
+                             "and Recovery - \"After each save\", \"Keep the previous saved version\" (chosen, the "
                              "default) with its note, \"Delete the previous pictures right away\" with its note; "
                              "choosing the second sets the preference and changes nothing on disk at the click"),
-              first.categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Playback"),
-                                               QStringLiteral("Recovery"), QStringLiteral("Saving")})
+              first.categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"),
+                                               QStringLiteral("Playback"), QStringLiteral("Recovery"),
+                                               QStringLiteral("Saving")})
                   && first.found && first.keepChecked && !first.deleteChecked
                   && first.notes.contains(QStringLiteral("After each save"))
                   && first.notes.contains(QStringLiteral("Keep the previous saved version"))
@@ -39802,6 +41063,14 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i1b2")) {
+        runI1b2Pass(scratch); // batch I-1b round 2 (2026-11-25)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i1b")) {
         runI1bPass(scratch); // batch I-1b round 1 (2026-11-25)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -40098,6 +41367,7 @@ int main(int argc, char **argv)
     runLibraryBoxesPass(scratch); // the Library's boxes and Rename Brush in place (2026-11-24)
     runLayerMotionPass(scratch);  // batch I-1, layer motion (2026-11-24)
     runI1bPass(scratch);          // batch I-1b round 1: notes, scrub, Move bar, diamond, panning (2026-11-25)
+    runI1b2Pass(scratch);         // batch I-1b round 2: layer keys' copy/cut/paste/Delete, key colours, Esc, Soft (2026-11-25)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

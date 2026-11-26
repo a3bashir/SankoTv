@@ -68,10 +68,13 @@ class StatusNoteBar : public QWidget
 {
 public:
     explicit StatusNoteBar(QWidget *parent = nullptr);
-    void setNote(const QString &text, bool warning, const QString &tip = QString());
+    // `amberFrom`: a grey note whose end is a warning (the Camera tool's "Soft 1.43x", batch
+    // I-1b round 2) - amber from that character on; -1 none.
+    void setNote(const QString &text, bool warning, const QString &tip = QString(), int amberFrom = -1);
     QString text() const { return m_text; }
     bool warning() const { return m_warning; }
     QString shownText() const;       // as painted: elided with "..." when too long
+    QString amberShownText() const;  // the part of shownText painted amber ("" none, or all of it)
     QColor textColor() const;
     QRect textRect() const;          // where the words are painted, in the bar's px
     QRect separatorRect(int side) const; // 0 the left separator, 1 the right
@@ -90,6 +93,7 @@ private:
     QString m_text;
     bool m_warning = false;
     QString m_tip;
+    int m_amberFrom = -1;
 };
 
 // THE WORKSPACE: scene list (left), panel strip over the drawing canvas
@@ -447,6 +451,9 @@ public:
     // Whether Space / arrows / Home / End / Delete currently belong to the
     // timeline (the pointer is over it) rather than to the canvas.
     bool timelineKeysArmedForTest() const { return m_timelineKeysArmed; }
+    // Whether Space and Esc are the film's just now (batch I-1b round 2, after hand test
+    // I1b-3): the film is up and no text field is being typed in - wherever the pointer is.
+    bool filmKeysArmedForTest() const { return m_filmKeysArmed; }
     // The canvas's keys go where the pointer is (the trial of 2026-11-09): Space,
     // Enter and Esc pressed while the pointer is over the canvas are the canvas's,
     // whatever holds the keyboard. Called for every key press and release in the
@@ -592,10 +599,38 @@ public:
     // chosen); a key moved in its panel; its menu (Delete Key); its move's five eases.
     void layerGoToKey(int flat, int layerIndex, int keyIndex);
     void layerMoveKey(int flat, int layerIndex, int keyIndex, int frameInPanel);
-    void layerDeleteKey(int flat, int layerIndex, int keyIndex);
+    void layerDeleteKey(int flat, int layerIndex, int keyIndex,
+                        const QString &text = QStringLiteral("Delete Layer Key"));
     void layerSetKeyEase(int flat, int layerIndex, int keyIndex, shotcam::Ease ease);
     void onLayerKeyMenu(int flat, int layerIndex, int keyIndex, const QPoint &globalPos);
+    void onLayerRowMenu(const QPoint &globalPos); // off a key: Paste Key at the Playhead alone
     void onLayerEaseMark(int flat, int layerIndex, int keyIndex, const QRect &globalMarkRect);
+    // COPY, CUT AND PASTE OF LAYER KEYS (batch I-1b round 2, 2026-11-25; the user's note 5 and
+    // answer 4, Figma I-1b 701:755 section 4). While the LAYER row is the last thing pressed,
+    // Ctrl+C, Ctrl+X, Ctrl+V and Delete are its: a key pressed there is the selected one; a
+    // press on its empty track chooses the row with no key, for Paste. Any other press - the
+    // canvas, a clip, another row, a panel - gives the keys back their jobs (the canvas
+    // selection, else the panel), so Ctrl+X never cuts a panel while a key is selected, nor a
+    // key once the artist has moved on. Copy keeps the key ready across panels and scenes until
+    // another is copied. Paste goes to the layer selected in the Layers panel, in the panel under
+    // the playhead, at the playhead, and keeps the PLACE: the pasted move is d2 = (pivot1 + d1) -
+    // pivot2 (frame space - the scene's canvas, whatever each panel's camera frames), turn, size,
+    // opacity and ease as copied; a layer with no keys gets Animate on and its pivot at the centre
+    // of its art (the first key's rule); a key already at the playhead is replaced. Each cut or
+    // paste is one undo step. Delete takes the selected key, one step, never the panel.
+    void copyLayerKey();
+    void cutLayerKey();
+    void pasteLayerKey();
+    bool layerRowFocusedForTest() const { return m_layerKeyFocus.row; }
+    int layerRowFocusKeyForTest() const { return m_layerKeyFocus.row ? m_layerKeyFocus.key : -1; }
+    bool layerKeyCopiedForTest() const { return m_layerKeyClip.has; }
+    // Edit > Paste works for a key now: the LAYER row is the last thing pressed and a key is copied.
+    bool layerKeyPasteReady() const { return m_layerKeyFocus.row && m_layerKeyClip.has; }
+    // Any press: on the LAYER row it changes nothing here (the row says what it chose); anywhere
+    // else - but a menu - it hands the edit keys back (CanvasKeyRouter).
+    void noteLayerRowPress(QObject *receiver, QEvent *event);
+    // The keys' colours changed (Edit > Preferences > Keyframes): everything that shows a key.
+    void keyColorsChanged();
     // Everything that shows a layer's motion, after a key or the playhead moved.
     void refreshLayerMotionUi();
     // The Dev Recorder's layerMotion event for a step just made on `layerIndex` of `panel`.
@@ -631,6 +666,7 @@ public:
 
 signals:
     void panelClipboardChanged(bool available); // enables the paste actions
+    void layerKeyPasteChanged(); // layerKeyPasteReady may have changed: Edit > Paste follows
     // A change to the PROJECT's contents that does NOT go through the undo
     // stack (the window watches that stack separately for everything that
     // does). Today: the Shot Info fields, which are written straight to the
@@ -843,6 +879,26 @@ private:
     // Which clipboard the LAST copy/cut fed — paste routes to the same one.
     enum class ClipSource { None, Canvas, PanelLevel };
     ClipSource m_lastClipSource = ClipSource::None;
+    // THE LAYER ROW'S HOLD ON THE EDIT KEYS and the copied layer key (batch I-1b round 2; see
+    // copyLayerKey). The key: its flat panel, layer and key index (-1: the row, no key).
+    struct LayerKeyFocus
+    {
+        bool row = false;
+        int flat = -1, layer = -1, key = -1;
+    };
+    LayerKeyFocus m_layerKeyFocus;
+    void setLayerKeyFocus(bool row, int flat = -1, int layer = -1, int key = -1);
+    // The selected key, if it is still there.
+    bool focusedLayerKey(Panel **panel, int *flat, int *layer, int *key) const;
+    // The copied key: as it was (its time is not used), and where its move put the art's centre
+    // (frame space: the pivot plus its move) - the place a paste keeps.
+    struct LayerKeyClip
+    {
+        bool has = false;
+        shotcam::LayerKey key;
+        QPointF place;
+    };
+    LayerKeyClip m_layerKeyClip;
 
     // Native docking: an embedded (child-widget) QMainWindow hosts the stock
     // QDockWidget engine; the reusable DockController adds custom title
@@ -1182,15 +1238,26 @@ private:
     {
         QShortcut *shortcut;
         bool overPreviewToo;
+        // THE FILM'S OWN KEYS (the user's answer after hand test I1b-3, 2026-11-26): Space and
+        // Esc. While the film is up - playing, or paused in the preview - they are armed
+        // wherever the pointer is in the window (the preview, the timeline, the bottom bar, a
+        // panel, the pen lifted away), except while a text field is being typed in.
+        bool filmKey = false;
     };
     QVector<TimelineKey> m_timelineKeys;
+    bool typingInTextField() const;          // a text or number field has the keyboard
     bool m_pointerOverTimeline = false;
     bool m_pointerOverPreview = false;
+    // The pointer has left the window (batch I-1b round 2, the user's answer after hand test
+    // I1b-1): a pen lifted out of reach is one - Qt sends Leave up to the window. While the
+    // preview is up it counts as over the preview, so Esc and Space still stop the film.
+    bool m_pointerLeftWindow = false;
     bool m_pointerOverCanvas = false;        // the canvas's keys are the canvas's (routeCanvasKey)
     bool m_spaceDownAway = false;            // a Space pressed off the canvas, still down
     qint64 m_testPointerDevice = -1;         // the gate's pen (setPointerDeviceForTest)
     void pointerArrivedOverCanvas();         // ...is the canvas's once the pointer comes
     bool m_timelineKeysArmed = false;
+    bool m_filmKeysArmed = false;            // Space and Esc are the film's (updateTimelineKeys)
     bool m_ignoreRealPointerForTest = false; // the gate: test events only
     bool m_inTestPointerEvent = false;       // ...and this is one of them
     int m_selectPanelCalls = 0;

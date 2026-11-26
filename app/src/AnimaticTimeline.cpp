@@ -1,5 +1,6 @@
 #include "AnimaticTimeline.h"
 #include "SankoIcons.h"
+#include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "SankoTip.h" // sankoHideTipSoon: the hovers' grace (batch C)
 #include "SankoTheme.h"
 #include "SankoTimelineTheme.h"
@@ -1113,6 +1114,35 @@ bool AnimaticTimeline::inLayerRow(const QPoint &pos) const
         && pos.y() < layerTrackY() + kLayerRowH;
 }
 
+bool AnimaticTimeline::pressOnLayerRow(const QObject *receiver, const QPoint &globalPos) const
+{
+    return m_canvas && receiver == m_canvas && m_canvas->isVisible()
+        && inLayerRow(m_canvas->mapFromGlobal(globalPos));
+}
+
+// THE TIMECODE ROW (the user's answer after hand test I1b-3, 2026-11-26: twice a key was copied,
+// the playhead moved by a tap on the ruler, and Ctrl+V did nothing - seven presses). A press
+// there moves the playhead, or with Ctrl pans the view; it is not "a press somewhere else" for
+// the LAYER row's hold on the edit keys, so a copied key stays ready for Ctrl+V.
+bool AnimaticTimeline::pressOnTimecodeRow(const QObject *receiver, const QPoint &globalPos) const
+{
+    if (!m_canvas || receiver != m_canvas || !m_canvas->isVisible())
+        return false;
+    const QPoint pos = m_canvas->mapFromGlobal(globalPos);
+    return m_canvas->rect().contains(pos) && pos.y() >= kRulerY && pos.y() < kRulerY + kRulerH;
+}
+
+// A pen's press that the rows do not take is handed on by Qt to the rows' parents, one after
+// the other, before the mouse press Qt makes of it arrives at the rows. Those copies are the
+// same press, already judged when the rows had it.
+bool AnimaticTimeline::pressPassedOnFromRows(const QObject *receiver, const QPoint &globalPos) const
+{
+    if (!m_canvas || !m_canvas->isVisible() || !receiver || !receiver->isWidgetType() || receiver == m_canvas)
+        return false;
+    return static_cast<const QWidget *>(receiver)->isAncestorOf(m_canvas)
+        && m_canvas->rect().contains(m_canvas->mapFromGlobal(globalPos));
+}
+
 bool AnimaticTimeline::layerKeyAt(const QPoint &pos, LayerMark *mark) const
 {
     if (!inLayerRow(pos))
@@ -1157,8 +1187,16 @@ void AnimaticTimeline::paintLayerRow(QPainter &p)
     p.setRenderHint(QPainter::Antialiasing, true);
     const QVector<LayerMark> marks = layerMarks();
     const QColor grey(0x6f, 0x6f, 0x80);
+    // The layer keys' colour in full (Preferences > Keyframes; SankoKeyColors): the line and a
+    // resting key's fill the colour, its outline the colour toward white, a dim mark the colour at
+    // 60 %. Greyed (Animate off) stays grey; the key at the playhead takes the playhead's colours.
+    using SankoKeyColors::Row;
+    const QColor segment = SankoKeyColors::key(Row::Layer);
+    const QColor keyFill = SankoKeyColors::key(Row::Layer);
+    const QColor keyEdge = SankoKeyColors::keyEdge(Row::Layer);
+    const QColor dimInk = SankoKeyColors::dim(Row::Layer);
     for (const LayerSegment &s : layerSegments(marks)) {
-        const QColor c = s.greyed ? grey : kCameraSegment;
+        const QColor c = s.greyed ? grey : segment;
         if (s.dashed) {
             QPen pen(c, 2.0, Qt::CustomDashLine, Qt::FlatCap);
             pen.setDashPattern({2.5, 2.0});
@@ -1180,15 +1218,18 @@ void AnimaticTimeline::paintLayerRow(QPainter &p)
             QPolygonF d;
             d << QPointF(c.x(), c.y() - h) << QPointF(c.x() + h, c.y()) << QPointF(c.x(), c.y() + h)
               << QPointF(c.x() - h, c.y());
-            QColor ink = m.greyed ? grey : kCameraKeyEdge;
-            ink.setAlphaF(0.55);
-            p.setPen(QPen(ink, 1.0));
+            QColor ink = dimInk;
+            if (m.greyed) {
+                ink = grey;
+                ink.setAlphaF(0.55);
+            }
+            p.setPen(QPen(ink, 1.2));
             p.setBrush(Qt::NoBrush);
             p.drawPolygon(d);
             continue;
         }
-        QColor fill = m.greyed ? QColor(0x2a, 0x2a, 0x30) : kCameraKeyFill;
-        QColor edge = m.greyed ? grey : kCameraKeyEdge;
+        QColor fill = m.greyed ? QColor(0x2a, 0x2a, 0x30) : keyFill;
+        QColor edge = m.greyed ? grey : keyEdge;
         if (atPlayhead && !m.greyed) {
             fill = kPlayhead;
             edge = Qt::white;
@@ -3470,8 +3511,18 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         }
     }
 
+    // The camera keys' colour in full (Preferences > Keyframes; SankoKeyColors): the line and a
+    // resting key's fill the colour, its outline the colour toward white; the selected key's move
+    // and the selected key itself the lighter shade, the selected key ringed white; a hover rings it
+    // white. The key at the playhead takes the playhead's colours; pinned keys keep the AUDIO row's
+    // blue.
+    using SankoKeyColors::Row;
+    const QColor keyAccent = SankoKeyColors::key(Row::Camera);
+    const QColor keySegment = SankoKeyColors::key(Row::Camera);
+    const QColor keyFill = SankoKeyColors::key(Row::Camera);
+    const QColor keyEdge = SankoKeyColors::keyEdge(Row::Camera);
     for (const CameraSegment &s : cameraSegments(marks)) {
-        const QColor c = s.accent ? kCameraAccent : kCameraSegment;
+        const QColor c = s.accent ? keyEdge : keySegment;
         if (s.dashed) {
             QPen pen(c, 2.0, Qt::CustomDashLine, Qt::FlatCap);
             pen.setDashPattern({2.5, 2.0}); // 5 px on, 4 off (units of the width)
@@ -3521,7 +3572,7 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         const bool atPlayhead = qAbs(m.frame - phFrame) < 0.5;
         const QPointF c(m.x + 0.5, cy);
         if (hover) { // the accent at 14 %, the flat controls' hover
-            QColor halo = kCameraAccent;
+            QColor halo = keyAccent;
             halo.setAlphaF(0.14);
             p.setPen(Qt::NoPen);
             p.setBrush(halo);
@@ -3532,18 +3583,16 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
             p.setBrush(Qt::NoBrush);
             p.drawEllipse(c, 7.5, 7.5);
         }
-        QColor fill = m.pinned ? pinBlue : kCameraKeyFill;
-        QColor edge = m.pinned ? pinBlue : kCameraKeyEdge;
+        QColor fill = m.pinned ? pinBlue : keyFill;
+        QColor edge = m.pinned ? pinBlue : keyEdge;
         if (selected) {
-            fill = kCameraAccent;
-            edge = atPlayhead ? QColor(Qt::white) : kClipSelectedBorder;
+            fill = keyEdge;
+            edge = Qt::white;
         } else if (atPlayhead) {
             fill = kPlayhead;
             edge = Qt::white;
         } else if (hover && !m.pinned) {
-            fill = kCameraAccent;
-            fill.setAlphaF(0.35);
-            edge = kCameraAccent;
+            edge = Qt::white;
         }
         QPolygonF diamond;
         diamond << QPointF(c.x(), c.y() - kKeyHalf) << QPointF(c.x() + kKeyHalf, c.y())
@@ -3558,7 +3607,7 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         const bool hover = m.sceneIndex == m_camHoverScene && m.keyIndex == m_camHoverKey;
         const QPointF c(m.x + 0.5, cy);
         if (hover) {
-            QColor halo = kCameraAccent;
+            QColor halo = keyAccent;
             halo.setAlphaF(0.14);
             p.setPen(Qt::NoPen);
             p.setBrush(halo);
@@ -3587,10 +3636,10 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         }
         const qreal xa = contentXToScreen(m_camPreviewStart * pxPerFrame()) + 0.5;
         const qreal xb = contentXToScreen(m_camPreviewEnd * pxPerFrame()) + 0.5;
-        QPen dash(kCameraAccent, 1.5, Qt::CustomDashLine, Qt::FlatCap, Qt::RoundJoin);
+        QPen dash(keyAccent, 1.5, Qt::CustomDashLine, Qt::FlatCap, Qt::RoundJoin);
         dash.setDashPattern({1.7, 1.2});
         if (xb - xa > 2 * kKeyHalf + 2) {
-            QPen bar(kCameraAccent, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+            QPen bar(keyAccent, 2.0, Qt::CustomDashLine, Qt::FlatCap);
             bar.setDashPattern({2.5, 2.0});
             p.setPen(bar);
             p.drawLine(QPointF(xa + kKeyHalf + 1, cy), QPointF(xb - kKeyHalf - 1, cy));
@@ -3860,8 +3909,17 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     // the playhead (and that panel and layer); it may become a drag in its panel. An ease
     // mark asks for the five eases. Before the playhead, as the CAMERA row's keys are.
     if (inLayerRow(pos)) {
+        // THE ROW TAKES THE EDIT KEYS (batch I-1b round 2, note 5): a key pressed here is the
+        // one Ctrl+C / X and Delete act on; a press on the empty track chooses the row with no
+        // key, for Ctrl+V. One selection at a time: a camera key's ends here.
+        if (m_camSelKey >= 0) {
+            m_camSelScene = m_camSelKey = -1;
+            m_canvas->update();
+        }
         LayerMark mark;
-        if (layerKeyAt(pos, &mark)) {
+        const bool onKey = layerKeyAt(pos, &mark);
+        emit layerRowPressed(onKey ? mark.flat : -1, onKey ? mark.layer : -1, onKey ? mark.key : -1);
+        if (onKey) {
             emit layerKeyActivated(mark.flat, mark.layer, mark.key);
             m_drag = Drag::LayerKey;
             m_layerDragFlat = mark.flat;
@@ -4066,12 +4124,22 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
         e->accept();
         return;
     }
-    // THE LAYER ROW (batch I-1): on a key, the playhead goes there and its menu opens.
+    // THE LAYER ROW (batch I-1): on a key, the playhead goes there and its menu opens (Copy, Cut,
+    // Paste at the Playhead, Delete); off a key, the row's own menu - Paste Key at the Playhead
+    // alone (batch I-1b round 2). Either way the row is the last thing pressed.
     if (inLayerRow(pos)) {
+        if (m_camSelKey >= 0) {
+            m_camSelScene = m_camSelKey = -1;
+            m_canvas->update();
+        }
         LayerMark mark;
         if (layerKeyAt(pos, &mark)) {
+            emit layerRowPressed(mark.flat, mark.layer, mark.key);
             emit layerKeyActivated(mark.flat, mark.layer, mark.key);
             emit layerKeyContextMenuRequested(mark.flat, mark.layer, mark.key, e->globalPos());
+        } else {
+            emit layerRowPressed(-1, -1, -1);
+            emit layerRowContextMenuRequested(e->globalPos());
         }
         e->accept();
         return;

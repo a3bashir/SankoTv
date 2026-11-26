@@ -1,5 +1,6 @@
 #include "SankoTheme.h"
 #include "SankoSettings.h"
+#include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "DrawingCanvas.h"
 
 #include "StageMarginDialog.h" // stagemargin::kMaxSide
@@ -1243,6 +1244,33 @@ QFont camChipFont(const QFont &base)
 // The active tool's own note: the Camera tool's mode, the Move tool's key on an animated layer,
 // "Drawing view - ..." with a drawing tool (they were chips painted on the canvas). None while
 // the stage is being sized.
+// THE PERSPECTIVE TOOL'S PROMPT, with no vanishing point yet: a dark chip at the canvas's centre,
+// as it was before batch I-1b round 1 - the user's deliberate exception to "no notes over the
+// canvas" (2026-11-25, after hand test I1b-2). Not a note of the status bar's.
+QString DrawingCanvas::perspectivePromptText()
+{
+    return QStringLiteral("Tap anywhere to create the first Vanishing Point.");
+}
+
+QFont DrawingCanvas::perspectivePromptFont()
+{
+    QFont chipFont(QStringLiteral("Inter"));
+    chipFont.setPixelSize(12);
+    chipFont.setWeight(QFont::DemiBold);
+    return chipFont;
+}
+
+// Where the chip is painted (widget px), or a null rect when it is not.
+QRectF DrawingCanvas::perspectivePromptRect() const
+{
+    if (m_tool != Perspective || !m_panel || m_perspective.count() != 0)
+        return QRectF();
+    const QFontMetricsF fm(perspectivePromptFont());
+    QRectF chip(0, 0, fm.horizontalAdvance(perspectivePromptText()) + 28, fm.height() + 16);
+    chip.moveCenter(QRectF(displayRect()).center());
+    return chip;
+}
+
 QString DrawingCanvas::toolNoteText() const
 {
     if (m_stageMode)
@@ -1251,9 +1279,8 @@ QString DrawingCanvas::toolNoteText() const
         return camera;
     if (poseMode())
         return poseChipText();
-    // The Perspective tool with no vanishing point yet (it was a chip at the canvas's centre).
-    if (m_tool == Perspective && m_panel && m_perspective.count() == 0)
-        return QStringLiteral("Tap anywhere to create the first Vanishing Point.");
+    // (The Perspective tool's "Tap anywhere to create the first Vanishing Point." is not a note of
+    // the bar's: it is painted at the canvas's centre - the user's deliberate exception, paintEvent.)
     if (shotCameraDrawingViewChip())
         return drawingViewChipText();
     return QString();
@@ -1270,6 +1297,7 @@ void DrawingCanvas::syncNoteBar()
     QString text;
     NoteKind kind = NoteKind::Tool;
     QString tip;
+    int amberFrom = -1;
     if (!m_noteText.isEmpty()) {
         text = m_noteText;
         kind = m_noteWarning ? NoteKind::Warning : NoteKind::Said;
@@ -1280,17 +1308,24 @@ void DrawingCanvas::syncNoteBar()
         if (!text.isEmpty() && m_tool == Camera && m_panel) {
             const ShotCameraView v = shotCameraView();
             if (v.valid) {
-                const QStringList passed = shotcam::passedLayers(*m_panel, shotCameraShownState(v));
+                const shotcam::CameraState s = shotCameraShownState(v);
+                const QStringList passed = shotcam::passedLayers(*m_panel, s);
                 if (passed.size() >= 3)
                     tip = QStringLiteral("Passed: ") + passed.join(QStringLiteral(", "));
+                // ...and its "Soft 1.43x", past the sharp limit, is a warning: amber, like the
+                // other warnings (batch I-1b round 2, the user's answer); the rest stays grey.
+                if (shotCameraSoft(v, s))
+                    amberFrom = text.lastIndexOf(QStringLiteral("Soft "));
             }
         }
     }
-    if (text == m_noteBarText && kind == m_noteBarKind && tip == m_noteBarTip)
+    if (text == m_noteBarText && kind == m_noteBarKind && tip == m_noteBarTip
+        && amberFrom == m_noteBarAmberFrom)
         return;
     m_noteBarText = text;
     m_noteBarKind = kind;
     m_noteBarTip = tip;
+    m_noteBarAmberFrom = amberFrom;
     emit noteBarChanged();
 }
 
@@ -2483,12 +2518,19 @@ void DrawingCanvas::paintPoseBox(QPainter &painter) const
     if (!layer)
         return;
     const QColor accent(0x7c, 0x6e, 0xf6);
+    // The path and the key marks in the layer keys' colour, in full (Preferences > Keyframes, batch
+    // I-1b round 2): every key a diamond filled with it, outlined white - the one at the playhead
+    // larger, with a thicker ring. The box keeps the accent.
+    using SankoKeyColors::Row;
+    const QColor keyColor = SankoKeyColors::key(Row::Layer);
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
     // The path through the keys, dotted, with a diamond at each key's place.
     const QPolygonF path = posePathForTest();
     if (path.size() >= 2) {
-        QPen dots(QColor(0xd9, 0xd4, 0xff, 200), 1.4, Qt::CustomDashLine, Qt::RoundCap);
+        QColor dotInk = keyColor;
+        dotInk.setAlpha(230);
+        QPen dots(dotInk, 1.6, Qt::CustomDashLine, Qt::RoundCap);
         dots.setDashPattern({1.0, 3.0});
         painter.setPen(dots);
         painter.setBrush(Qt::NoBrush);
@@ -2499,10 +2541,11 @@ void DrawingCanvas::paintPoseBox(QPainter &painter) const
     for (const shotcam::LayerKey &k : layer->keys) {
         const QPointF c = viewTransform().map(pivot + QPointF(k.pose.dx, k.pose.dy));
         const bool here = layerKeyFrame(k, mv.frames) == mv.frame;
+        const qreal h = here ? 6.5 : 5.0;
         QPolygonF d;
-        d << c + QPointF(0, -5) << c + QPointF(5, 0) << c + QPointF(0, 5) << c + QPointF(-5, 0);
-        painter.setPen(QPen(Qt::white, 1.2));
-        painter.setBrush(here ? accent : QColor(0x2a, 0x24, 0x56));
+        d << c + QPointF(0, -h) << c + QPointF(h, 0) << c + QPointF(0, h) << c + QPointF(-h, 0);
+        painter.setPen(QPen(Qt::white, here ? 2.0 : 1.2));
+        painter.setBrush(keyColor);
         painter.drawPolygon(d);
     }
     // The box and its corners.
@@ -4662,7 +4705,9 @@ void DrawingCanvas::paintStageMode(QPainter &painter, const ShotCameraView &view
         painter.setPen(base);
         painter.setBrush(Qt::NoBrush);
         painter.drawPolygon(shotCameraWidgetQuad(shotcam::neutral(st)));
-        QColor faint = kCamAccent;
+        // The panel's key frames: the camera keys' colour (Preferences > Keyframes, batch I-1b
+        // round 2); the frame at the playhead keeps the accent.
+        QColor faint = SankoKeyColors::key(SankoKeyColors::Row::Camera);
         faint.setAlpha(140); // 55 %
         QPen keyPen(faint, 1.2, Qt::CustomDashLine);
         keyPen.setDashPattern({3.0, 2.0});
@@ -9379,9 +9424,21 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // preview, an export or the camera's shot.
     paintSymmetry(painter);
 
-    // (The Perspective tool with no vanishing point yet said "Tap anywhere to create the first
-    // Vanishing Point." in a chip at the centre of the canvas; since batch I-1b round 1 it is
-    // the tool's note in the status bar - toolNoteText.)
+    // Perspective tool with no VPs yet: centred prompt chip over the canvas
+    // (display-only, Sanko dark chip in the Modifier-bar language).
+    // THE USER'S DELIBERATE EXCEPTION to "no notes over the canvas" (2026-11-25, after hand
+    // test I1b-2): this prompt stays HERE, at the canvas's centre, as it was before batch I-1b
+    // round 1 - never in the status bar. Do not move it again.
+    if (const QRectF chip = perspectivePromptRect(); !chip.isNull()) {
+        const QString msg = perspectivePromptText();
+        painter.setFont(perspectivePromptFont());
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0x21, 0x21, 0x21, 166));
+        painter.drawRoundedRect(chip, 8, 8);
+        painter.setPen(QColor(0xcc, 0xcc, 0xcc));
+        painter.drawText(chip, Qt::AlignCenter, msg);
+    }
 
     // Perspective editing handles (Perspective tool): WIDGET space and NOT
     // clipped to the canvas — vanishing points may sit outside its bounds.

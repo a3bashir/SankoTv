@@ -7,6 +7,7 @@
 #include "ColorPanel.h"
 #include "SankoColorPicker.h" // every Custom... colour (COLOUR-1)
 #include "SankoIcons.h"
+#include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "SankoNoteStyle.h" // sankoGreyWithReason
 #include "SankoScrollBarStyle.h"
 #include "SankoTip.h"       // the Brush bar's tip look, shared by every tooltip
@@ -1635,7 +1636,9 @@ protected:
         const qreal h = 5.0;
         QPolygonF d;
         d << c + QPointF(0, -h) << c + QPointF(h, 0) << c + QPointF(0, h) << c + QPointF(-h, 0);
-        const QColor accent(0x7c, 0x6e, 0xf6);
+        // The layer keys' colour, in full (Preferences > Keyframes, batch I-1b round 2; purple the
+        // default).
+        const QColor accent = SankoKeyColors::key(SankoKeyColors::Row::Layer);
         const QColor grey(0x6f, 0x6f, 0x80);
         p.setPen(QPen(m_animate ? accent : grey, 1.3, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
         p.setBrush(m_animate && m_keyHere ? QBrush(accent) : Qt::NoBrush);
@@ -8273,9 +8276,21 @@ bool StoryboardPage::deleteSelectedCameraKey()
     return true;
 }
 
-// Delete over the timeline: the selected camera key first, else the panel.
+// Delete over the timeline: while the LAYER row is the last thing pressed, its selected key -
+// one step - and never the panel (batch I-1b round 2, the user's answer after hand test I1b-1:
+// Del after tapping a layer key offered "Delete this panel?"); else the selected camera key
+// first, else the panel.
 void StoryboardPage::timelineDelete()
 {
+    if (m_layerKeyFocus.row) {
+        Panel *panel = nullptr;
+        int flat = -1, li = -1, ki = -1;
+        if (focusedLayerKey(&panel, &flat, &li, &ki)) {
+            layerDeleteKey(flat, li, ki);
+            setLayerKeyFocus(true); // the row stays chosen; its key is gone
+        }
+        return;
+    }
     if (!deleteSelectedCameraKey())
         deleteSelectedPanel();
 }
@@ -9607,6 +9622,11 @@ protected:
         default:
             break;
         }
+        // A press anywhere but the LAYER row (or a menu) hands the edit keys back (batch I-1b
+        // round 2).
+        if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick
+            || event->type() == QEvent::TabletPress)
+            m_page->noteLayerRowPress(receiver, event);
         if (event->type() == QEvent::MouseMove || event->type() == QEvent::TabletMove
             || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::TabletPress) {
             m_page->notePointerAt(receiver, static_cast<QPointerEvent *>(event));
@@ -9757,6 +9777,10 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     connect(m_animatic, &AnimaticPage::layerKeyMoveRequested, this, &StoryboardPage::layerMoveKey);
     connect(m_animatic, &AnimaticPage::layerKeyContextMenuRequested, this, &StoryboardPage::onLayerKeyMenu);
     connect(m_animatic, &AnimaticPage::layerEaseMarkClicked, this, &StoryboardPage::onLayerEaseMark);
+    // ...and it takes the edit keys while it is the last thing pressed (batch I-1b round 2).
+    connect(m_animatic, &AnimaticPage::layerRowPressed, this,
+            [this](int flat, int layer, int key) { setLayerKeyFocus(true, flat, layer, key); });
+    connect(m_animatic, &AnimaticPage::layerRowContextMenuRequested, this, &StoryboardPage::onLayerRowMenu);
     // A clip's amber chip (batch 6d): the one thing to do about it.
     connect(m_animatic, &AnimaticPage::artExitChipClicked, this, [this](int flat, const QPoint &at) {
         int si = -1, pi = -1;
@@ -9818,16 +9842,22 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     // far as Qt's key routing is concerned - except while the pointer is
     // over the timeline section, or over the preview it is playing.
     auto addKey = [this](const QKeySequence &sequence, bool overPreviewToo,
-                         std::function<void()> action) {
+                         std::function<void()> action, bool filmKey = false) {
         QShortcut *shortcut = new QShortcut(sequence, this);
         shortcut->setContext(Qt::WindowShortcut);
         shortcut->setAutoRepeat(false); // a held Space is not twenty toggles
         shortcut->setEnabled(false);
         connect(shortcut, &QShortcut::activated, this, std::move(action));
-        m_timelineKeys.append({shortcut, overPreviewToo});
+        m_timelineKeys.append({shortcut, overPreviewToo, filmKey});
     };
+    // SPACE AND ESC ARE THE FILM'S WHILE IT IS UP (the user's answer after hand test I1b-3,
+    // 2026-11-26, where an Esc pressed with the mouse resting on the bottom bar did nothing):
+    // playing, or paused in the preview, Space pauses and plays on and Esc goes back to the
+    // workspace wherever the pointer is in the window - the preview, the timeline, the bottom
+    // bar, a panel, or the pen lifted away - except while a text field is being typed in
+    // (updateTimelineKeys). With no film up, the pointer decides as before.
     addKey(QKeySequence(Qt::Key_Space), true,
-           [this] { m_animatic->togglePlay(); });
+           [this] { m_animatic->togglePlay(); }, true);
     addKey(QKeySequence(Qt::Key_Left), true, [this] { m_animatic->goPrev(); });
     addKey(QKeySequence(Qt::Key_Right), true, [this] { m_animatic->goNext(); });
     addKey(QKeySequence(Qt::Key_Home), true, [this] { m_animatic->goFirst(); });
@@ -9837,7 +9867,12 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             m_canvas->stageModeKey(false);
         else
             m_animatic->leavePreview();
-    });
+    }, true);
+    // The film coming up or going, playing or pausing, and the keyboard moving into or out of
+    // a text field all change whose Space and Esc are, with no move of the pointer.
+    connect(m_animatic, &AnimaticPage::previewShownChanged, this, [this] { updateTimelineKeys(); });
+    connect(m_animatic, &AnimaticPage::playingChanged, this, [this] { updateTimelineKeys(); });
+    connect(qApp, &QApplication::focusChanged, this, [this] { updateTimelineKeys(); });
     // Delete only over the timeline itself: over the preview it would be
     // deleting a panel the artist is not looking at. A selected camera key
     // (Phase 1C) is what it deletes first.
@@ -10362,6 +10397,7 @@ void StoryboardPage::setRealPointerIgnoredForTest(bool ignored)
     m_pointerOverTimeline = false;
     m_pointerOverPreview = false;
     m_pointerOverCanvas = false;
+    m_pointerLeftWindow = false;
     updateTimelineKeys();
 }
 
@@ -10374,18 +10410,50 @@ void StoryboardPage::sendPointerEventForTest(QWidget *target, QEvent *event)
 
 void StoryboardPage::updateTimelineKeys()
 {
-    const bool overPreview = m_pointerOverPreview && m_animatic
+    // Over the preview - or, while it is up, out of the window altogether (a pen lifted away
+    // after Play: hand test I1b-1's 27 unanswered Esc; the user's answer, batch I-1b round 2).
+    const bool overPreview = (m_pointerOverPreview || m_pointerLeftWindow) && m_animatic
         && m_animatic->previewVisible();
     m_timelineKeysArmed = m_pointerOverTimeline || overPreview;
-    for (const TimelineKey &key : std::as_const(m_timelineKeys))
-        key.shortcut->setEnabled(m_pointerOverTimeline
-                                 || (overPreview && key.overPreviewToo));
+    // THE FILM'S OWN KEYS (the user's answer after hand test I1b-3): while the film is up -
+    // playing, or paused in the preview - Space and Esc are armed wherever the pointer is,
+    // and not at all while a text field is being typed in (the field keeps its Space and its
+    // Esc). With no film up they follow the pointer, like the other keys.
+    const bool filmUp = m_animatic && (m_animatic->previewVisible() || m_animatic->isPlaying());
+    m_filmKeysArmed = filmUp && !typingInTextField();
+    bool escArmed = false;
+    for (const TimelineKey &key : std::as_const(m_timelineKeys)) {
+        bool armed = m_pointerOverTimeline || (overPreview && key.overPreviewToo);
+        if (key.filmKey && filmUp)
+            armed = m_filmKeysArmed;
+        key.shortcut->setEnabled(armed);
+        if (key.shortcut->key() == QKeySequence(Qt::Key_Escape))
+            escArmed = armed;
+    }
     // Stage mode's Esc is on the timeline's, while that one is armed: two enabled
     // shortcuts on one key would fire neither.
     for (QShortcut *key : std::as_const(m_stageKeys))
         key->setEnabled(m_stageModeOn
-                        && !(key->key() == QKeySequence(Qt::Key_Escape)
-                             && (m_pointerOverTimeline || overPreview)));
+                        && !(key->key() == QKeySequence(Qt::Key_Escape) && escArmed));
+}
+
+// A text or number field has the keyboard: what is typed there is the field's, Space and Esc
+// too. The application's focus widget, so a field in a floating bar counts; with the window
+// not the active one (the gate on a machine in use), this window's own.
+bool StoryboardPage::typingInTextField() const
+{
+    const QWidget *focus = QApplication::focusWidget();
+    if (!focus)
+        focus = window() ? window()->focusWidget() : nullptr;
+    if (!focus)
+        return false;
+    if (const auto *line = qobject_cast<const QLineEdit *>(focus))
+        return !line->isReadOnly();
+    if (const auto *text = qobject_cast<const QTextEdit *>(focus))
+        return !text->isReadOnly();
+    if (const auto *plain = qobject_cast<const QPlainTextEdit *>(focus))
+        return !plain->isReadOnly();
+    return focus->inherits("QAbstractSpinBox");
 }
 
 int StoryboardPage::currentFlatIndex() const
@@ -11118,15 +11186,29 @@ QSize StatusNoteBar::minimumSizeHint() const
     return QSize(0, 24);
 }
 
-void StatusNoteBar::setNote(const QString &text, bool warning, const QString &tip)
+void StatusNoteBar::setNote(const QString &text, bool warning, const QString &tip, int amberFrom)
 {
-    if (text == m_text && warning == m_warning && tip == m_tip)
+    if (amberFrom < 0 || amberFrom >= text.size() || warning)
+        amberFrom = -1;
+    if (text == m_text && warning == m_warning && tip == m_tip && amberFrom == m_amberFrom)
         return;
     m_text = text;
     m_warning = warning;
     m_tip = tip;
+    m_amberFrom = amberFrom;
     refreshTip();
     update();
+}
+
+// The amber end of a grey note, as painted: from m_amberFrom up to the end of what is shown -
+// the "..." too when the space cut the warning short; nothing when it cut it off.
+QString StatusNoteBar::amberShownText() const
+{
+    if (m_amberFrom < 0)
+        return QString();
+    const QString shown = shownText();
+    const int whole = shown == m_text ? shown.size() : shown.size() - 1; // less the "..."
+    return m_amberFrom < whole ? shown.mid(m_amberFrom) : QString();
 }
 
 QColor StatusNoteBar::textColor() const
@@ -11187,7 +11269,19 @@ void StatusNoteBar::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setFont(noteFont());
     p.setPen(textColor());
-    p.drawText(textRect(), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine | Qt::TextDontClip, shownText());
+    const int flags = Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine | Qt::TextDontClip;
+    const QString shown = shownText();
+    const QString amber = amberShownText();
+    if (amber.isEmpty()) {
+        p.drawText(textRect(), flags, shown);
+    } else {
+        // Grey up to the warning, the warning amber (the Camera tool's "Soft 1.43x").
+        const QString head = shown.left(shown.size() - amber.size());
+        const QRect r = textRect();
+        p.drawText(r, flags, head);
+        p.setPen(QColor(0xf5, 0xa6, 0x23));
+        p.drawText(r.adjusted(QFontMetrics(noteFont()).horizontalAdvance(head), 0, 0, 0), flags, amber);
+    }
     for (int side = 0; side < 2; ++side)
         p.fillRect(separatorRect(side), QColor(0x3a, 0x3a, 0x3a));
 }
@@ -11253,7 +11347,7 @@ QWidget *StoryboardPage::createBottomBar()
             if (m_noteBar && m_canvas)
                 m_noteBar->setNote(m_canvas->noteBarText(),
                                    m_canvas->noteBarKind() == DrawingCanvas::NoteKind::Warning,
-                                   m_canvas->noteBarTip());
+                                   m_canvas->noteBarTip(), m_canvas->noteBarAmberFrom());
         };
         connect(m_canvas, &DrawingCanvas::noteBarChanged, this, follow);
         follow();
@@ -11830,6 +11924,14 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             // otherwise again.
             m_pointerOverTimeline = false;
             m_pointerOverPreview = false;
+            updateTimelineKeys();
+        }
+        // THE POINTER LEAVES THE WINDOW, or comes back to it (batch I-1b round 2): with the
+        // preview up, out of the window counts as over the preview (updateTimelineKeys). A pen
+        // lifted out of reach leaves it too - Qt sends Leave up to the window.
+        if ((event->type() == QEvent::Leave || event->type() == QEvent::Enter)
+            && (!m_ignoreRealPointerForTest || m_inTestPointerEvent)) {
+            m_pointerLeftWindow = event->type() == QEvent::Leave;
             updateTimelineKeys();
         }
         // A Space the canvas was handed and holds: its release will not come to a
@@ -12642,10 +12744,15 @@ bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
 // --- Edit-menu clipboard routing ----------------------------------------------
 
 // Canvas selection first, panel-level clipboard as the fallback. Paste goes
-// wherever the most recent copy/cut came from.
+// wherever the most recent copy/cut came from. While the LAYER row is the last thing pressed
+// (batch I-1b round 2), all three are its: a layer key's (copyLayerKey).
 
 void StoryboardPage::editCopy()
 {
+    if (m_layerKeyFocus.row) {
+        copyLayerKey();
+        return;
+    }
     if (m_canvas && m_canvas->hasSelection()) {
         m_canvas->copySelection();
         m_lastClipSource = ClipSource::Canvas;
@@ -12660,6 +12767,10 @@ void StoryboardPage::editCopy()
 
 void StoryboardPage::editCut()
 {
+    if (m_layerKeyFocus.row) {
+        cutLayerKey();
+        return;
+    }
     if (m_canvas && m_canvas->hasSelection()) {
         m_canvas->cutSelection();
         if (m_canvas->hasCanvasClipboard()) { // locked layers block the cut
@@ -12677,6 +12788,10 @@ void StoryboardPage::editCut()
 
 void StoryboardPage::editPaste()
 {
+    if (m_layerKeyFocus.row) {
+        pasteLayerKey();
+        return;
+    }
     if (m_lastClipSource == ClipSource::Canvas && m_canvas)
         pasteCanvasOnNewLayer(false); // a new layer, the drawing in the view's centre
     else if (m_lastClipSource == ClipSource::PanelLevel)
@@ -15129,7 +15244,7 @@ void StoryboardPage::layerMoveKey(int flat, int layerIndex, int keyIndex, int fr
     reportLayerMotion(QStringLiteral("Move Layer Key"), panel, layerIndex);
 }
 
-void StoryboardPage::layerDeleteKey(int flat, int layerIndex, int keyIndex)
+void StoryboardPage::layerDeleteKey(int flat, int layerIndex, int keyIndex, const QString &text)
 {
     int si = -1, pi = -1;
     if (!flatToScenePanel(flat, &si, &pi))
@@ -15141,10 +15256,10 @@ void StoryboardPage::layerDeleteKey(int flat, int layerIndex, int keyIndex)
     const QVector<Layer> before = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
     panel->layers[layerIndex].keys.removeAt(keyIndex);
-    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Delete Layer Key"));
+    pushLayerCommand(panel, before, beforeActive, text);
     refreshLayerCanvas();
     refreshLayerMotionUi();
-    reportLayerMotion(QStringLiteral("Delete Layer Key"), panel, layerIndex);
+    reportLayerMotion(text, panel, layerIndex);
 }
 
 void StoryboardPage::layerSetKeyEase(int flat, int layerIndex, int keyIndex, shotcam::Ease ease)
@@ -15166,20 +15281,232 @@ void StoryboardPage::layerSetKeyEase(int flat, int layerIndex, int keyIndex, sho
     reportLayerMotion(QStringLiteral("Layer Key Ease"), panel, layerIndex);
 }
 
+// The key's menu (Figma I-1b 701:755 section 4): Copy Key, Cut Key, Paste Key at the Playhead
+// (greyed until a key is copied), Delete Key. The key is the selected one (the right-click chose
+// it, as a press does), so the three act on it as Ctrl+C, Ctrl+X and Ctrl+V do.
+//
+// A SWITCHED-OFF ENTRY IS DRAWN GREYED (hand test I1b-3, 2026-11-26: "Paste Key at the Playhead"
+// was off before any copy but as bright as the entries around it, and was pressed twenty times).
+// The menus' sheet colours every entry alike; a sheet has to say the off colour itself, as the
+// scene and clip menus' sheets do. Under the pointer an off entry keeps its grey and gets no
+// highlight.
+static QString layerKeyMenuSheet()
+{
+    return SankoTimelineTheme::kSpeedMenuSheet
+        + QStringLiteral("QMenu::item:disabled { color: #5c5c62; }"
+                         "QMenu::item:disabled:selected { background: transparent; color: #5c5c62; }");
+}
+
 void StoryboardPage::onLayerKeyMenu(int flat, int layerIndex, int keyIndex, const QPoint &globalPos)
 {
     QMenu menu(this);
     menu.setObjectName(QStringLiteral("layerKeyMenu"));
-    menu.setStyleSheet(SankoTimelineTheme::kSpeedMenuSheet);
+    menu.setStyleSheet(layerKeyMenuSheet());
+    QAction *copy = menu.addAction(QStringLiteral("Copy Key\tCtrl+C"));
+    copy->setObjectName(QStringLiteral("layerKeyCopy"));
+    connect(copy, &QAction::triggered, this, [this] { copyLayerKey(); });
+    QAction *cut = menu.addAction(QStringLiteral("Cut Key\tCtrl+X"));
+    cut->setObjectName(QStringLiteral("layerKeyCut"));
+    connect(cut, &QAction::triggered, this, [this] { cutLayerKey(); });
+    QAction *paste = menu.addAction(QStringLiteral("Paste Key at the Playhead\tCtrl+V"));
+    paste->setObjectName(QStringLiteral("layerKeyPaste"));
+    paste->setEnabled(m_layerKeyClip.has);
+    connect(paste, &QAction::triggered, this, [this] { pasteLayerKey(); });
     QAction *del = menu.addAction(QStringLiteral("Delete Key"));
     del->setObjectName(QStringLiteral("layerKeyDelete"));
-    connect(del, &QAction::triggered, this,
-            [this, flat, layerIndex, keyIndex] { layerDeleteKey(flat, layerIndex, keyIndex); });
+    connect(del, &QAction::triggered, this, [this, flat, layerIndex, keyIndex] {
+        layerDeleteKey(flat, layerIndex, keyIndex);
+        if (m_layerKeyFocus.row)
+            setLayerKeyFocus(true); // the row stays chosen; its key is gone
+    });
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
         return;
     }
     menu.exec(globalPos);
+}
+
+// The LAYER row's own menu, off a key: Paste Key at the Playhead alone.
+void StoryboardPage::onLayerRowMenu(const QPoint &globalPos)
+{
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("layerRowMenu"));
+    menu.setStyleSheet(layerKeyMenuSheet());
+    QAction *paste = menu.addAction(QStringLiteral("Paste Key at the Playhead\tCtrl+V"));
+    paste->setObjectName(QStringLiteral("layerKeyPaste"));
+    paste->setEnabled(m_layerKeyClip.has);
+    connect(paste, &QAction::triggered, this, [this] { pasteLayerKey(); });
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
+}
+
+void StoryboardPage::setLayerKeyFocus(bool row, int flat, int layer, int key)
+{
+    const bool wasReady = layerKeyPasteReady();
+    m_layerKeyFocus = LayerKeyFocus();
+    if (row) {
+        m_layerKeyFocus.row = true;
+        m_layerKeyFocus.flat = flat;
+        m_layerKeyFocus.layer = layer;
+        m_layerKeyFocus.key = key;
+    }
+    if (layerKeyPasteReady() != wasReady)
+        emit layerKeyPasteChanged();
+}
+
+bool StoryboardPage::focusedLayerKey(Panel **panel, int *flat, int *layer, int *key) const
+{
+    if (!m_layerKeyFocus.row || m_layerKeyFocus.key < 0)
+        return false;
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(m_layerKeyFocus.flat, &si, &pi))
+        return false;
+    Panel *p = m_scenes.at(si)->panels.at(pi);
+    const int li = m_layerKeyFocus.layer, ki = m_layerKeyFocus.key;
+    if (li < 0 || li >= p->layers.size() || ki >= p->layers.at(li).keys.size())
+        return false; // gone - undone, or its panel is
+    *panel = p;
+    *flat = m_layerKeyFocus.flat;
+    *layer = li;
+    *key = ki;
+    return true;
+}
+
+void StoryboardPage::noteLayerRowPress(QObject *receiver, QEvent *event)
+{
+    if (!m_layerKeyFocus.row || !receiver)
+        return;
+    // ONLY A WIDGET'S PRESS IS JUDGED (hand test I1b-3, 2026-11-26: "Copy Key" chosen from the
+    // key's menu seven times copied nothing, each time answered by "No layer key is selected").
+    // Qt sends every press to the window first (a QWindow, not a widget) and then to the widget
+    // under it. The menu's window has no QMenu above it to be found below, so the press ON THE
+    // MENU'S ENTRY counted as a press somewhere else and the selected key was forgotten before
+    // the entry acted on its release. The checks had chosen the entries through a hook, with no
+    // press at all. The widget's own delivery follows at once and is the one judged.
+    if (!receiver->isWidgetType())
+        return;
+    // A menu - the row's own, or Edit's in the menu bar - is how the keys are used, not a press
+    // somewhere else.
+    for (QObject *o = receiver; o; o = o->parent())
+        if (qobject_cast<QMenu *>(o) || qobject_cast<QMenuBar *>(o))
+            return;
+    const QPoint global = static_cast<QSinglePointEvent *>(event)->globalPosition().toPoint();
+    if (!m_animatic) {
+        setLayerKeyFocus(false);
+        return;
+    }
+    if (m_animatic->pressOnLayerRow(receiver, global))
+        return; // the row: it says what was chosen (layerRowPressed)
+    if (m_animatic->pressPassedOnFromRows(receiver, global))
+        return; // a pen's press on the rows, handed on to their parents: judged already
+    if (m_animatic->pressOnTimecodeRow(receiver, global)) {
+        // MOVING THE PLAYHEAD KEEPS THE KEYS (the user's answer after hand test I1b-3): a tap or a
+        // drag on the timecode row is how the place for a paste is chosen, so the LAYER row stays
+        // the last thing pressed and Ctrl+V pastes the copied key there. No key is the selected
+        // one any more - the playhead has left it, and nothing on the row marks it - so Ctrl+C,
+        // Ctrl+X and Del have no key to take until one is tapped again.
+        if (m_layerKeyFocus.key >= 0)
+            setLayerKeyFocus(true);
+        return;
+    }
+    setLayerKeyFocus(false);
+}
+
+void StoryboardPage::copyLayerKey()
+{
+    Panel *panel = nullptr;
+    int flat = -1, li = -1, ki = -1;
+    if (!focusedLayerKey(&panel, &flat, &li, &ki)) {
+        sayWarning(QStringLiteral("No layer key is selected: tap a key on the LAYER row to copy it."));
+        return;
+    }
+    const Layer &layer = panel->layers.at(li);
+    const shotcam::LayerKey &key = layer.keys.at(ki);
+    const bool wasReady = layerKeyPasteReady();
+    m_layerKeyClip.has = true;
+    m_layerKeyClip.key = key;
+    m_layerKeyClip.place = layer.pivot + QPointF(key.pose.dx, key.pose.dy); // frame space
+    if (layerKeyPasteReady() != wasReady)
+        emit layerKeyPasteChanged();
+}
+
+void StoryboardPage::cutLayerKey()
+{
+    Panel *panel = nullptr;
+    int flat = -1, li = -1, ki = -1;
+    if (!focusedLayerKey(&panel, &flat, &li, &ki)) {
+        sayWarning(QStringLiteral("No layer key is selected: tap a key on the LAYER row to cut it."));
+        return;
+    }
+    copyLayerKey();
+    layerDeleteKey(flat, li, ki, QStringLiteral("Cut Layer Key"));
+    setLayerKeyFocus(true); // the row stays chosen, for a paste; its key is gone
+}
+
+void StoryboardPage::pasteLayerKey()
+{
+    if (!m_layerKeyClip.has) {
+        sayWarning(QStringLiteral("No layer key is copied yet."));
+        return;
+    }
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_animatic || m_animatic->playheadPanel() != panel) {
+        sayWarning(QStringLiteral("Put the playhead on the panel to paste the key into."));
+        return;
+    }
+    const DrawingCanvas::MotionView v = motionView();
+    const int li = panel->activeLayerIndex;
+    if (!v.valid || li < 0 || li >= panel->layers.size())
+        return;
+    const Layer &target = panel->layers.at(li);
+    if (isGroupLayer(target) || target.type == QLatin1String("background")) {
+        sayWarning(isGroupLayer(target)
+                       ? QStringLiteral("A folder has no keys: choose a layer in the Layers panel to paste the key on.")
+                       : QStringLiteral("The paper has no keys: choose a layer in the Layers panel to paste the key on."));
+        return;
+    }
+    if (target.locked) {
+        sayEditRefused(QStringLiteral("%1 is locked").arg(target.name), QPoint());
+        return;
+    }
+    m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[li];
+    // THE PLACE IS KEPT (answer 4): the copied key put the art's centre at `place` on the scene's
+    // canvas; here the art's centre is this layer's pivot - its own, or (no keys yet) the centre
+    // of its art, as the first key gives it.
+    const QPointF pivot2 = layer.keys.isEmpty() ? m_canvas->artCentreOf(layer) - QPointF(panel->frameAt())
+                                                : layer.pivot;
+    shotcam::LayerPose pose = m_layerKeyClip.key.pose;
+    pose.dx = m_layerKeyClip.place.x() - pivot2.x();
+    pose.dy = m_layerKeyClip.place.y() - pivot2.y();
+    if (!writeLayerKeyAtPlayhead(panel, li, pose, pivot2 + QPointF(panel->frameAt())))
+        return;
+    const int k = layerKeyAtPlayhead(*panel, layer);
+    if (k >= 0)
+        layer.keys[k].ease = m_layerKeyClip.key.ease;
+    layer.animate = true; // a pasted key is used at once
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Paste Layer Key"));
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    rebuildLayerPanel(); // the diamond
+    refreshLayerMotionUi();
+    reportLayerMotion(QStringLiteral("Paste Layer Key"), panel, li);
+}
+
+void StoryboardPage::keyColorsChanged()
+{
+    if (m_animatic)
+        m_animatic->refreshLayerRow(); // both rows: the timeline's canvas repaints whole
+    if (m_canvas)
+        m_canvas->update();
+    for (QWidget *row : m_layerRows)
+        for (QAbstractButton *b : row->findChildren<QAbstractButton *>(QStringLiteral("layerAnimate")))
+            b->update();
 }
 
 void StoryboardPage::onLayerEaseMark(int flat, int layerIndex, int keyIndex, const QRect &globalMarkRect)

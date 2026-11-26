@@ -102,6 +102,9 @@ public:
     QStringList lastSaveRemovedForTest() const { return m_lastSaveRemoved; }
     bool lastSavePreviousKeptForTest() const { return m_lastSavePreviousKept; }
     bool keepPreviousVersionForTest() const { return keepPreviousVersion(); }
+    // Preferences > Keyframes (batch I-1b round 2): the keys' colours read from the settings again,
+    // as a launch reads them.
+    void loadKeyColorsForTest() { loadKeyColors(); }
     void setKeepPreviousVersionForTest(bool keep) { setKeepPreviousVersion(keep); }
     QAction *restorePreviousActionForTest() const { return m_restorePreviousAct; }
     bool restorePreviousVersionForTest() { return restorePreviousVersion(); }
@@ -704,6 +707,12 @@ private:
     // Edit-menu panel clipboard actions (enabled once a panel is copied).
     QAction *m_pastePanelAct = nullptr;
     QAction *m_pastePanelInPlaceAct = nullptr;
+    // A panel or a drawing is copied; Paste also works for a copied layer key while the LAYER
+    // row is the last thing pressed (batch I-1b round 2).
+    bool m_panelPasteAvailable = false;
+    void refreshPasteAction();
+    // Preferences > Keyframes (batch I-1b round 2): the keys' colours from the settings, at start.
+    void loadKeyColors();
     QAction *m_flipHAct = nullptr; // batch D: Edit > Flip Horizontal / Vertical (the Move box)
     QAction *m_flipVAct = nullptr;
     // Edit-menu audio actions (the workspace page, with a project open).
