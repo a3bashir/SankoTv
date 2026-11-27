@@ -619,7 +619,9 @@ bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stag
 
 bool layeredPaint(const Panel &panel, const CameraState &state, const Stage &stage)
 {
-    return layeredShot(panel, state, stage) || panel.hasMotion();
+    // A run of drawings (batch I-2) is painted layer by layer too: the flat paint is the
+    // panel's first frame.
+    return layeredShot(panel, state, stage) || panel.changesOverTime();
 }
 
 double panelAt(int frameInPanel, int frames)
@@ -767,7 +769,14 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
         paperDone = true;
     };
     for (int index = 0; index < panel.layers.size(); ++index) {
-        const Layer &layer = panel.layers.at(index);
+        // A RUN OF DRAWINGS (batch I-2): the layer as the drawing exposed at `at` - whichever
+        // one it shows on the canvas. A layer without a run is itself, as before.
+        const Layer &stored = panel.layers.at(index);
+        const bool run = panel.layerHasRun(stored);
+        Layer exposed;
+        if (run)
+            exposed = stored.asDrawing(panel.drawingAtPlace(stored, at));
+        const Layer &layer = run ? exposed : stored;
         if (!paperDone && layer.type != QLatin1String("background"))
             tintPaper();
         const bool overridden = index == override.layerIndex && !isGroupLayer(layer)
@@ -842,6 +851,11 @@ QVector<quint64> depthKey(const Panel &panel, const CameraState &state, const St
     // where a layer moves, so a still panel's pictures are one entry whatever `at`.
     if (panel.hasMotion())
         key << bits(at) << quint64(0x414bull); // "AK": the time asked
+    // A run of drawings (batch I-2): WHICH drawing is exposed at the time asked, by its
+    // pixels - so every frame of one drawing is one entry. Nothing without a run.
+    for (const Layer &layer : panel.layers)
+        if (panel.layerHasRun(layer))
+            key << quint64(layer.pixelsOf(panel.drawingAtPlace(layer, at)).contentKey()) << quint64(0x4452ull); // "DR"
     return key;
 }
 

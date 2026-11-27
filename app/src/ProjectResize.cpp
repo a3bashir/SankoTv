@@ -154,28 +154,39 @@ bool resizePanel(Panel *panel, const QSize &newSize, const QPoint &offset)
             layer.image = QImage(); // folders stay imageless
             continue;
         }
-        QImage fresh(newSize, QImage::Format_ARGB32_Premultiplied);
-        if (fresh.isNull())
+        // Every drawing of a run (batch I-2) the same way, each as the layer's own pixels
+        // always were.
+        bool failed = false;
+        const bool paper = layer.type == QLatin1String("background");
+        layer.forEachPixels([&](LayerPixels &px) {
+            if (failed)
+                return;
+            QImage fresh(newSize, QImage::Format_ARGB32_Premultiplied);
+            if (fresh.isNull()) {
+                failed = true;
+                return;
+            }
+            // Background layers are WHITE paper, everything else transparent —
+            // invisible in the flatten (which composites onto white anyway) and
+            // very visible on export or when the background is toggled.
+            fresh.fill(paper ? Qt::white : Qt::transparent);
+            if (px.hasPixels()) {
+                QPainter painter(&fresh);
+                // 1:1 blit at the centre offset: no scaling, no smoothing, no
+                // resampling. Qt clips whatever falls outside, which is exactly
+                // the symmetric crop a contraction should produce.
+                painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+                painter.drawImage(offset, px.pixels());
+            }
+            // A new frame is new pixels: the tiles were another stage's. (A margin
+            // alone never comes here; it moves no pixel, batch 6b-V.) The folder
+            // folds the panel again when it is next left.
+            px.image = fresh;
+            px.tiles.reset();
+            px.tilesOf = 0;
+        });
+        if (failed)
             return false; // out of memory: the panel is left exactly as it was
-        // Background layers are WHITE paper, everything else transparent —
-        // invisible in the flatten (which composites onto white anyway) and
-        // very visible on export or when the background is toggled.
-        fresh.fill(layer.type == QLatin1String("background") ? Qt::white
-                                                             : Qt::transparent);
-        if (layer.hasPixels()) {
-            QPainter painter(&fresh);
-            // 1:1 blit at the centre offset: no scaling, no smoothing, no
-            // resampling. Qt clips whatever falls outside, which is exactly
-            // the symmetric crop a contraction should produce.
-            painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-            painter.drawImage(offset, layer.pixels());
-        }
-        // A new frame is new pixels: the tiles were another stage's. (A margin
-        // alone never comes here; it moves no pixel, batch 6b-V.) The folder
-        // folds the panel again when it is next left.
-        layer.image = fresh;
-        layer.tiles.reset();
-        layer.tilesOf = 0;
         // A layer's pivot (batch I-1) stays on its art: the art moved by the offset, and the
         // panel's margin - where frame space starts - did not.
         if (layer.hasMotionData())

@@ -32,6 +32,8 @@ this fence."
 #include "SankoColorPicker.h" // Preferences > Keyframes' Custom... (batch I-1b round 2)
 #include "SankoKeyColors.h"
 #include "SankoNoteStyle.h"
+#include "SankoOnionSkin.h"          // Preferences > Onion Skin (batch I-2)
+#include "brushlib/StudioControls.h" // its "Drawings shown" rows: the shared segmented row
 #include "SankoTimelineTheme.h"
 #include "SankoTip.h"
 #include "AnimaticPage.h"
@@ -236,6 +238,7 @@ MainWindow::MainWindow(QWidget *parent)
     installSankoTips();
     applySankoNoteStyle();
     loadKeyColors(); // Preferences > Keyframes, before anything paints a key (batch I-1b round 2)
+    loadOnionSkin(); // Preferences > Onion Skin, before the canvas makes a ghost (batch I-2)
 
     setupMenuBar();
 
@@ -525,6 +528,12 @@ MainWindow::MainWindow(QWidget *parent)
             connect(m_storyboard, &StoryboardPage::layerMotionEdited, rec,
                     [rec](const QVariantMap &event) {
                         rec->logEvent(QStringLiteral("layerMotion"), event);
+                    });
+        // One layerDrawing event per step of a layer's run of drawings (batch I-2).
+        if (m_storyboard)
+            connect(m_storyboard, &StoryboardPage::layerDrawingEdited, rec,
+                    [rec](const QVariantMap &event) {
+                        rec->logEvent(QStringLiteral("layerDrawing"), event);
                     });
         rec->setCameraProvider([this]() -> QVariantMap {
             auto *canvas = m_storyboard
@@ -822,13 +831,24 @@ void MainWindow::setupMenuBar()
                            QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
     editMenu->addSeparator();
 
-    editAction(QStringLiteral("Copy"), QKeySequence::Copy, &StoryboardPage::editCopy);
-    editAction(QStringLiteral("Cut"), QKeySequence::Cut, &StoryboardPage::editCut);
+    QAction *copyAct = editAction(QStringLiteral("Copy"), QKeySequence::Copy, &StoryboardPage::editCopy);
+    QAction *cutAct = editAction(QStringLiteral("Cut"), QKeySequence::Cut, &StoryboardPage::editCut);
     m_pastePanelAct = editAction(QStringLiteral("Paste"), QKeySequence::Paste,
                                  &StoryboardPage::editPaste);
     m_pastePanelInPlaceAct = editAction(QStringLiteral("Paste in Place"),
                                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
                                         &StoryboardPage::editPasteInPlace);
+    // ONCE PER PRESS (the user's answer 3, 2026-11-26): a held Ctrl+X, Ctrl+C, Ctrl+V or
+    // Ctrl+Shift+V never repeats. In hand test I1b-4 a held Ctrl+X cut the key and then the panel
+    // under it; in I2-1 it ran Cut nine times. The key is still the action's while it is held
+    // (Qt's shortcut map takes the repeats and drops them), so nothing behind it hears them.
+    // Undo and Redo keep their repeat: holding Ctrl+Z steps back through the history.
+    copyAct->setObjectName(QStringLiteral("editCopy"));
+    cutAct->setObjectName(QStringLiteral("editCut"));
+    m_pastePanelAct->setObjectName(QStringLiteral("editPaste"));
+    m_pastePanelInPlaceAct->setObjectName(QStringLiteral("editPasteInPlace"));
+    for (QAction *once : {copyAct, cutAct, m_pastePanelAct, m_pastePanelInPlaceAct})
+        once->setAutoRepeat(false);
     // FLIP H / V (batch D; the user's D-2): the Move bar's two buttons, here too - part of the
     // open Move box. Greyed, with why as the tooltip, while no box is open (checked as the
     // menu opens).
@@ -1045,6 +1065,56 @@ protected:
     }
 };
 
+// Preferences > Onion Skin (batch I-2): a drawing on white paper with its ghosts as the canvas
+// paints them now - as many before and after as are shown, each side in its colour, the
+// nearest at the opacity set and each one further at SankoOnionSkin::kFalloff of it. A bird's
+// wings: the drawings before hang lower, the ones after are raised.
+class OnionPreview : public QWidget
+{
+public:
+    explicit OnionPreview(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("prefsOnionPreview"));
+        setFixedHeight(64);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        using SankoOnionSkin::Side;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+        p.setBrush(SankoTimelineTheme::kCameraRowBg);
+        p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
+        const QRectF paper = QRectF(rect()).adjusted(10, 8, -10, -8);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::white);
+        p.drawRoundedRect(paper, 2, 2);
+        p.setClipRect(paper);
+        const QPointF c = paper.center() + QPointF(0, 2);
+        auto wings = [&c](qreal lift) {
+            QPainterPath path;
+            path.moveTo(c + QPointF(-52, lift));
+            path.quadTo(c + QPointF(-22, -10 + lift * 0.3), c + QPointF(0, 2));
+            path.quadTo(c + QPointF(22, -10 + lift * 0.3), c + QPointF(52, lift));
+            return path;
+        };
+        p.setBrush(Qt::NoBrush);
+        for (Side side : {Side::After, Side::Before}) {
+            const SankoOnionSkin::Choice choice = SankoOnionSkin::choice(side);
+            for (int distance = choice.count; distance >= 1; --distance) {
+                QColor ink = choice.color;
+                ink.setAlphaF(float(SankoOnionSkin::opacityAt(side, distance)));
+                p.setPen(QPen(ink, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                p.drawPath(wings(side == Side::Before ? 6.0 * distance : -6.0 * distance));
+            }
+        }
+        p.setPen(QPen(QColor(0x11, 0x11, 0x11), 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawPath(wings(0.0));
+    }
+};
+
 } // namespace
 
 // Modal Preferences dialog: category list on the left, settings pane on the
@@ -1073,6 +1143,7 @@ void MainWindow::onPreferences()
     categories->setFixedWidth(130);
     categories->addItem(QStringLiteral("Camera"));
     categories->addItem(QStringLiteral("Keyframes")); // batch I-1b round 2: the list is alphabetical
+    categories->addItem(QStringLiteral("Onion Skin")); // batch I-2
     categories->addItem(QStringLiteral("Playback"));
     categories->addItem(QStringLiteral("Recovery"));
     categories->setCurrentRow(0);
@@ -1238,6 +1309,154 @@ void MainWindow::onPreferences()
     refreshKeysPage();
     pages->addWidget(keysPage);
 
+    // --- Onion Skin page (batch I-2, 2026-11-26; the user's answer 5, Figma I-2 727:757 section
+    // 3b) -----------------------------------------------------------------------------------------
+    // "In the style of the Keyframes page: the number of previous drawings and of next drawings
+    // shown, and separate ghost colours and separate opacities for previous and next. Today's blue
+    // stays the default for previous; choose a clear default for next. Remembered by the app."
+    // For the drawings before and for the drawings after, each on its own: how many are shown (0
+    // to 3), the ghost's colour (eight presets - the onion skin's own blue first - the side's
+    // custom colour as its own diamond once Custom... has picked one, and Custom..., the SankoTV
+    // colour picker) and its opacity. A choice shows at once on the canvas and in the preview; it
+    // is a setting of SankoTV on this computer, never in the project file (SankoOnionSkin.h).
+    QWidget *onionPage = new QWidget;
+    QVBoxLayout *onionLayout = new QVBoxLayout(onionPage);
+    onionLayout->setContentsMargins(16, 12, 16, 12);
+    onionLayout->setSpacing(3);
+    auto *onionPreview = new OnionPreview;
+    QVector<std::function<void()>> onionSyncers;
+    auto refreshOnionPage = [&onionSyncers, onionPreview] {
+        for (const std::function<void()> &sync : std::as_const(onionSyncers))
+            sync();
+        onionPreview->update();
+    };
+    auto onionChanged = [this, &refreshOnionPage] {
+        if (m_storyboard)
+            m_storyboard->onionSkinSettingsChanged();
+        refreshOnionPage();
+    };
+    auto addOnionSide = [&](SankoOnionSkin::Side side, const QString &title, const QString &prefix) {
+        QLabel *head = new QLabel(title);
+        head->setStyleSheet(keyHeadStyle);
+        onionLayout->addWidget(head);
+        auto *count = new brushlib::StudioSegmentedRow(QStringLiteral("Drawings shown"),
+                                             {QStringLiteral("0"), QStringLiteral("1"), QStringLiteral("2"),
+                                              QStringLiteral("3")});
+        count->setObjectName(prefix + QStringLiteral("Count"));
+        connect(count, &brushlib::StudioSegmentedRow::chosen, &dialog, [onionChanged, side](int index) {
+            SankoOnionSkin::setCount(side, index);
+            sankoSettings().setValue(SankoOnionSkin::countKey(side), SankoOnionSkin::choice(side).count);
+            onionChanged();
+        });
+        onionLayout->addWidget(count);
+        auto applyColor = [onionChanged, side](const QColor &color) {
+            SankoOnionSkin::setColor(side, color);
+            sankoSettings().setValue(SankoOnionSkin::colorKey(side), SankoOnionSkin::choice(side).color.name());
+            onionChanged();
+        };
+        auto *line = new QHBoxLayout;
+        line->setSpacing(4);
+        QVector<KeySwatch *> swatches;
+        for (const SankoOnionSkin::Preset &preset : SankoOnionSkin::presets()) {
+            auto *swatch = new KeySwatch(preset.color, preset.name);
+            swatch->setObjectName(prefix + preset.name);
+            connect(swatch, &QAbstractButton::clicked, &dialog,
+                    [applyColor, color = preset.color] { applyColor(color); });
+            line->addWidget(swatch);
+            swatches.append(swatch);
+        }
+        auto *custom = new KeySwatch(QColor(), QStringLiteral("Your custom colour"));
+        custom->setObjectName(prefix + QStringLiteral("Custom"));
+        connect(custom, &QAbstractButton::clicked, &dialog, [applyColor, custom] { applyColor(custom->color()); });
+        line->addWidget(custom);
+        line->addSpacing(6);
+        QPushButton *pick = new QPushButton(QStringLiteral("Custom..."));
+        pick->setObjectName(prefix + QStringLiteral("Pick"));
+        pick->setStyleSheet(QStringLiteral("QPushButton { padding: 3px 10px; }"));
+        connect(pick, &QPushButton::clicked, &dialog, [&dialog, applyColor, side, title] {
+            const QColor chosen = SankoColorPicker::getColor(SankoOnionSkin::choice(side).color, &dialog,
+                                                             title + QStringLiteral(" - Custom Colour"));
+            if (!chosen.isValid())
+                return;
+            sankoSettings().setValue(SankoOnionSkin::customKey(side), QColor(chosen.rgb()).name());
+            applyColor(chosen);
+        });
+        line->addWidget(pick);
+        line->addStretch(1);
+        onionLayout->addLayout(line);
+        auto *opacityLine = new QHBoxLayout;
+        opacityLine->setSpacing(8);
+        QLabel *opacityLabel = new QLabel(QStringLiteral("Opacity"));
+        opacityLabel->setFixedWidth(52);
+        opacityLine->addWidget(opacityLabel);
+        SankoSlider *opacity = new SankoSlider;
+        opacity->setObjectName(prefix + QStringLiteral("Opacity"));
+        opacity->setRange(SankoOnionSkin::kMinOpacityPercent, 100);
+        opacity->setValueSuffix(QStringLiteral("%"));
+        opacity->setValue(SankoOnionSkin::choice(side).opacityPercent);
+        connect(opacity, &SankoSlider::valueChanged, &dialog, [onionChanged, side](int v) {
+            if (v == SankoOnionSkin::choice(side).opacityPercent)
+                return;
+            SankoOnionSkin::setOpacityPercent(side, v);
+            sankoSettings().setValue(SankoOnionSkin::opacityKey(side), SankoOnionSkin::choice(side).opacityPercent);
+            onionChanged();
+        });
+        opacityLine->addWidget(opacity, 1);
+        onionLayout->addLayout(opacityLine);
+        onionSyncers.append([side, count, swatches, custom, opacity] {
+            const SankoOnionSkin::Choice now = SankoOnionSkin::choice(side);
+            count->setCurrentIndex(now.count);
+            const QColor saved = QColor::fromString(sankoSettings().value(SankoOnionSkin::customKey(side)).toString());
+            custom->setColor(saved);
+            custom->setVisible(saved.isValid());
+            bool preset = false;
+            for (KeySwatch *s : swatches) {
+                const bool on = s->color().rgb() == now.color.rgb();
+                s->setChecked(on);
+                preset = preset || on;
+            }
+            custom->setChecked(!preset && saved.isValid() && saved.rgb() == now.color.rgb());
+            if (opacity->value() != now.opacityPercent)
+                opacity->setValue(now.opacityPercent);
+        });
+    };
+    addOnionSide(SankoOnionSkin::Side::Before, QStringLiteral("Drawings before"), QStringLiteral("prefsOnionBefore"));
+    onionLayout->addSpacing(6);
+    addOnionSide(SankoOnionSkin::Side::After, QStringLiteral("Drawings after"), QStringLiteral("prefsOnionAfter"));
+    onionLayout->addSpacing(6);
+    onionLayout->addWidget(onionPreview);
+    QLabel *onionNote = new QLabel(QStringLiteral(
+        "Shown at once on the canvas. The \"before\" colour is also the previous panel's ghost. "
+        "The O key switches the onion skin on and off."));
+    onionNote->setWordWrap(true);
+    onionNote->setStyleSheet(keyNoteStyle);
+    onionLayout->addWidget(onionNote);
+    onionLayout->addStretch(1);
+    QHBoxLayout *onionButtons = new QHBoxLayout;
+    QPushButton *onionDefault = new QPushButton(QStringLiteral("Use the default (blue before, orange after)"));
+    onionDefault->setObjectName(QStringLiteral("prefsOnionDefault"));
+    onionDefault->setCursor(Qt::PointingHandCursor);
+    onionDefault->setStyleSheet(SankoTheme::themed(
+        "QPushButton { background: transparent; border: none; color: %ACCENT%; padding: 6px 0px; }"
+        "QPushButton:hover { background: transparent; text-decoration: underline; }"));
+    connect(onionDefault, &QPushButton::clicked, &dialog, [onionChanged] {
+        SankoOnionSkin::setDefaults();
+        for (SankoOnionSkin::Side side : {SankoOnionSkin::Side::Before, SankoOnionSkin::Side::After}) {
+            sankoSettings().setValue(SankoOnionSkin::countKey(side), SankoOnionSkin::choice(side).count);
+            sankoSettings().setValue(SankoOnionSkin::colorKey(side), SankoOnionSkin::choice(side).color.name());
+            sankoSettings().setValue(SankoOnionSkin::opacityKey(side), SankoOnionSkin::choice(side).opacityPercent);
+        }
+        onionChanged();
+    });
+    onionButtons->addWidget(onionDefault);
+    onionButtons->addStretch(1);
+    QPushButton *closeOnion = new QPushButton(QStringLiteral("Close"));
+    connect(closeOnion, &QPushButton::clicked, &dialog, &QDialog::accept);
+    onionButtons->addWidget(closeOnion);
+    onionLayout->addLayout(onionButtons);
+    refreshOnionPage();
+    pages->addWidget(onionPage);
+
     // --- Playback page (2026-11-02) ------------------------------------------
     // The one switch of the stage clear, the same as View's; each follows
     // the other.
@@ -1373,6 +1592,17 @@ void MainWindow::loadKeyColors()
     for (SankoKeyColors::Row row : {SankoKeyColors::Row::Camera, SankoKeyColors::Row::Layer}) {
         const QColor color = QColor::fromString(settings.value(SankoKeyColors::settingsKey(row)).toString());
         SankoKeyColors::setBase(row, color.isValid() ? color : SankoKeyColors::kDefault);
+    }
+}
+
+void MainWindow::loadOnionSkin()
+{
+    using namespace SankoOnionSkin;
+    QSettings settings = sankoSettings();
+    for (Side side : {Side::Before, Side::After}) {
+        setCount(side, settings.value(countKey(side), kDefaultCount).toInt());
+        setColor(side, QColor::fromString(settings.value(colorKey(side)).toString()));
+        setOpacityPercent(side, settings.value(opacityKey(side), kDefaultOpacityPercent).toInt());
     }
 }
 

@@ -73,7 +73,10 @@
 #include "RecentProjects.h"
 #include "SankoIcons.h"
 #include "SankoKeyColors.h" // Preferences > Keyframes (batch I-1b round 2)
+#include "SankoOnionSkin.h" // Preferences > Onion Skin (batch I-2)
+#include "SankoSlider.h"
 #include "SankoTimelineTheme.h"
+#include "brushlib/StudioControls.h" // the Onion Skin page's "Drawings shown" rows
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
 #include "camera/ShotCamera.h"
@@ -11159,13 +11162,16 @@ void runTimelineLookPass(const QString &scratch)
         // clip's whole span (it was the span less a 2 px gap on the right: body 124, thumbnail
         // 112, name 78, the pill at right-2-33). Only at a cut between two scenes does a body
         // give up its share of the gap there - (ss) measures that; this sample is one scene.
+        // (CHANGED 2026-11-26, the user's note 5 after hand test I2-1: a thumbnail keeps its picture's
+        // shape. It read "thumbnail at (6,6) 114x42" - a strip across the clip, cropped to fill.)
         check(QStringLiteral("(aw) A 3 s CLIP at 42 px/s is 126 wide: its body the whole 126 (a scene's clips "
-                             "touch; it was 124, a 2 px gap), thumbnail at (6,6) 114x42, number at (10,9), "
+                             "touch; it was 124, a 2 px gap), thumbnail at (6,6) 75x42 - its 16 : 9 picture whole "
+                             "in the 42 px over the name - number at (10,9), "
                              "name at (8, bottom-20) 80 wide, pill 28x18 at (right-33, bottom-22); all shown"),
               c0.value(QStringLiteral("body")).toString()
                       == QStringLiteral("%1,%2 126x%3").arg(clip0.x()).arg(clip0.y()).arg(clip0.height())
                   && c0.value(QStringLiteral("thumb")).toString()
-                      == QStringLiteral("%1,%2 114x42").arg(clip0.x() + 6).arg(clip0.y() + 6)
+                      == QStringLiteral("%1,%2 75x42").arg(clip0.x() + 6).arg(clip0.y() + 6)
                   && c0.value(QStringLiteral("number")).toString().startsWith(
                       QStringLiteral("%1,%2 ").arg(clip0.x() + 10).arg(clip0.y() + 9))
                   && c0.value(QStringLiteral("name")).toString()
@@ -11177,12 +11183,13 @@ void runTimelineLookPass(const QString &scratch)
                   && c0.value(QStringLiteral("pillShown")).toBool(),
               QStringLiteral("clip %1,%2 %3x%4; %5").arg(clip0.x()).arg(clip0.y()).arg(clip0.width())
                   .arg(clip0.height()).arg(QJsonDocument(QJsonObject::fromVariantMap(c0)).toJson(QJsonDocument::Compact)));
+        // (CHANGED 2026-11-26, as above: it read "keeps the thumbnail (72 wide)" and asked for 72x42.)
         check(QStringLiteral("(aw) the 2 s clip (84 px, its body the whole 84; it was 82) hides its NAME and "
-                             "keeps the thumbnail (72 wide) and the pill, as the design draws it"),
+                             "keeps the thumbnail (72 wide, so 41 high: its picture's shape) and the pill"),
               c3.value(QStringLiteral("body")).toString().contains(QStringLiteral(" 84x"))
                   && !c3.value(QStringLiteral("nameShown")).toBool()
                   && c3.value(QStringLiteral("thumbShown")).toBool()
-                  && c3.value(QStringLiteral("thumb")).toString().contains(QStringLiteral(" 72x42"))
+                  && c3.value(QStringLiteral("thumb")).toString().contains(QStringLiteral(" 72x41"))
                   && c3.value(QStringLiteral("pillShown")).toBool(),
               QJsonDocument(QJsonObject::fromVariantMap(c3)).toJson(QJsonDocument::Compact));
         // The hide order as the zoom drops: name, then thumbnail, then pill.
@@ -26261,8 +26268,13 @@ void runKeysAndViewPass(const QString &scratch)
               at400 == QStringLiteral("0011"), at400);
 
         // The clip wider than its picture (panel 3, 48 frames: 768 px at 1600 %) draws the
-        // picture, cropped to fill as below 512 px: the blank panel's white, not the
-        // placeholder.
+        // picture: the blank panel's white, not the placeholder.
+        // (CHANGED 2026-11-26, the user's note 5 after hand test I2-1 - a thumbnail keeps its
+        // picture's shape at the clip's left; it was a strip across the clip, cropped to fill. The
+        // check read the pixel 60 px in and 30 px down from the clip's corner, which the strip
+        // always covered; it reads the middle of the thumbnail's own rect now. Its text was "...STILL
+        // SHOWS IT, cropped to fill - the same colour as at 300 % (144 px), where the old path draws
+        // it".)
         auto thumbCentre = [&](float zoom) {
             tl->setZoomForTest(zoom);
             tl->setFollowForTest(false);
@@ -26272,14 +26284,23 @@ void runKeysAndViewPass(const QString &scratch)
             const QRect moved = tl->clipRectForTest(2);
             const QImage img = r.surface->grab().toImage();
             const qreal d = img.devicePixelRatio();
-            const QPoint p(moved.left() + qMin(60, moved.width() / 2), moved.top() + 30);
-            return QStringLiteral("%1@%2").arg(img.pixelColor(qRound(p.x() * d), qRound(p.y() * d)).name()).arg(moved.width());
+            // The thumbnail's rect, "x,y wxh".
+            const QVariantMap parts = tl->clipPartsForTest(2);
+            const QStringList a = parts.value(QStringLiteral("thumb")).toString().split(QLatin1Char(' '));
+            const QStringList xy = a.value(0).split(QLatin1Char(',')), wh = a.value(1).split(QLatin1Char('x'));
+            const QRect thumb(xy.value(0).toInt(), xy.value(1).toInt(), wh.value(0).toInt(), wh.value(1).toInt());
+            const QPoint p = thumb.center();
+            const bool shown = parts.value(QStringLiteral("thumbShown")).toBool() && thumb.width() > 8 && thumb.height() > 8;
+            return QStringLiteral("%1@%2").arg(shown ? img.pixelColor(qRound(p.x() * d), qRound(p.y() * d)).name()
+                                                     : QStringLiteral("no thumbnail"))
+                .arg(moved.width());
         };
         const QString wide = thumbCentre(1600), narrow = thumbCentre(300);
-        check(QStringLiteral("(tz3) A CLIP WIDER THAN ITS PICTURE (768 px at 1600 %) STILL SHOWS IT, cropped to fill - the "
-                             "same colour as at 300 % (144 px), where the old path draws it"),
-              wide.startsWith(narrow.section(QLatin1Char('@'), 0, 0)) && wide.section(QLatin1Char('@'), 1).toInt() > 512,
-              QStringLiteral("1600 %: %1; 100 %: %2").arg(wide, narrow));
+        check(QStringLiteral("(tz3) A CLIP WIDER THAN ITS PICTURE (768 px at 1600 %) STILL SHOWS IT - its thumbnail's "
+                             "middle the same colour as at 300 % (144 px): the picture's, not the placeholder's"),
+              wide.startsWith(narrow.section(QLatin1Char('@'), 0, 0)) && wide.section(QLatin1Char('@'), 1).toInt() > 512
+                  && narrow.startsWith(QLatin1String("#ffffff")),
+              QStringLiteral("1600 %: %1; 300 %: %2").arg(wide, narrow));
         tl->setZoomForTest(100);
         pump(60);
     }
@@ -38348,14 +38369,16 @@ void runI1b2Pass(const QString &scratch)
         r.window.loadKeyColorsForTest();
         page->forgotten = SankoKeyColors::base(Row::Layer);
         const QColor purple = SankoKeyColors::kDefault;
-        check(QStringLiteral("(kp1) EDIT > PREFERENCES > KEYFRAMES (your note 7): a page between Camera and Playback; the "
+        // (Changed with batch I-2, 2026-11-26: the list has "Onion Skin" after Keyframes, so the page is between
+        // Camera and Onion Skin and the list asked for has six entries. Nothing else of the check moved.)
+        check(QStringLiteral("(kp1) EDIT > PREFERENCES > KEYFRAMES (your note 7): a page between Camera and Onion Skin; the "
                              "camera keys' row and the layer keys' row of eight presets each, purple chosen for both, "
                              "Custom... for each, \"Use the default\"; Blue chosen for layer keys repaints the LAYER row's "
                              "line in blue (none of the purple left) and the Layers panel's diamond, the preview shows "
                              "both rows, the camera keys stay purple; the choice is remembered by the app"),
               page->categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"),
-                                               QStringLiteral("Playback"), QStringLiteral("Recovery"),
-                                               QStringLiteral("Saving")})
+                                               QStringLiteral("Onion Skin"), QStringLiteral("Playback"),
+                                               QStringLiteral("Recovery"), QStringLiteral("Saving")})
                   && page->cameraPresets == 8 && page->layerPresets == 8 && page->purpleChosen && page->customHidden
                   && page->pickers && page->defaultLink && page->afterBlue == blue && page->cameraAfterBlue == purple
                   && page->savedBlue == blue.name() && page->blueChosen && page->blueLineAfter > 10
@@ -38421,6 +38444,2263 @@ void runI1b2Pass(const QString &scratch)
         SankoKeyColors::setBase(Row::Camera, purple);
         SankoKeyColors::setBase(Row::Layer, purple);
         r.storyboard->keyColorsChanged();
+    }
+    r.window.markCleanForTest();
+}
+
+// ---- (dr) BATCH I-2: FRAME-BY-FRAME DRAWINGS IN A LAYER (2026-11-26; Figma I-2 727:757, approved with the
+// user's eight answers) ------------------------------------------------------------------------------------
+// A layer holds a run of drawings; the canvas draws on the one under the playhead; New Drawing is on 2s. The
+// checks use the app as the artist does: N and Del and Ctrl+Z through Qt's shortcut path, the LAYER row's
+// blocks, cuts, + and menu pressed through the window system, strokes drawn on the canvas with the brush.
+// What a drawing holds is read from its own pixels; what the row and the canvas show, from their pictures.
+// Nothing is judged by the clock.
+void runI2Pass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lmui;
+    using camtool::grabCanvas;
+    using camtool::mouse;
+    out() << "--- (dr) batch I-2: frame-by-frame drawings in a layer - New Drawing on 2s, the drawing under the "
+             "playhead, undo on its own drawing, the lane's blocks and cuts, the onion skin, save and load ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/i2");
+    const QString project = writeMotionProject(dir, true);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    QAction *prefsAct = nullptr;
+    for (QAction *a : r.window.findChildren<QAction *>())
+        if (a->text() == QLatin1String("Preferences..."))
+            prefsAct = a;
+    if (!r.ok || !scene || scene->panels.size() != 2 || !stack || !brushBtn || !prefsAct
+        || scene->panels.at(0)->layers.size() != 3 || scene->panels.at(1)->layers.size() != 2) {
+        check(QStringLiteral("(dr) the fixture opens, with the Brush and Preferences"), false);
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scene->panels.at(0);
+    Panel *pb = scene->panels.at(1);
+    const int ground = 1, boat = 2; // panel 1's layers: the paper, Ground (no keys), Boat (two keys)
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(ground);
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600); // 16 px a frame: panel 1 is film frames 0-23, panel 2 24-47
+    r.animatic->setPlayheadFrameInPanel(0, 0);
+    pump(200);
+
+    auto startsOf = [](const Panel *panel, int layer) {
+        QStringList s;
+        for (const LayerDrawing &d : panel->layers.at(layer).drawings)
+            s << QString::number(d.start);
+        return s.join(QLatin1Char(','));
+    };
+    auto goTo = [&](int flat, int frame) {
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(150);
+    };
+    auto playhead = [&] { return r.animatic->playheadFrameInPanel(); };
+    // How many pixels of a drawing hold anything inside `area` (stage px).
+    auto inkIn = [](const LayerPixels &px, const QRect &area) {
+        const QImage img = px.pixels().convertToFormat(QImage::Format_ARGB32);
+        const QRect in = area.intersected(img.rect());
+        int n = 0;
+        for (int y = in.top(); y <= in.bottom(); ++y) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+            for (int x = in.left(); x <= in.right(); ++x)
+                if (qAlpha(line[x]) > 0)
+                    ++n;
+        }
+        return n;
+    };
+    const QRect whole(QPoint(0, 0), kSize);
+    const QRect squareArea(680, 360, 40, 40); // the Ground's own art, a 30 px square at (700, 380)
+    // stroke(canvas, row) draws from (200, 160 + 40 row) to (280, 200 + 40 row): its band, with room for the brush.
+    auto rowArea = [](int row) { return QRect(150, 135 + 40 * row, 190, 90); };
+    auto drawRow = [&](int row) {
+        stroke(r.canvas, row);
+        r.canvas->flushPaintCommit();
+        pump(250);
+    };
+    auto pressN = [&] { return keyClaimed(&r.window, Qt::Key_N); };
+    auto undo = [&] {
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        pump(150);
+    };
+    auto redo = [&] {
+        keyClaimed(&r.window, Qt::Key_Y, Qt::ControlModifier);
+        pump(150);
+    };
+    auto said = [&] { return r.storyboard->lastNoteForTest(); };
+    auto blockOf = [&](int index) {
+        for (const QVariant &v : r.timeline->drawingBlocksForTest())
+            if (v.toMap().value(QStringLiteral("index")).toInt() == index)
+                return v.toMap();
+        return QVariantMap();
+    };
+    auto laneY = [&] { return r.timeline->drawingsLaneForTest().center().y(); };
+    auto blockCentre = [&](int index) {
+        const QVariantMap m = blockOf(index);
+        return QPointF((m.value(QStringLiteral("x0")).toDouble() + m.value(QStringLiteral("x1")).toDouble()) / 2.0,
+                       laneY());
+    };
+    // A press and a release on the timeline through the window system, as the pen's reach it.
+    auto realTap = [&](const QPointF &at) {
+        libbox::pointerTo(r.surface, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(150);
+    };
+    auto realDrag = [&](const QPointF &from, const QPointF &to) {
+        libbox::pointerTo(r.surface, from, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, from, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        for (int i = 1; i <= 6; ++i)
+            libbox::pointerTo(r.surface, from + (to - from) * (i / 6.0), QEvent::MouseMove, Qt::LeftButton,
+                              Qt::NoButton);
+        libbox::pointerTo(r.surface, to, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(150);
+    };
+    // A right-click at `at` on the timeline through the window system; the menu that opens is read, and - if asked
+    // - one entry pressed there, through the window system too (see runI1b2Pass's realMenu: a hook that triggers an
+    // entry is not a press).
+    struct LaneMenu
+    {
+        bool opened = false, found = false, enabled = false;
+        QString name;
+        QStringList entries;
+    };
+    auto realMenuAt = [&](const QPointF &at, const QString &entry, bool pressIt) {
+        LaneMenu m;
+        bool looked = false;
+        QTimer::singleShot(200, r.surface, [&m, &looked, &entry, pressIt] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            m.opened = menu != nullptr;
+            if (!menu) {
+                looked = true;
+                return;
+            }
+            m.name = menu->objectName();
+            QAction *chosen = nullptr;
+            for (QAction *a : menu->actions()) {
+                if (a->isSeparator())
+                    continue;
+                m.entries << a->objectName();
+                if (a->objectName() == entry)
+                    chosen = a;
+            }
+            m.found = chosen != nullptr;
+            m.enabled = chosen && chosen->isEnabled();
+            if (chosen && pressIt) {
+                const QPointF on = menu->actionGeometry(chosen).center();
+                libbox::pointerTo(menu, on, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+                QCoreApplication::processEvents();
+                libbox::pointerTo(menu, on, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+                libbox::pointerTo(menu, on, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+                QCoreApplication::processEvents();
+            }
+            if (auto *still = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                still->setAttribute(Qt::WA_NoMouseReplay);
+                still->close();
+            }
+            looked = true;
+        });
+        libbox::pointerTo(r.surface, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::RightButton);
+        QElapsedTimer guard;
+        guard.start();
+        while (!looked && guard.elapsed() < 15000)
+            pump(20);
+        pump(150);
+        return m;
+    };
+
+    // (dr1) NEW DRAWING ON 2S (the user's answer 6 of 2026-11-24, and N: answer 2 of 2026-11-26).
+    const int rowBefore = r.timeline->layerRowForTest().height();
+    const int stack0 = stack->index();
+    const bool n1 = pressN();
+    const QString s1 = startsOf(pa, ground);
+    const int p1 = playhead();
+    const bool n2 = pressN();
+    const bool n3 = pressN();
+    const QString s3 = startsOf(pa, ground);
+    check(QStringLiteral("(dr1) NEW DRAWING ON 2S: with the Ground selected and the playhead on frame 0, N three "
+                         "times - through Qt's shortcut path - gives drawings that start at frames 0, 2, 4 and 6; "
+                         "the playhead steps onto each; the layer shows the newest; each press is one undo step, "
+                         "\"New Frame\""), // (the step was "New Drawing" until the user's note 8, 2026-11-26)
+          n1 && n2 && n3 && s1 == QLatin1String("0,2") && p1 == 2 && s3 == QLatin1String("0,2,4,6") && playhead() == 6
+              && pa->layers.at(ground).shown == 3 && stack->index() == stack0 + 3
+              && stack->undoText() == QLatin1String("New Frame"),
+          QStringLiteral("claimed %1 %2 %3; starts after one '%4' (playhead %5), after three '%6' (playhead %7); shown "
+                         "%8; steps %9, the last '%10'")
+              .arg(n1).arg(n2).arg(n3).arg(s1).arg(p1).arg(s3).arg(playhead()).arg(pa->layers.at(ground).shown + 1)
+              .arg(stack->index() - stack0).arg(stack->undoText()));
+    {
+        // Control: the Background has one drawing, and N says so.
+        r.storyboard->layerRowClickedForTest(0);
+        const bool onPaper = pa->activeLayerIndex == 0;
+        const int before = stack->index();
+        pressN();
+        const QString why = said();
+        check(QStringLiteral("(dr1) control: with the Background selected N makes nothing - no drawing, no step - and "
+                             "the bar says why"),
+              onPaper && stack->index() == before && !pa->layers.at(0).hasRun()
+                  && startsOf(pa, ground) == QLatin1String("0,2,4,6") && why.contains(QLatin1String("Background")),
+              QStringLiteral("the paper selected %1; steps %2; said '%3'").arg(onPaper).arg(stack->index() - before)
+                  .arg(why));
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(100);
+    }
+
+    // (dr2) WHAT EACH DRAWING HOLDS.
+    {
+        const int square = inkIn(pa->layers.at(ground).pixelsOf(0), squareArea);
+        int blank = 0;
+        for (int i = 1; i < 4; ++i)
+            blank += inkIn(pa->layers.at(ground).pixelsOf(i), whole);
+        check(QStringLiteral("(dr2) the layer's art stays its first drawing, and each new drawing is blank"),
+              square > 500 && blank == 0, QStringLiteral("the square in drawing 1: %1 px; in drawings 2-4: %2 px")
+                                              .arg(square).arg(blank));
+    }
+
+    // (dr3) IN THE MIDDLE OF A RUN (the user's answer 3).
+    {
+        goTo(0, 20); // the last drawing, held from frame 6
+        pressN();
+        const QString held = startsOf(pa, ground);
+        const int heldAt = playhead();
+        goTo(0, 2); // drawing 2 is frames 2 and 3: no room in it
+        pressN();
+        const QString pushed = startsOf(pa, ground);
+        const int pushedAt = playhead();
+        check(QStringLiteral("(dr3) IN THE MIDDLE OF A RUN: with the playhead on frame 20 of a held drawing, N starts "
+                             "the new one there (the held one keeps frames 6 to 19); on a drawing with no room - "
+                             "frames 2 and 3 - the new one starts two frames after it and the later drawings move "
+                             "on two frames"),
+              held == QLatin1String("0,2,4,6,20") && heldAt == 20 && pushed == QLatin1String("0,2,4,6,8,22")
+                  && pushedAt == 4,
+              QStringLiteral("held: '%1' (playhead %2); no room: '%3' (playhead %4)").arg(held).arg(heldAt).arg(pushed)
+                  .arg(pushedAt));
+        goTo(0, 10); // drawing 5 is frames 8 to 21: room
+        pressN();
+        check(QStringLiteral("(dr3) control: with room in the drawing under the playhead it is split there - frame 10 "
+                             "- and nothing later moves (the last drawing still starts at 22)"),
+              startsOf(pa, ground) == QLatin1String("0,2,4,6,8,10,22") && playhead() == 10,
+              QStringLiteral("'%1' (playhead %2)").arg(startsOf(pa, ground)).arg(playhead()));
+    }
+
+    // (dr4) PAST THE PANEL'S END: refused, in amber, nothing changed.
+    {
+        const int before = stack->index();
+        goTo(0, 22); // the last drawing: frames 22 and 23 of 24
+        pressN();
+        const QString whyEnd = said();
+        const QString afterEnd = startsOf(pa, ground);
+        goTo(0, 8); // frames 8 and 9: no room, and the last drawing would pass the end
+        pressN();
+        const QString whyRoom = said();
+        check(QStringLiteral("(dr4) PAST THE PANEL'S END: N on the last drawing with no frame left, and N where the "
+                             "later drawings would be pushed past the end, change nothing - no step - and the bar "
+                             "says each in amber"),
+              stack->index() == before && afterEnd == QLatin1String("0,2,4,6,8,10,22")
+                  && startsOf(pa, ground) == QLatin1String("0,2,4,6,8,10,22")
+                  && whyEnd.contains(QLatin1String("no frame is left")) && whyRoom.contains(QLatin1String("no room here")),
+              QStringLiteral("steps %1; '%2'; said '%3' and '%4'").arg(stack->index() - before)
+                  .arg(startsOf(pa, ground)).arg(whyEnd).arg(whyRoom));
+    }
+
+    // (dr5) THE CANVAS DRAWS ON THE DRAWING UNDER THE PLAYHEAD.
+    goTo(0, 2); // drawing 2
+    drawRow(0);
+    goTo(0, 4); // drawing 3
+    drawRow(3);
+    auto inkTable = [&] {
+        QStringList s;
+        for (int i = 0; i < 3; ++i)
+            s << QStringLiteral("%1/%2").arg(inkIn(pa->layers.at(ground).pixelsOf(i), rowArea(0)))
+                     .arg(inkIn(pa->layers.at(ground).pixelsOf(i), rowArea(3)));
+        return s.join(QLatin1Char(' '));
+    };
+    {
+        const Layer &g = pa->layers.at(ground);
+        const int a1 = inkIn(g.pixelsOf(1), rowArea(0)), b1 = inkIn(g.pixelsOf(1), rowArea(3));
+        const int a2 = inkIn(g.pixelsOf(2), rowArea(0)), b2 = inkIn(g.pixelsOf(2), rowArea(3));
+        const int a0 = inkIn(g.pixelsOf(0), rowArea(0)), b0 = inkIn(g.pixelsOf(0), rowArea(3));
+        check(QStringLiteral("(dr5) THE CANVAS DRAWS ON THE DRAWING UNDER THE PLAYHEAD: a brush stroke with the "
+                             "playhead on drawing 2 and another, lower, on drawing 3 - each is in its own drawing's "
+                             "pixels and in no other; drawing 1 has neither and keeps its square"),
+              a1 > 50 && b1 == 0 && b2 > 50 && a2 == 0 && a0 == 0 && b0 == 0
+                  && inkIn(g.pixelsOf(0), squareArea) > 500,
+              QStringLiteral("upper/lower stroke px in drawings 1, 2, 3: %1").arg(inkTable()));
+    }
+
+    // (dr6) UNDO AND REDO LAND ON THE DRAWING THE STROKE WAS MADE ON.
+    {
+        goTo(0, 0); // away from both
+        undo();
+        const int afterFirst = playhead();
+        const QString t1 = inkTable();
+        undo();
+        const int afterSecond = playhead();
+        const QString t2 = inkTable();
+        redo();
+        redo();
+        const QString t3 = inkTable();
+        const int afterRedo = playhead();
+        const Layer &g = pa->layers.at(ground);
+        check(QStringLiteral("(dr6) UNDO LANDS ON THE DRAWING THE STROKE WAS MADE ON: from frame 0, Ctrl+Z takes the "
+                             "stroke off drawing 3 and puts the playhead on it (frame 4), the next takes drawing 2's "
+                             "(frame 2); Ctrl+Y twice puts both back, each on its own drawing"),
+              afterFirst == 4 && afterSecond == 2 && afterRedo == 4 && inkIn(g.pixelsOf(1), rowArea(0)) > 50
+                  && inkIn(g.pixelsOf(2), rowArea(3)) > 50 && inkIn(g.pixelsOf(1), rowArea(3)) == 0
+                  && inkIn(g.pixelsOf(2), rowArea(0)) == 0 && t2.endsWith(QLatin1String("0/0 0/0")),
+              QStringLiteral("playhead %1, then %2, after the redos %3; px after one undo [%4], after two [%5], after "
+                             "the redos [%6]")
+                  .arg(afterFirst).arg(afterSecond).arg(afterRedo).arg(t1).arg(t2).arg(t3));
+        // Control: with the playhead already on the drawing, an undo does not move it.
+        undo(); // drawing 3's stroke: the playhead is on frame 4 already
+        const int stayed = playhead();
+        redo();
+        check(QStringLiteral("(dr6) control: undone with the playhead already on that drawing, the stroke goes and the "
+                             "playhead stays where it is"),
+              stayed == 4 && inkIn(pa->layers.at(ground).pixelsOf(2), rowArea(3)) > 50,
+              QStringLiteral("playhead %1").arg(stayed));
+    }
+
+    // (dr7) THE ROW: 46 px with a drawings lane, its blocks as long as the drawings are shown.
+    {
+        goTo(0, 4);
+        const QRect row = r.timeline->layerRowForTest();
+        const QVariantList blocks = r.timeline->drawingBlocksForTest();
+        QStringList spans, labels;
+        bool placed = !blocks.isEmpty();
+        int shownIndex = -1;
+        for (const QVariant &v : blocks) {
+            const QVariantMap m = v.toMap();
+            spans << QStringLiteral("%1-%2").arg(m.value(QStringLiteral("start")).toInt())
+                         .arg(m.value(QStringLiteral("end")).toInt());
+            labels << m.value(QStringLiteral("label")).toString();
+            placed = placed
+                && qAbs(m.value(QStringLiteral("x0")).toDouble()
+                        - r.timeline->frameScreenXForTest(m.value(QStringLiteral("start")).toInt())) < 1.01
+                && qAbs(m.value(QStringLiteral("x1")).toDouble()
+                        - r.timeline->frameScreenXForTest(m.value(QStringLiteral("end")).toInt())) < 1.01;
+            if (m.value(QStringLiteral("shown")).toBool())
+                shownIndex = m.value(QStringLiteral("index")).toInt();
+        }
+        // From the picture: the block under the playhead is the strong one.
+        const QImage shot = r.surface->grab().toImage();
+        auto lumaAt = [&](int index) {
+            const QVariantMap m = blockOf(index);
+            const QPoint p(int(m.value(QStringLiteral("x1")).toDouble()) - 4, laneY() + 4);
+            return shot.valid(p) ? qGray(shot.pixel(p)) : -1;
+        };
+        const int strong = lumaAt(2), quiet = lumaAt(1), quiet2 = lumaAt(3);
+        // (CHANGED 2026-11-26, the user's note 7 after hand test I2-1 - the lane 41 px to their Figma
+        // 737:872, so the row 71: it read "46 px (28 before the layer had a run)" and asked for 46.)
+        check(QStringLiteral("(dr7) THE LAYER ROW WITH DRAWINGS: 71 px (28 before the layer had a run), and under the "
+                             "keys' lane a block for each drawing from its first frame to the next one's - the last "
+                             "to the panel's end, saying so - at the frames' places; in the picture the block under "
+                             "the playhead is the strong one"),
+              rowBefore == 28 && row.height() == 71 && spans.join(QLatin1Char(' '))
+                  == QLatin1String("0-2 2-4 4-6 6-8 8-10 10-22 22-24") && placed && shownIndex == 2
+                  && labels.value(0) == QLatin1String("1") && labels.value(5) == QLatin1String("6")
+                  && strong > quiet + 8 && strong > quiet2 + 8,
+              QStringLiteral("row %1 -> %2 px; blocks %3; at the frames %4; shown %5; labels [%6]; luma of blocks 2, 3, "
+                             "4: %7, %8, %9")
+                  .arg(rowBefore).arg(row.height()).arg(spans.join(QLatin1Char(' '))).arg(placed).arg(shownIndex + 1)
+                  .arg(labels.join(QLatin1Char('|'))).arg(quiet).arg(strong).arg(quiet2));
+        // Control: the Boat has one drawing - the row is 28 px again and has no block.
+        r.storyboard->layerRowClickedForTest(boat);
+        pump(150);
+        const int boatRow = r.timeline->layerRowForTest().height();
+        const int boatBlocks = int(r.timeline->drawingBlocksForTest().size());
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(150);
+        // (CHANGED 2026-11-26, as above: it read "it is 46 px again" and asked for 46.)
+        check(QStringLiteral("(dr7) control: with the Boat selected (one drawing) the row is 28 px and has no block; "
+                             "back on the Ground it is 71 px again"),
+              boatRow == 28 && boatBlocks == 0 && r.timeline->layerRowForTest().height() == 71,
+              QStringLiteral("the Boat's row %1 px, blocks %2; the Ground's %3 px").arg(boatRow).arg(boatBlocks)
+                  .arg(r.timeline->layerRowForTest().height()));
+    }
+
+    // (dr8) A BLOCK TAPPED, AND DEL ON IT (the user's answer 7).
+    {
+        realTap(blockCentre(5)); // drawing 6, frames 10 to 21
+        const int tappedAt = playhead();
+        const int selected = r.storyboard->selectedDrawingForTest();
+        const bool drawnSelected = blockOf(5).value(QStringLiteral("selected")).toBool();
+        hover(r, r.animatic, true); // Del is the timeline's while the pointer is over it
+        const int before = stack->index();
+        QStringList boxes;
+        {
+            travel::Warnings warnings;
+            keyClaimed(&r.window, Qt::Key_Delete);
+            pump(200);
+            boxes = warnings.texts;
+        }
+        const QString after = startsOf(pa, ground);
+        const QString step = stack->undoText();
+        const int steps = stack->index() - before;
+        undo();
+        const QString back = startsOf(pa, ground);
+        redo();
+        check(QStringLiteral("(dr8) A BLOCK TAPPED, AND DEL: a press on drawing 6's block - through the window system "
+                             "- puts the playhead on its first frame and selects it; Del over the timeline deletes "
+                             "that drawing with no box, one step (\"Delete Frame\"): the drawing before it holds "
+                             "over its frames and nothing else moves; Ctrl+Z brings it back"),
+              // (CHANGED 2026-11-26, the user's note 8: the step was "Delete Drawing".)
+              tappedAt == 10 && selected == 5 && drawnSelected && after == QLatin1String("0,2,4,6,8,22") && steps == 1
+                  && step == QLatin1String("Delete Frame") && boxes.isEmpty()
+                  && back == QLatin1String("0,2,4,6,8,10,22") && startsOf(pa, ground) == QLatin1String("0,2,4,6,8,22")
+                  && scene->panels.size() == 2,
+              QStringLiteral("playhead %1, selected %2 (drawn so %3); after Del '%4', steps %5 '%6', boxes [%7]; after "
+                             "undo '%8'")
+                  .arg(tappedAt).arg(selected + 1).arg(drawnSelected).arg(after).arg(steps).arg(step)
+                  .arg(boxes.join(QLatin1Char('|'))).arg(back));
+        // Control: a press in the KEYS' lane at the same place selects no block, and Del then deletes none.
+        const QPointF inKeysLane(blockCentre(2).x(), r.timeline->layerRowForTest().top() + 8);
+        realTap(inKeysLane);
+        const int none = r.storyboard->selectedDrawingForTest();
+        const int stepsBefore = stack->index();
+        keyClaimed(&r.window, Qt::Key_Delete);
+        pump(200);
+        hover(r, r.animatic, false);
+        check(QStringLiteral("(dr8) control: a press in the keys' lane over the same block selects no drawing, and Del "
+                             "then deletes none"),
+              none == -1 && stack->index() == stepsBefore && startsOf(pa, ground) == QLatin1String("0,2,4,6,8,22"),
+              QStringLiteral("selected %1; steps %2; '%3'").arg(none).arg(stack->index() - stepsBefore)
+                  .arg(startsOf(pa, ground)));
+    }
+
+    // (dr9) A DRAGGED CUT (the user's answer 4).
+    {
+        const double perFrame = r.timeline->frameScreenXForTest(1) - r.timeline->frameScreenXForTest(0);
+        auto cutAt = [&](int index) { return QPointF(blockOf(index).value(QStringLiteral("x0")).toDouble(), laneY()); };
+        const int before = stack->index();
+        // The cut where drawing 3 starts (frame 4), two frames right: drawings 3 and later move with it.
+        realDrag(cutAt(2), cutAt(2) + QPointF(2 * perFrame, 0));
+        const QString rippled = startsOf(pa, ground);
+        const QString rippleStep = stack->undoText();
+        // The same cut, one frame left with Alt: the cut alone.
+        const QPointF from = cutAt(2);
+        mouse(r.surface, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+        for (int i = 1; i <= 6; ++i)
+            mouse(r.surface, QEvent::MouseMove, from - QPointF(perFrame * i / 6.0, 0), Qt::NoButton, Qt::LeftButton,
+                  Qt::AltModifier);
+        mouse(r.surface, QEvent::MouseButtonRelease, from - QPointF(perFrame, 0), Qt::LeftButton, Qt::NoButton,
+              Qt::AltModifier);
+        pump(150);
+        const QString rolled = startsOf(pa, ground);
+        const QString rollStep = stack->undoText();
+        // Far to the left, with the later drawings: never onto the drawing before it.
+        realDrag(cutAt(2), cutAt(2) - QPointF(12 * perFrame, 0));
+        const QString clamped = startsOf(pa, ground);
+        check(QStringLiteral("(dr9) A DRAGGED CUT: the cut where drawing 3 starts, dragged two frames right - through "
+                             "the window system - makes drawing 2 four frames and moves every later drawing two "
+                             "frames (one step, \"Change Drawing Length\"); with Alt, one frame left, the cut alone "
+                             "moves (\"Move Drawing Cut\"); dragged far left it stops one frame after the drawing "
+                             "before it"),
+              rippled == QLatin1String("0,2,6,8,10,24") && rippleStep == QLatin1String("Change Drawing Length")
+                  && rolled == QLatin1String("0,2,5,8,10,24") && rollStep == QLatin1String("Move Drawing Cut")
+                  && clamped == QLatin1String("0,2,3,6,8,22") && stack->index() == before + 3,
+              QStringLiteral("with the later drawings '%1' ('%2'); alone '%3' ('%4'); far left '%5'; steps %6")
+                  .arg(rippled).arg(rippleStep).arg(rolled).arg(rollStep).arg(clamped).arg(stack->index() - before));
+        // Control: the same drag in the keys' lane moves no cut.
+        const int stepsBefore = stack->index();
+        const QPointF keysLane(cutAt(2).x(), r.timeline->layerRowForTest().top() + 8);
+        realDrag(keysLane, keysLane + QPointF(2 * perFrame, 0));
+        check(QStringLiteral("(dr9) control: the same drag in the keys' lane, over the same cut, moves no drawing"),
+              startsOf(pa, ground) == clamped && stack->index() == stepsBefore,
+              QStringLiteral("'%1', steps %2").arg(startsOf(pa, ground)).arg(stack->index() - stepsBefore));
+    }
+
+    // (dr10) THE + AND THE LANE'S MENU, pressed as the pen presses them.
+    {
+        QAbstractButton *plus = r.timeline->newDrawingButtonForTest();
+        goTo(0, 12); // drawing 5 holds from frame 8: room
+        const int before = stack->index();
+        const bool plusShown = plus && plus->isVisible();
+        if (plus) {
+            const QPointF c(plus->width() / 2.0, plus->height() / 2.0);
+            libbox::pointerTo(plus, c, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+            libbox::pointerTo(plus, c, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+            libbox::pointerTo(plus, c, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+            pump(200);
+        }
+        const QString afterPlus = startsOf(pa, ground);
+        // The lane's menu on the drawing with the lower stroke (drawing 3): New Drawing from This One.
+        goTo(0, 4);
+        const int strokeHere = inkIn(pa->layers.at(ground).pixelsOf(pa->layers.at(ground).shown), rowArea(3));
+        const LaneMenu m = realMenuAt(blockCentre(pa->layers.at(ground).shown), QStringLiteral("layerDrawingNewFrom"), true);
+        const Layer &g = pa->layers.at(ground);
+        const int copyInk = inkIn(g.pixelsOf(g.shown), rowArea(3));
+        const QString afterCopy = startsOf(pa, ground);
+        const QString copyStep = stack->undoText();
+        check(QStringLiteral("(dr10) THE + AND THE LANE'S MENU: the + at the row's left, pressed through the window "
+                             "system, makes a drawing at the playhead (frame 12); a right-click on a block opens the "
+                             "lane's menu - New Frame, Duplicate Frame, Delete Frame - and Duplicate Frame, pressed "
+                             "there, makes a drawing that holds the same stroke as the one it was made from"),
+              // (CHANGED 2026-11-26, the user's note 8: it read "New Drawing, New Drawing from This One,
+              // Delete Drawing - and New Drawing from This One, pressed there", and its step was so named.)
+              plusShown && afterPlus == QLatin1String("0,2,3,6,8,12,22") && m.opened
+                  && m.name == QLatin1String("layerDrawingMenu")
+                  && m.entries == QStringList({QStringLiteral("layerDrawingNew"), QStringLiteral("layerDrawingNewFrom"),
+                                               QStringLiteral("layerDrawingDelete")})
+                  && m.found && m.enabled && strokeHere > 50 && copyInk == strokeHere
+                  && copyStep == QLatin1String("Duplicate Frame") && stack->index() == before + 2,
+              QStringLiteral("+ shown %1, after it '%2'; menu '%3' [%4]; the stroke %5 px, in the copy %6 px; after "
+                             "'%7' ('%8'); steps %9")
+                  .arg(plusShown).arg(afterPlus).arg(m.name).arg(m.entries.join(QLatin1Char('|'))).arg(strokeHere)
+                  .arg(copyInk).arg(afterCopy).arg(copyStep).arg(stack->index() - before));
+        // Control: with the Background selected the + is not there.
+        r.storyboard->layerRowClickedForTest(0);
+        pump(150);
+        const bool plusOnPaper = plus && plus->isVisible();
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(150);
+        check(QStringLiteral("(dr10) control: with the Background selected the + is not shown; with the Ground it is"),
+              !plusOnPaper && plus && plus->isVisible(),
+              QStringLiteral("on the paper %1, on the Ground %2").arg(plusOnPaper).arg(plus && plus->isVisible()));
+    }
+
+    // (dr11) WHAT THE FILM, THE STRIP AND THE BAR SHOW.
+    {
+        const Layer &g = pa->layers.at(ground);
+        // Which drawings hold the upper and the lower stroke now.
+        int upper = -1, lower = -1;
+        for (int i = 0; i < g.drawings.size(); ++i) {
+            if (upper < 0 && inkIn(g.pixelsOf(i), rowArea(0)) > 50)
+                upper = i;
+            if (lower < 0 && inkIn(g.pixelsOf(i), rowArea(3)) > 50)
+                lower = i;
+        }
+        const shotcam::Stage stage = pa->stage();
+        // The brush's ink on white paper: darker than the paper and with no colour of its own (the Boat's red
+        // square moves through these bands, and is not ink).
+        auto isInk = [](QRgb c) {
+            return qGray(c) < 235 && qAbs(qRed(c) - qGreen(c)) < 25 && qAbs(qGreen(c) - qBlue(c)) < 25;
+        };
+        auto darkIn = [&](int frame, const QRect &area) {
+            const QImage shot = shotcam::renderShot(*pa, shotcam::neutral(stage), stage, kSize,
+                                                    shotcam::panelAt(frame, 24))
+                                    .convertToFormat(QImage::Format_ARGB32);
+            int n = 0;
+            for (int y = area.top(); y <= area.bottom(); ++y)
+                for (int x = area.left(); x <= area.right(); ++x)
+                    if (shot.valid(x, y) && isInk(shot.pixel(x, y)))
+                        ++n;
+            return n;
+        };
+        const int upperFrame = upper >= 0 ? g.drawings.at(upper).start : 0;
+        const int lowerFrame = lower >= 0 ? g.drawings.at(lower).start : 0;
+        const int filmUpper = darkIn(upperFrame, rowArea(0)), filmUpperLow = darkIn(upperFrame, rowArea(3));
+        const int filmLower = darkIn(lowerFrame, rowArea(3)), filmLowerUp = darkIn(lowerFrame, rowArea(0));
+        const int filmFirst = darkIn(0, rowArea(0)) + darkIn(0, rowArea(3));
+        // The strip's picture is the panel's first frame, whichever drawing the layer shows.
+        goTo(0, lowerFrame);
+        const QImage flat = pa->flattenedImage();
+        int flatStroke = 0, flatSquare = 0;
+        for (int y = 0; y < flat.height(); ++y)
+            for (int x = 0; x < flat.width(); ++x) {
+                if (isInk(flat.pixel(x, y)) && (rowArea(0).contains(x, y) || rowArea(3).contains(x, y)))
+                    ++flatStroke;
+                if (qGreen(flat.pixel(x, y)) > qRed(flat.pixel(x, y)) + 60 && squareArea.contains(x, y))
+                    ++flatSquare;
+            }
+        pump(200);
+        const QString bar = r.canvas->noteBarText();
+        const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+        const QString wanted = QStringLiteral("Ground") + dot
+            + QStringLiteral("drawing %1 of %2").arg(lower + 1).arg(g.drawings.size());
+        check(QStringLiteral("(dr11) WHAT THE FILM, THE STRIP AND THE BAR SHOW: the film's frame inside a drawing "
+                             "shows that drawing's stroke and not the other's; frame 0 shows neither; the strip's "
+                             "picture is the panel's first frame - the square, no stroke - whichever drawing is on "
+                             "the canvas; the bar names the drawing under the playhead"),
+              upper >= 0 && lower >= 0 && filmUpper > 50 && filmUpperLow == 0 && filmLower > 50 && filmLowerUp == 0
+                  && filmFirst == 0 && flatStroke == 0 && flatSquare > 500 && bar.startsWith(wanted),
+              QStringLiteral("strokes in drawings %1 and %2; film px upper frame %3/%4, lower frame %5/%6, frame 0 "
+                             "%7; the flatten: strokes %8, the square %9; the bar '%10'")
+                  .arg(upper + 1).arg(lower + 1).arg(filmUpper).arg(filmUpperLow).arg(filmLower).arg(filmLowerUp)
+                  .arg(filmFirst).arg(flatStroke).arg(flatSquare).arg(bar));
+        // Control: on the Boat (one drawing) the bar does not name a drawing.
+        r.storyboard->layerRowClickedForTest(boat);
+        pump(250);
+        const QString boatBar = r.canvas->noteBarText();
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(250);
+        check(QStringLiteral("(dr11) control: with the Boat selected - one drawing - the bar names no drawing"),
+              !boatBar.contains(QLatin1String("drawing ")), QStringLiteral("'%1'").arg(boatBar));
+    }
+
+    // (dr20) THE PREVIEW, as Play shows it: the drawing exposed at the playhead's frame.
+    {
+        const Layer &g = pa->layers.at(ground);
+        int upper = -1, lower = -1;
+        for (int i = 0; i < g.drawings.size(); ++i) {
+            if (upper < 0 && inkIn(g.pixelsOf(i), rowArea(0)) > 50)
+                upper = i;
+            if (lower < 0 && inkIn(g.pixelsOf(i), rowArea(3)) > 50)
+                lower = i;
+        }
+        const int upperFrame = upper >= 0 ? g.drawings.at(upper).start : 0;
+        const int lowerFrame = lower >= 0 ? g.drawings.at(lower).start : 0;
+        // With the Boat's Animate switched off nothing in the panel moves: the run of drawings alone must make
+        // the preview draw each frame. (The first red run of this check passed, because the Boat's motion made the
+        // preview draw frame by frame anyway: a check that could not fail for its own reason.)
+        const int stepsBefore = stack->index();
+        r.storyboard->layerToggleAnimate(boat);
+        pump(150);
+        const bool runAlone = !pa->hasMotion() && pa->hasLiveRuns();
+        const bool clearOnPlay = r.storyboard->clearStageOnPlay();
+        r.storyboard->setClearStageOnPlay(false);
+        r.animatic->togglePlay();
+        pump(150);
+        if (r.animatic->isPlaying())
+            r.animatic->togglePlay();
+        QWidget *display = r.animatic->previewDisplayForTest();
+        const bool up = r.animatic->previewVisible();
+        // The brush's ink inside a band of the stage, counted in the preview's own picture.
+        auto inkInPreview = [&](int frame, const QRect &area) {
+            r.animatic->setPlayheadFrameInPanel(0, frame); // the preview kept
+            pump(150);
+            const QRect pic = r.animatic->previewPictureRectForTest();
+            const QImage img = display ? display->grab().toImage().copy(pic).convertToFormat(QImage::Format_ARGB32)
+                                       : QImage();
+            if (img.isNull())
+                return -1;
+            const double sx = img.width() / 960.0, sy = img.height() / 540.0;
+            const QRect in = QRectF(area.x() * sx, area.y() * sy, area.width() * sx, area.height() * sy).toAlignedRect()
+                & img.rect();
+            int n = 0;
+            for (int y = in.top(); y <= in.bottom(); ++y)
+                for (int x = in.left(); x <= in.right(); ++x) {
+                    const QRgb c = img.pixel(x, y);
+                    if (qGray(c) < 235 && qAbs(qRed(c) - qGreen(c)) < 25 && qAbs(qGreen(c) - qBlue(c)) < 25)
+                        ++n;
+                }
+            return n;
+        };
+        const int onUpper = inkInPreview(upperFrame, rowArea(0)), onUpperLow = inkInPreview(upperFrame, rowArea(3));
+        const int onLower = inkInPreview(lowerFrame, rowArea(3)), onLowerUp = inkInPreview(lowerFrame, rowArea(0));
+        const int onFirst = inkInPreview(0, rowArea(0)) + inkInPreview(0, rowArea(3));
+        r.animatic->leavePreview();
+        r.storyboard->setClearStageOnPlay(clearOnPlay);
+        pump(150);
+        while (stack->index() > stepsBefore)
+            undo(); // the Boat's Animate back on
+        check(QStringLiteral("(dr20) THE PREVIEW, as Play leaves it when paused, with no layer moving: on a frame of "
+                             "the drawing with the upper stroke the preview's own picture shows that stroke and not "
+                             "the lower one; on a frame of the other drawing, the lower and not the upper; on frame 0 "
+                             "- control - neither"),
+              runAlone && up && display && upper >= 0 && lower >= 0 && onUpper > 50 && onUpperLow == 0 && onLower > 50
+                  && onLowerUp == 0 && onFirst == 0 && pa->layers.at(boat).animate,
+              QStringLiteral("no motion, a run %1; the preview up %2; frames %3 and %4; ink px %5/%6, then %7/%8; on "
+                             "frame 0 %9")
+                  .arg(runAlone).arg(up).arg(upperFrame).arg(lowerFrame).arg(onUpper).arg(onUpperLow).arg(onLowerUp)
+                  .arg(onLower).arg(onFirst));
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(150);
+    }
+
+    // (dr12) THE LAYERS PANEL'S MARK, CTRL+SHIFT+N, AND MERGE.
+    {
+        auto markOf = [&](int layer) {
+            for (QWidget *row : r.storyboard->findChildren<QWidget *>(QStringLiteral("layerRow")))
+                if (row->property("layerIndex").toInt() == layer)
+                    if (QWidget *mark = row->findChild<QWidget *>(QStringLiteral("layerDrawingsMark")))
+                        return mark->toolTip();
+            return QString();
+        };
+        const QString groundMark = markOf(ground), boatMark = markOf(boat);
+        const int count = pa->layers.at(ground).drawingCount();
+        check(QStringLiteral("(dr12) THE LAYERS PANEL: the Ground's row carries the drawings' mark with their number; "
+                             "the Boat's, with one drawing, has none"),
+              groundMark == QStringLiteral("%1 drawings").arg(count) && boatMark.isEmpty(),
+              QStringLiteral("the Ground '%1' (%2 drawings), the Boat '%3'").arg(groundMark).arg(count).arg(boatMark));
+        const int layers = int(pa->layers.size());
+        const int before = stack->index();
+        const bool claimed = keyClaimed(&r.window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+        const int afterKey = int(pa->layers.size());
+        const QString step = stack->undoText();
+        undo();
+        check(QStringLiteral("(dr12) CTRL+SHIFT+N IS NEW LAYER (your answer 2): through Qt's shortcut path it adds a "
+                             "layer, one step (\"Add Layer\"), and makes no drawing; Ctrl+Z takes it back"),
+              claimed && afterKey == layers + 1 && step == QLatin1String("Add Layer") && stack->index() == before
+                  && int(pa->layers.size()) == layers && pa->layers.at(ground).drawingCount() == count,
+              QStringLiteral("claimed %1; layers %2 -> %3 -> %4; step '%5'").arg(claimed).arg(layers).arg(afterKey)
+                  .arg(pa->layers.size()).arg(step));
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(100);
+    }
+
+    // (dr13) AT REST: only the drawing each layer shows keeps a full image.
+    {
+        LayerFolder *folder = r.storyboard->layerFolder();
+        for (int i = 0; i < pa->layers.at(ground).drawings.size(); ++i)
+            goTo(0, pa->layers.at(ground).drawings.at(i).start);
+        if (folder)
+            folder->waitForFoldsForTest();
+        pump(100);
+        int dense = 0, folded = 0;
+        const Layer &g = pa->layers.at(ground);
+        for (int i = 0; i < g.drawings.size(); ++i) {
+            if (!g.pixelsOf(i).image.isNull())
+                ++dense;
+            else if (g.pixelsOf(i).tiles)
+                ++folded;
+        }
+        check(QStringLiteral("(dr13) AT REST: after the playhead has been on every drawing and the folds have landed, "
+                             "only the drawing the layer shows holds a full image; the others are their tiles, and "
+                             "still hold their strokes"),
+              folder && dense == 1 && folded == g.drawings.size() - 1 && !g.image.isNull()
+                  && inkTable().contains(QLatin1String("0/0")),
+              QStringLiteral("full images %1, folded %2 of %3 drawings").arg(dense).arg(folded).arg(g.drawings.size()));
+        // Control: with the folding held back, the drawing the playhead has just left still has its full image.
+        if (folder)
+            folder->setHeldForTest(true);
+        goTo(0, pa->layers.at(ground).drawings.at(0).start);
+        goTo(0, pa->layers.at(ground).drawings.at(1).start);
+        int denseHeld = 0;
+        for (int i = 0; i < pa->layers.at(ground).drawings.size(); ++i)
+            if (!pa->layers.at(ground).pixelsOf(i).image.isNull())
+                ++denseHeld;
+        if (folder) {
+            folder->setHeldForTest(false);
+            folder->waitForFoldsForTest();
+        }
+        pump(100);
+        int denseAfter = 0;
+        for (int i = 0; i < pa->layers.at(ground).drawings.size(); ++i)
+            if (!pa->layers.at(ground).pixelsOf(i).image.isNull())
+                ++denseAfter;
+        check(QStringLiteral("(dr13) control: with the folding held back, a drawing just left still has its full "
+                             "image beside the one shown; let go, only the one shown has"),
+              denseHeld >= 2 && denseAfter == 1,
+              QStringLiteral("full images while held %1, after %2").arg(denseHeld).arg(denseAfter));
+    }
+
+    // (dr14) THE ONION SKIN (the user's answer 5): on panel 2, which has a panel before it.
+    {
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1); // the Gull
+        goTo(1, 0);
+        pressN();   // drawing 2 at frame 2
+        drawRow(0); // on drawing 2
+        pressN();   // drawing 3 at frame 4
+        drawRow(3); // on drawing 3
+        pressN();   // drawing 4 at frame 6
+        drawRow(6); // on drawing 4
+        r.canvas->setOnionSkinEnabled(true);
+        r.storyboard->updateOnionGhostForTest();
+        auto ghosts = [&] {
+            QStringList s;
+            for (const DrawingCanvas::OnionGhost &g : r.canvas->drawingGhostsForTest())
+                s << QStringLiteral("%1%2@%3").arg(g.before ? QLatin1Char('b') : QLatin1Char('a')).arg(g.drawing + 1)
+                         .arg(qRound(g.opacity * 100));
+            return s.join(QLatin1Char(' '));
+        };
+        const QTransform view = r.canvas->viewTransformForTest();
+        // The most tinted pixel of the canvas's picture around the middle of stroke(row): the paper is white there
+        // unless a ghost lies on it, and a ghost is its colour at its opacity - so the pixel furthest from grey
+        // says which ghost.
+        auto canvasPixel = [&](const QImage &shot, int row) {
+            const QPoint c = view.map(QPointF(240, 180 + 40 * row)).toPoint();
+            QColor best(Qt::white);
+            int spread = -1;
+            for (int dy = -8; dy <= 8; ++dy)
+                for (int dx = -8; dx <= 8; ++dx) {
+                    const QPoint p = c + QPoint(dx, dy);
+                    if (!shot.valid(p))
+                        continue;
+                    const QColor px(shot.pixel(p));
+                    const int s = qMax(px.red(), qMax(px.green(), px.blue()))
+                        - qMin(px.red(), qMin(px.green(), px.blue()));
+                    if (s > spread) {
+                        spread = s;
+                        best = px;
+                    }
+                }
+            return spread < 0 ? QColor() : best;
+        };
+        goTo(1, 4); // drawing 3, in between
+        r.storyboard->updateOnionGhostForTest();
+        const QString between = ghosts();
+        const bool panelBetween = r.canvas->previousGhostShownForTest();
+        const QImage shotBetween = grabCanvas(r.canvas);
+        const QColor before2 = canvasPixel(shotBetween, 0), after4 = canvasPixel(shotBetween, 6);
+        goTo(1, 0); // the run's first drawing
+        r.storyboard->updateOnionGhostForTest();
+        const QString first = ghosts();
+        const bool panelFirst = r.canvas->previousGhostShownForTest();
+        goTo(1, 6); // its last
+        r.storyboard->updateOnionGhostForTest();
+        const QString last = ghosts();
+        const bool panelLast = r.canvas->previousGhostShownForTest();
+        check(QStringLiteral("(dr14) THE ONION SKIN (your answer 5): on a drawing in between, the one before and the "
+                             "one after are the ghosts - blue where the drawing before has its stroke, orange where "
+                             "the one after has, in the canvas's picture - and the previous panel's ghost is not; on "
+                             "the run's first drawing the previous panel's ghost is, with the drawing after; on the "
+                             "last, the drawing before alone"),
+              between == QLatin1String("a4@30 b2@30") && !panelBetween && before2.isValid()
+                  && before2.blue() > before2.red() + 8 && after4.isValid() && after4.red() > after4.blue() + 8
+                  && first == QLatin1String("a2@30") && panelFirst && last == QLatin1String("b3@30") && !panelLast,
+              QStringLiteral("between [%1] (the panel's ghost %2), the pixel on drawing 2's stroke %3, on drawing 4's "
+                             "%4; first [%5] (the panel's %6); last [%7] (the panel's %8)")
+                  .arg(between).arg(panelBetween).arg(before2.name()).arg(after4.name()).arg(first).arg(panelFirst)
+                  .arg(last).arg(panelLast));
+        // Control: switched off, there is no ghost and the same two pixels are the paper's white.
+        goTo(1, 4);
+        r.canvas->setOnionSkinEnabled(false);
+        r.storyboard->updateOnionGhostForTest();
+        const QImage shotOff = grabCanvas(r.canvas);
+        const QColor off2 = canvasPixel(shotOff, 0), off4 = canvasPixel(shotOff, 6);
+        check(QStringLiteral("(dr14) control: with the onion skin off there is no ghost, and the same two pixels are "
+                             "white paper"),
+              ghosts().isEmpty() && off2.isValid() && qGray(off2.rgb()) > 245 && qGray(off4.rgb()) > 245,
+              QStringLiteral("ghosts [%1]; the pixels %2 and %3").arg(ghosts()).arg(off2.name()).arg(off4.name()));
+
+        // (dr15) EDIT > PREFERENCES > ONION SKIN.
+        r.canvas->setOnionSkinEnabled(true);
+        r.storyboard->updateOnionGhostForTest();
+        struct Page
+        {
+            QStringList categories;
+            bool page = false, countRow = false, green = false, slider = false;
+            QString afterTwo, afterGreen, afterOpacity, afterDefault;
+            int savedCount = -1, savedOpacity = -1;
+            QString savedColor;
+            bool rememberedCount = false;
+            QColor pixelGreen;
+        };
+        auto page = std::make_shared<Page>();
+        QTimer::singleShot(400, &r.window, [&, page] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            if (auto *list = dialog->findChild<QListWidget *>()) {
+                for (int i = 0; i < list->count(); ++i)
+                    page->categories << list->item(i)->text();
+                const int at = int(page->categories.indexOf(QStringLiteral("Onion Skin")));
+                if (at >= 0) {
+                    // The category pressed through the window system.
+                    const QPointF c = list->visualItemRect(list->item(at)).center();
+                    libbox::pointerTo(list->viewport(), c, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+                    libbox::pointerTo(list->viewport(), c, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+                    libbox::pointerTo(list->viewport(), c, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+                    QCoreApplication::processEvents();
+                    page->page = list->currentRow() == at;
+                }
+            }
+            using SankoOnionSkin::Side;
+            auto *count = dialog->findChild<brushlib::StudioSegmentedRow *>(QStringLiteral("prefsOnionAfterCount"));
+            auto *green = dialog->findChild<QAbstractButton *>(QStringLiteral("prefsOnionAfterGreen"));
+            auto *opacity = dialog->findChild<SankoSlider *>(QStringLiteral("prefsOnionBeforeOpacity"));
+            auto *defaults = dialog->findChild<QPushButton *>(QStringLiteral("prefsOnionDefault"));
+            page->countRow = count != nullptr;
+            page->green = green != nullptr;
+            page->slider = opacity != nullptr;
+            if (count && green && opacity && defaults) {
+                goTo(1, 2); // drawing 2: drawings 3 and 4 are after it
+                count->choose(2);
+                QCoreApplication::processEvents();
+                page->afterTwo = ghosts();
+                page->savedCount = sankoSettings().value(SankoOnionSkin::countKey(Side::After)).toInt();
+                green->click();
+                QCoreApplication::processEvents();
+                page->afterGreen = SankoOnionSkin::choice(Side::After).color.name();
+                page->savedColor = sankoSettings().value(SankoOnionSkin::colorKey(Side::After)).toString();
+                const QImage shot = grabCanvas(r.canvas);
+                page->pixelGreen = canvasPixel(shot, 3); // drawing 3's stroke, the nearest after
+                opacity->setValue(60);
+                QCoreApplication::processEvents();
+                page->afterOpacity = ghosts();
+                page->savedOpacity = sankoSettings().value(SankoOnionSkin::opacityKey(Side::Before)).toInt();
+                // Remembered: read back from the settings, as a launch does.
+                SankoOnionSkin::setDefaults();
+                r.window.loadOnionSkinForTest();
+                page->rememberedCount = SankoOnionSkin::choice(Side::After).count == 2
+                    && SankoOnionSkin::choice(Side::Before).opacityPercent == 60;
+                defaults->click();
+                QCoreApplication::processEvents();
+                page->afterDefault = ghosts();
+            }
+            dialog->close();
+        });
+        prefsAct->trigger();
+        pump(300);
+        const bool backToDefault = SankoOnionSkin::isDefault();
+        check(QStringLiteral("(dr15) EDIT > PREFERENCES > ONION SKIN (your answer 5): the page is in the list after "
+                             "Keyframes; \"Drawings shown\" 2 after the drawing shows the two after it, the further "
+                             "one at 60 % of the nearer; Green for the drawings after turns their ghost green on the "
+                             "canvas; the opacity before, 60 %, is the ghost's before; each is kept in the settings "
+                             "and read back as a launch reads them; \"Use the default\" is one before and one after "
+                             "at 30 %, blue and orange"),
+              page->categories
+                      == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"), QStringLiteral("Onion Skin"),
+                                      QStringLiteral("Playback"), QStringLiteral("Recovery"), QStringLiteral("Saving")})
+                  && page->page && page->countRow && page->green && page->slider
+                  && page->afterTwo == QLatin1String("a4@18 a3@30 b1@30") && page->savedCount == 2
+                  && page->afterGreen == QLatin1String("#6cc04a") && page->savedColor == QLatin1String("#6cc04a")
+                  && page->pixelGreen.isValid() && page->pixelGreen.green() > page->pixelGreen.red() + 5
+                  && page->pixelGreen.green() > page->pixelGreen.blue() + 5
+                  && page->afterOpacity == QLatin1String("a4@18 a3@30 b1@60") && page->savedOpacity == 60
+                  && page->rememberedCount && page->afterDefault == QLatin1String("a3@30 b1@30") && backToDefault,
+              QStringLiteral("pages [%1], opened %2; 2 after: [%3] (saved %4); green: %5 (saved %6), the pixel %7; 60 "
+                             "%% before: [%8] (saved %9); read back %10; the default: [%11] (%12)")
+                  .arg(page->categories.join(QLatin1Char('|'))).arg(page->page).arg(page->afterTwo)
+                  .arg(page->savedCount).arg(page->afterGreen).arg(page->savedColor).arg(page->pixelGreen.name())
+                  .arg(page->afterOpacity).arg(page->savedOpacity).arg(page->rememberedCount)
+                  .arg(page->afterDefault).arg(backToDefault));
+        for (SankoOnionSkin::Side side : {SankoOnionSkin::Side::Before, SankoOnionSkin::Side::After}) {
+            sankoSettings().remove(SankoOnionSkin::countKey(side));
+            sankoSettings().remove(SankoOnionSkin::colorKey(side));
+            sankoSettings().remove(SankoOnionSkin::opacityKey(side));
+            sankoSettings().remove(SankoOnionSkin::customKey(side));
+        }
+        SankoOnionSkin::setDefaults();
+        r.canvas->setOnionSkinEnabled(false);
+        r.storyboard->onionSkinSettingsChanged();
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(150);
+    }
+
+    // (dr16) RETIMING A PANEL (the user's answer 6): the drawings keep their frames, the keys stretch.
+    {
+        const QString before = startsOf(pa, ground);
+        const int keyBefore = layerKeyFrame(pa->layers.at(boat).keys.at(1), shotcam::panelFrames(*pa, 24));
+        const int stepsBefore = stack->index();
+        r.animatic->setPanelFramesForTest(0, 0, 48); // the request the timeline's own drag makes
+        pump(250);
+        const int framesLong = shotcam::panelFrames(*pa, 24);
+        const QString afterLong = startsOf(pa, ground);
+        const int keyLong = layerKeyFrame(pa->layers.at(boat).keys.at(1), framesLong);
+        const QVariantMap lastBlock = r.timeline->drawingBlocksForTest().isEmpty()
+            ? QVariantMap()
+            : r.timeline->drawingBlocksForTest().last().toMap();
+        r.animatic->setPanelFramesForTest(0, 0, 10); // shorter than the run
+        pump(250);
+        const QString afterShort = startsOf(pa, ground);
+        const int shownShort = int(r.timeline->drawingBlocksForTest().size());
+        int drawingsInside = 0;
+        for (const LayerDrawing &d : pa->layers.at(ground).drawings)
+            if (d.start < 10)
+                ++drawingsInside;
+        while (stack->index() > stepsBefore)
+            undo();
+        check(QStringLiteral("(dr16) RETIMING A PANEL (your answer 6): made 48 frames long the drawings keep their "
+                             "frames - the last one holds to the new end - while the Boat's key at frame 12 moves to "
+                             "24; cut to 10 frames, the drawings past the end are kept, unseen (no block), and come "
+                             "back with the length"),
+              framesLong == 48 && afterLong == before && keyBefore == 12 && keyLong == 24
+                  && lastBlock.value(QStringLiteral("end")).toInt() == 48 && afterShort == before
+                  && shownShort == drawingsInside && shownShort < pa->layers.at(ground).drawings.size()
+                  && startsOf(pa, ground) == before && shotcam::panelFrames(*pa, 24) == 24,
+              QStringLiteral("starts '%1' -> at 48 '%2' -> at 10 '%3'; the key %4 -> %5; the last block ends %6; blocks "
+                             "at 10 frames %7 of %8")
+                  .arg(before).arg(afterLong).arg(afterShort).arg(keyBefore).arg(keyLong)
+                  .arg(lastBlock.value(QStringLiteral("end")).toInt()).arg(shownShort)
+                  .arg(pa->layers.at(ground).drawings.size()));
+    }
+
+    // (dr17) DRAWINGS AND KEYS TOGETHER ON ONE LAYER.
+    {
+        r.storyboard->layerRowClickedForTest(boat);
+        goTo(0, 8); // between the Boat's two keys (frames 0 and 12)
+        const int keysBefore = int(pa->layers.at(boat).keys.size());
+        // A blank drawing from the playhead, frame 8: the first one is held up to there. (This check first put the
+        // playhead on frame 12 and asked for the new drawing at 14 and the square still shown at 12 - my mistake:
+        // deep in a hold the new drawing starts AT the playhead, as (dr3) asks. The app was right.)
+        pressN();
+        const QString boatStarts = startsOf(pa, boat);
+        const shotcam::Stage stage = pa->stage();
+        auto boatAt = [&](int frame) {
+            int n = 0;
+            const QImage shot = shotcam::renderShot(*pa, shotcam::neutral(stage), stage, kSize,
+                                                    shotcam::panelAt(frame, 24));
+            const QPointF c = centroidOf(shot, kBoat, &n);
+            return qMakePair(c, n);
+        };
+        const auto atTwo = boatAt(2), atSix = boatAt(6), atTen = boatAt(10);
+        check(QStringLiteral("(dr17) DRAWINGS AND KEYS TOGETHER: N on the animated Boat, with the playhead on frame 8, "
+                             "makes its second drawing there and leaves its keys; in the film the first drawing - "
+                             "the red square - is carried by the keys (further right at frame 6 than at frame 2), "
+                             "and from the new, blank drawing's first frame it is no longer shown"),
+              boatStarts == QLatin1String("0,8") && int(pa->layers.at(boat).keys.size()) == keysBefore
+                  && pa->layers.at(boat).animate && atTwo.second > 100 && atSix.second > 100
+                  && atSix.first.x() > atTwo.first.x() + 50 && atTen.second == 0,
+              QStringLiteral("starts '%1'; keys %2; the square at frame 2 %3 (%4 px), at 6 %5 (%6 px), at 10 %7 px")
+                  .arg(boatStarts).arg(pa->layers.at(boat).keys.size()).arg(pt(atTwo.first)).arg(atTwo.second)
+                  .arg(pt(atSix.first)).arg(atSix.second).arg(atTen.second));
+        undo();
+        // Control: with the new drawing undone, the same reading finds the square at frame 10 again.
+        const auto undone = boatAt(10);
+        check(QStringLiteral("(dr17) control: with that drawing undone the Boat has one drawing again, and the same "
+                             "frame 10 of the film shows the square"),
+              !pa->layers.at(boat).hasRun() && undone.second > 100,
+              QStringLiteral("drawings %1; the square at frame 10: %2 px").arg(pa->layers.at(boat).drawingCount())
+                  .arg(undone.second));
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(100);
+    }
+
+    // (dr19) A DUPLICATED PANEL, A MERGE, AND THE DEV RECORDER'S LINE.
+    {
+        const QString before = startsOf(pa, ground);
+        const int panels = int(scene->panels.size());
+        const int stepsBefore = stack->index();
+        r.storyboard->duplicateSelectedPanelForTest();
+        pump(250);
+        const Panel *copy = scene->panels.size() == panels + 1 ? scene->panels.at(1) : nullptr;
+        int samePictures = 0;
+        if (copy && copy->layers.size() == pa->layers.size()
+            && copy->layers.at(ground).drawings.size() == pa->layers.at(ground).drawings.size())
+            for (int i = 0; i < copy->layers.at(ground).drawings.size(); ++i)
+                if (copy->layers.at(ground).pixelsOf(i).pixels() == pa->layers.at(ground).pixelsOf(i).pixels())
+                    ++samePictures;
+        const QString copyStarts = copy ? startsOf(copy, ground) : QString();
+        const int copyKeys = copy ? int(copy->layers.at(boat).keys.size()) : -1;
+        while (stack->index() > stepsBefore)
+            undo();
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(150);
+        check(QStringLiteral("(dr19) A DUPLICATED PANEL (your answer 10) has the layer's drawings at the same frames, "
+                             "each with the same picture, and the Boat's keys; Ctrl+Z takes the copy away"),
+              copy && copyStarts == before && samePictures == pa->layers.at(ground).drawings.size() && copyKeys == 2
+                  && scene->panels.size() == panels,
+              QStringLiteral("the copy's starts '%1' (the panel's '%2'); the same pictures %3 of %4; its Boat's keys "
+                             "%5; panels after undo %6")
+                  .arg(copyStarts).arg(before).arg(samePictures).arg(pa->layers.at(ground).drawings.size())
+                  .arg(copyKeys).arg(scene->panels.size()));
+
+        // A merge would keep one drawing of the run: refused, and said.
+        keyClaimed(&r.window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier); // a new layer above the Ground
+        const int layers = int(pa->layers.size());
+        const int mergeSteps = stack->index();
+        r.storyboard->layerMergeSelectedForTest(); // one layer selected: merge down, onto the Ground
+        pump(150);
+        const QString why = said();
+        const bool kept = int(pa->layers.size()) == layers && stack->index() == mergeSteps
+            && startsOf(pa, ground) == before;
+        undo(); // the new layer
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(100);
+        check(QStringLiteral("(dr19) A MERGE onto a layer with a run of drawings is refused - no layer goes, no step - "
+                             "and the bar says the layer has several drawings"),
+              kept && why.contains(QLatin1String("drawings")) && why.contains(QLatin1String("Ground")),
+              QStringLiteral("kept %1; said '%2'").arg(kept).arg(why));
+
+        // The Dev Recorder's line for a step of the run.
+        QVariantMap event;
+        int events = 0;
+        const QMetaObject::Connection heard =
+            QObject::connect(r.storyboard, &StoryboardPage::layerDrawingEdited, r.storyboard,
+                             [&event, &events](const QVariantMap &e) {
+                                 event = e;
+                                 ++events;
+                             });
+        goTo(0, 14); // inside the drawing held from frame 12
+        pressN();
+        const int eventsAfterN = events;
+        const QVariantMap said1 = event;
+        undo();
+        QObject::disconnect(heard);
+        check(QStringLiteral("(dr19) THE DEV RECORDER hears one layerDrawing line for a New Frame: what, the layer, "
+                             "the playhead's frame, how many drawings, which is shown, and every first frame"),
+              // (CHANGED 2026-11-26, the user's note 8: the line's "what" was "New Drawing".)
+              eventsAfterN == 1 && said1.value(QStringLiteral("what")).toString() == QLatin1String("New Frame")
+                  && said1.value(QStringLiteral("layer")).toString() == QLatin1String("Ground")
+                  && said1.value(QStringLiteral("frame")).toInt() == 14
+                  && said1.value(QStringLiteral("drawings")).toInt() == pa->layers.at(ground).drawings.size() + 1
+                  && said1.value(QStringLiteral("starts")).toString().contains(QLatin1String("12, 14"))
+                  && startsOf(pa, ground) == before,
+              QStringLiteral("lines %1: what '%2', layer '%3', frame %4, drawings %5, shown %6, starts '%7'")
+                  .arg(eventsAfterN).arg(said1.value(QStringLiteral("what")).toString())
+                  .arg(said1.value(QStringLiteral("layer")).toString()).arg(said1.value(QStringLiteral("frame")).toInt())
+                  .arg(said1.value(QStringLiteral("drawings")).toInt()).arg(said1.value(QStringLiteral("shown")).toInt())
+                  .arg(said1.value(QStringLiteral("starts")).toString()));
+    }
+
+    // (dr18) SAVED AND OPENED AGAIN: each drawing a file of its own; a stroke on one writes that one.
+    QVector<QImage> savedPixels;
+    QString savedStarts;
+    QStringList drawingFiles;
+    const QString savedPath = dir + QStringLiteral("/Saved.sankotv");
+    {
+        const QJsonObject plain = manifestOf(project); // as the fixture wrote it: motion, no run
+        const bool saved = r.window.saveProjectForTest(savedPath);
+        const QJsonObject root = manifestOf(savedPath);
+        const QJsonObject layerObj = root.value(QStringLiteral("scenes")).toArray().at(0).toObject()
+                                         .value(QStringLiteral("panels")).toArray().at(0).toObject()
+                                         .value(QStringLiteral("layers")).toArray().at(ground).toObject();
+        const QJsonArray drawings = layerObj.value(QStringLiteral("drawings")).toArray();
+        bool filesThere = !drawings.isEmpty();
+        QStringList savedStartList;
+        for (const QJsonValue &v : drawings) {
+            const QString file = v.toObject().value(QStringLiteral("imageFile")).toString();
+            drawingFiles << file;
+            savedStartList << QString::number(v.toObject().value(QStringLiteral("start")).toInt());
+            filesThere = filesThere && !file.isEmpty() && QFileInfo::exists(dir + QStringLiteral("/") + file);
+        }
+        const Layer &g = pa->layers.at(ground);
+        savedStarts = startsOf(pa, ground);
+        for (int i = 0; i < g.drawings.size(); ++i)
+            savedPixels << g.pixelsOf(i).pixels();
+        // A stroke on one drawing, and a second save: that drawing's file is another, the others' are the same.
+        goTo(0, g.drawings.at(1).start);
+        drawRow(6);
+        const bool savedAgain = r.window.saveProjectForTest(savedPath);
+        const QJsonArray again = manifestOf(savedPath).value(QStringLiteral("scenes")).toArray().at(0).toObject()
+                                     .value(QStringLiteral("panels")).toArray().at(0).toObject()
+                                     .value(QStringLiteral("layers")).toArray().at(ground).toObject()
+                                     .value(QStringLiteral("drawings")).toArray();
+        int renamed = 0, same = 0;
+        for (int i = 0; i < again.size() && i < drawingFiles.size(); ++i) {
+            if (again.at(i).toObject().value(QStringLiteral("imageFile")).toString() == drawingFiles.at(i))
+                ++same;
+            else
+                ++renamed;
+        }
+        savedPixels[1] = pa->layers.at(ground).pixelsOf(1).pixels();
+        check(QStringLiteral("(dr18) SAVED: the project file is version 7 and the Ground says its drawings - each with "
+                             "its first frame and a picture file of its own (\"..._d_...\"), all there; after a stroke "
+                             "on one drawing a second save gives that drawing another file and leaves the others' "
+                             "as they were"),
+              saved && root.value(QStringLiteral("version")).toInt() == ProjectIO::kFileVersionLayerDrawings
+                  && drawings.size() == g.drawings.size() && filesThere
+                  && savedStartList.join(QLatin1Char(',')) == savedStarts
+                  && drawingFiles.value(1).contains(QLatin1String("_d_")) && savedAgain && renamed == 1
+                  && same == drawingFiles.size() - 1,
+              QStringLiteral("saved %1, version %2; drawings %3 (files there %4), starts '%5'; a file '%6'; second save "
+                             "%7: %8 other file, %9 the same")
+                  .arg(saved).arg(root.value(QStringLiteral("version")).toInt()).arg(drawings.size()).arg(filesThere)
+                  .arg(savedStartList.join(QLatin1Char(','))).arg(drawingFiles.value(1)).arg(savedAgain).arg(renamed)
+                  .arg(same));
+        check(QStringLiteral("(dr18) control: the same project before any layer had a run was version 6 and said no "
+                             "drawings"),
+              plain.value(QStringLiteral("version")).toInt() == ProjectIO::kFileVersionLayerMotion
+                  && !QJsonDocument(plain).toJson().contains("\"drawings\""),
+              QStringLiteral("version %1").arg(plain.value(QStringLiteral("version")).toInt()));
+    }
+    r.window.markCleanForTest();
+    rig.reset();
+    {
+        auto rig2 = std::make_unique<Rig>(savedPath);
+        Rig &q = *rig2;
+        Scene *again = q.ok ? q.window.scenesForTest().value(0) : nullptr;
+        const Panel *pa2 = again && again->panels.size() == 2 ? again->panels.at(0) : nullptr;
+        bool same = pa2 && pa2->layers.size() == 3 && pa2->layers.at(ground).drawings.size() == savedPixels.size();
+        int differing = 0;
+        QString starts2;
+        if (same) {
+            starts2 = startsOf(pa2, ground);
+            for (int i = 0; i < savedPixels.size(); ++i)
+                if (pa2->layers.at(ground).pixelsOf(i).pixels().convertToFormat(QImage::Format_ARGB32_Premultiplied)
+                    != savedPixels.at(i).convertToFormat(QImage::Format_ARGB32_Premultiplied))
+                    ++differing;
+        }
+        check(QStringLiteral("(dr18) OPENED AGAIN: the Ground has the same drawings at the same frames, each with the "
+                             "pixels it was saved with; the layers are the file's three, the Boat keeps its keys"),
+              q.ok && same && starts2 == savedStarts && differing == 0 && pa2->layers.at(boat).keys.size() == 2
+                  && pa2->layers.at(boat).name == QLatin1String("Boat") && pa2->activeLayerIndex == ground,
+              QStringLiteral("opened %1; drawings %2 of %3, starts '%4'; pictures that differ %5; active layer %6")
+                  .arg(q.ok).arg(pa2 ? pa2->layers.at(ground).drawings.size() : -1).arg(savedPixels.size())
+                  .arg(starts2).arg(differing).arg(pa2 ? pa2->activeLayerIndex : -1));
+        if (q.ok)
+            q.window.markCleanForTest();
+    }
+    Q_UNUSED(pb);
+}
+
+// ---- (fr) BATCH I-2 AFTER HAND TEST I2-1 (2026-11-26): the user's notes 2 to 8 ----------------
+// The previous panel's ghost is its LAST frame; Cut, Copy and Paste act once a press; the docks
+// reopen at the width they were left at; every row of the timeline inside its bounds, a clip's
+// thumbnail in its picture's shape; a press on an ease mark opens the eases and takes no key;
+// the frames lane at the user's size, Zoom to Frames, the grey empty frame, the hover; the
+// entries' new names. As in (dr): keys through Qt's shortcut path, presses through the window
+// system, what is shown read from the pictures. Nothing is judged by the clock.
+namespace i2b {
+struct LanePaints : QObject
+{
+    int paints = 0;
+    bool eventFilter(QObject *, QEvent *e) override
+    {
+        if (e->type() == QEvent::Paint)
+            ++paints;
+        return false;
+    }
+};
+// "x,y wxh", as clipPartsForTest writes a rect.
+QRect rectOfText(const QString &s)
+{
+    const QStringList a = s.split(QLatin1Char(' '));
+    if (a.size() != 2)
+        return QRect();
+    const QStringList xy = a.at(0).split(QLatin1Char(',')), wh = a.at(1).split(QLatin1Char('x'));
+    return xy.size() == 2 && wh.size() == 2 ? QRect(xy.at(0).toInt(), xy.at(1).toInt(), wh.at(0).toInt(), wh.at(1).toInt())
+                                            : QRect();
+}
+int spreadOf(const QColor &c)
+{
+    return qMax(c.red(), qMax(c.green(), c.blue())) - qMin(c.red(), qMin(c.green(), c.blue()));
+}
+int farthest(const QColor &a, const QColor &b)
+{
+    return qMax(qAbs(a.red() - b.red()), qMax(qAbs(a.green() - b.green()), qAbs(a.blue() - b.blue())));
+}
+} // namespace i2b
+
+void runI2bPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lmui;
+    using namespace i2b;
+    using camtool::grabCanvas;
+    out() << "--- (fr) batch I-2 after hand test I2-1: the previous panel's last frame, Cut / Copy / Paste once a "
+             "press, the docks' width, the rows in their bounds, the ease mark and the keys, the frames lane, the "
+             "entries' names ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/i2b");
+    const QString project = writeMotionProject(dir, true);
+
+    // (fr4) THE DOCKS REOPEN AT THE WIDTH THEY WERE LEFT AT (the user's note 4). Two windows, one after the
+    // other, as a restart is: the first leaves the right-hand docks wider and goes (the page saves its layout as
+    // it goes, as at the app's end); the second opens as the app does - its start page first, then the project.
+    {
+        // The dock layout the tests found, put back afterwards: later passes pin pictures to the Layers panel's width.
+        QHash<QString, QVariant> kept;
+        {
+            QSettings s = sankoSettings();
+            s.beginGroup(QStringLiteral("storyboard/nativeDock"));
+            for (const QString &k : s.allKeys())
+                kept.insert(k, s.value(k));
+        }
+        int opened = -1, asked = -1, left = -1, back = -1, savedRight = -1;
+        bool firstOk = false, secondOk = false;
+        {
+            Rig a(project);
+            firstOk = a.ok;
+            auto *host = a.ok ? a.storyboard->findChild<QMainWindow *>(QStringLiteral("storyboardDockHost")) : nullptr;
+            auto *layers = a.ok ? a.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers")) : nullptr;
+            if (host && layers) {
+                opened = layers->width();
+                asked = opened + 64;
+                host->resizeDocks({layers}, {asked}, Qt::Horizontal);
+                pump(400);
+                left = layers->width();
+            }
+            if (a.ok)
+                a.window.markCleanForTest();
+        }
+        savedRight = sankoSettings().value(QStringLiteral("storyboard/nativeDock/sidebar/right"), -1).toInt();
+        // THE NEXT WINDOW, AS THE APP'S OPENS: at a size smaller than the one the layout was saved in (1300 px
+        // wide against 1880), on its start page; the project opens there; then the window is made large. That is
+        // where the dock came back at its least width and stayed there (the probe of 2026-11-26: left at 452,
+        // back at 220 in a 1306 px host, 220 still at 1880).
+        int narrowHost = -1, least = -1, wideHost = -1;
+        {
+            MainWindow w;
+            w.resize(1300, 800);
+            w.show();
+            pump(800);
+            secondOk = w.loadProjectForTest(project);
+            pump(700);
+            auto *page = w.findChild<StoryboardPage *>();
+            auto *host = page ? page->findChild<QMainWindow *>(QStringLiteral("storyboardDockHost")) : nullptr;
+            auto *layers = page ? page->findChild<QDockWidget *>(QStringLiteral("dockLayers")) : nullptr;
+            narrowHost = host ? host->width() : -1;
+            least = layers ? layers->minimumSizeHint().width() : -1;
+            w.resize(1880, 900);
+            pump(600);
+            back = layers ? layers->width() : -1;
+            wideHost = host ? host->width() : -1;
+            w.markCleanForTest();
+            w.close();
+            pump(300);
+        }
+        check(QStringLiteral("(fr4) THE DOCKS REOPEN AT THE WIDTH THEY WERE LEFT AT: the Layers dock, made 64 px wider and "
+                             "left so, is that wide again in the next window - which opens 1300 px wide on its start "
+                             "page, shows the project there, and is then made 1880 px wide"),
+              firstOk && secondOk && left > 0 && back == left && narrowHost > 0 && narrowHost < 1500 && wideHost >= 1800,
+              QStringLiteral("opened at %1 px, asked for %2, left at %3; the next window's workspace %4 px wide when the "
+                             "project opened, then %5: the dock %6 (its least width %7)")
+                  .arg(opened).arg(asked).arg(left).arg(narrowHost).arg(wideHost).arg(back).arg(least));
+        check(QStringLiteral("(fr4) control: the width left was neither the width the first window opened with nor the "
+                             "dock's least, and the layout saved beside it the sidebar's width as it was left - read "
+                             "after the window had closed, when it used to say -1"),
+              opened > 0 && left >= opened + 32 && left > least + 32 && savedRight == left,
+              QStringLiteral("opened at %1 px, left at %2, its least %3; the saved sidebar width %4").arg(opened).arg(left)
+                  .arg(least).arg(savedRight));
+        {
+            QSettings s = sankoSettings();
+            s.beginGroup(QStringLiteral("storyboard/nativeDock"));
+            s.remove(QString());
+            for (auto it = kept.constBegin(); it != kept.constEnd(); ++it)
+                s.setValue(it.key(), it.value());
+        }
+    }
+
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    QAction *copyAct = r.window.findChild<QAction *>(QStringLiteral("editCopy"));
+    QAction *cutAct = r.window.findChild<QAction *>(QStringLiteral("editCut"));
+    QAction *pasteAct = r.window.findChild<QAction *>(QStringLiteral("editPaste"));
+    QAction *pasteHereAct = r.window.findChild<QAction *>(QStringLiteral("editPasteInPlace"));
+    QAction *undoAct = nullptr;
+    for (QAction *a : r.window.findChildren<QAction *>())
+        if (a->text() == QLatin1String("Undo"))
+            undoAct = a;
+    auto *split = r.ok ? r.storyboard->findChild<QSplitter *>(QStringLiteral("workspaceSplitter")) : nullptr;
+    if (!r.ok || !scene || scene->panels.size() != 2 || !stack || !brushBtn || !copyAct || !cutAct || !pasteAct
+        || !pasteHereAct || !undoAct || !split || scene->panels.at(0)->layers.size() != 3) {
+        check(QStringLiteral("(fr) the fixture opens, with the Brush, the Edit menu's actions and the workspace's "
+                             "splitter"),
+              false);
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scene->panels.at(0);
+    Panel *pb = scene->panels.at(1);
+    const int ground = 1, boat = 2; // panel 1's layers: the paper, Ground (no keys), Boat (keys at frames 0 and 12)
+    const int labelCol = AnimaticTimeline::labelColumnWidthForTest() + 1;
+
+    auto startsOf = [](const Panel *panel, int layer) {
+        QStringList s;
+        for (const LayerDrawing &d : panel->layers.at(layer).drawings)
+            s << QString::number(d.start);
+        return s.join(QLatin1Char(','));
+    };
+    auto goTo = [&](int flat, int frame) {
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(150);
+    };
+    auto playhead = [&] { return r.animatic->playheadFrameInPanel(); };
+    auto drawRow = [&](int row) {
+        stroke(r.canvas, row);
+        r.canvas->flushPaintCommit();
+        pump(250);
+    };
+    auto pressN = [&] { return keyClaimed(&r.window, Qt::Key_N); };
+    auto said = [&] { return r.storyboard->lastNoteForTest(); };
+    auto blockOf = [&](int index) {
+        for (const QVariant &v : r.timeline->drawingBlocksForTest())
+            if (v.toMap().value(QStringLiteral("index")).toInt() == index)
+                return v.toMap();
+        return QVariantMap();
+    };
+    auto laneY = [&] { return r.timeline->drawingsLaneForTest().center().y(); };
+    auto blockCentre = [&](int index) {
+        const QVariantMap m = blockOf(index);
+        return QPointF((m.value(QStringLiteral("x0")).toDouble() + m.value(QStringLiteral("x1")).toDouble()) / 2.0,
+                       laneY());
+    };
+    auto pointerAt = [&](QWidget *over, const QPointF &at) {
+        libbox::pointerTo(over, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        pump(60);
+    };
+    auto realTapOn = [&](QWidget *over, const QPointF &at) {
+        libbox::pointerTo(over, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(over, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(over, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(150);
+    };
+    auto realTap = [&](const QPointF &at) { realTapOn(r.surface, at); };
+    // Two presses at one place, one after the other, through the window system: Qt makes the second a double-click.
+    auto realDoubleClick = [&](const QPointF &at) {
+        libbox::pointerTo(r.surface, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(40); // the second press a little after the first, as a hand's is: Qt asks for a later timestamp
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(r.surface, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(200);
+    };
+    // A right-click on `over` through the window system: the menu that opens is read - each entry's text - and,
+    // if asked, one of them pressed there, through the window system too.
+    auto menuOn = [&](QWidget *over, const QPointF &at, const QString &pressText = QString()) {
+        QStringList texts;
+        bool looked = false;
+        // (The window is the timer's context, not `over`: a press on a Layers row can rebuild the rows.)
+        QTimer::singleShot(200, &r.window, [&texts, &looked, pressText] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            if (menu) {
+                QAction *chosen = nullptr;
+                for (QAction *a : menu->actions()) {
+                    if (a->isSeparator())
+                        continue;
+                    texts << a->text();
+                    if (!pressText.isEmpty() && a->text() == pressText)
+                        chosen = a;
+                }
+                if (chosen) {
+                    const QPointF on = menu->actionGeometry(chosen).center();
+                    libbox::pointerTo(menu, on, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+                    QCoreApplication::processEvents();
+                    libbox::pointerTo(menu, on, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+                    libbox::pointerTo(menu, on, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+                    QCoreApplication::processEvents();
+                }
+            }
+            if (auto *still = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                still->setAttribute(Qt::WA_NoMouseReplay);
+                still->close();
+            }
+            looked = true;
+        });
+        libbox::pointerTo(over, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(over, at, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton);
+        libbox::pointerTo(over, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::RightButton);
+        QElapsedTimer guard;
+        guard.start();
+        while (!looked && guard.elapsed() < 15000)
+            pump(20);
+        pump(150);
+        return texts;
+    };
+    // A key through Qt's shortcut path, as a first press or as the repeat a held key sends.
+    auto sendKey = [&](int key, Qt::KeyboardModifiers mods, bool repeat) {
+        r.window.activateWindow();
+        r.window.raise();
+        pump(60);
+        const bool claimed = qt_sendShortcutOverrideEvent(&r.window, 0, key, mods, QString(), repeat, 1);
+        pump(150);
+        return claimed;
+    };
+    auto shot = [&] { return r.surface->grab().toImage().convertToFormat(QImage::Format_ARGB32); };
+
+    // (fr2) control first, while the history is empty: a held key's repeats reach an action that keeps them.
+    int undos = 0;
+    {
+        const QMetaObject::Connection c = QObject::connect(undoAct, &QAction::triggered, &r.window, [&undos] { ++undos; });
+        sendKey(Qt::Key_Z, Qt::ControlModifier, false);
+        for (int i = 0; i < 3; ++i)
+            sendKey(Qt::Key_Z, Qt::ControlModifier, true);
+        QObject::disconnect(c);
+    }
+
+    // The Ground gets a run: drawing 1 its own square, drawing 2 (frames 2-3) a stroke on row 0, drawing 3 (from
+    // frame 4 to the panel's end) a stroke on row 3.
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(ground);
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600); // 16 px a frame: panel 1 is film frames 0-23, panel 2 24-47
+    goTo(0, 0);
+    const bool n1 = pressN();
+    const QString undoNew = stack->undoText();
+    drawRow(0);
+    const bool n2 = pressN();
+    drawRow(3);
+    const bool runOk = n1 && n2 && startsOf(pa, ground) == QLatin1String("0,2,4");
+
+    // (fr1) THE ENTRIES' NAMES (the user's note 8).
+    {
+        // (The Layers panel rebuilds its rows by deleteLater: the old ones go first, or one of them is found.)
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QWidget *groundRow = nullptr;
+        for (QFrame *f : r.storyboard->findChildren<QFrame *>(QStringLiteral("layerRow")))
+            if (f->property("layerIndex").toInt() == ground && f->isVisible())
+                groundRow = f;
+        const QStringList lane = menuOn(r.surface, blockCentre(1));
+        // On the layer's name, where the hand test's right-clicks were.
+        QLabel *nameLabel = groundRow ? groundRow->findChild<QLabel *>(QStringLiteral("layerName")) : nullptr;
+        const QPointF onRow = nameLabel ? QPointF(nameLabel->mapTo(groundRow, QPoint(12, nameLabel->height() / 2)))
+                                        : QPointF();
+        QWidget *underRow = groundRow ? QApplication::widgetAt(groundRow->mapToGlobal(onRow.toPoint())) : nullptr;
+        const QString rowSaid = groundRow
+            ? QStringLiteral("row %1x%2 at %3,%4 of the window, right-clicked on '%5' (%6)")
+                  .arg(groundRow->width()).arg(groundRow->height())
+                  .arg(groundRow->mapTo(&r.window, QPoint(0, 0)).x()).arg(groundRow->mapTo(&r.window, QPoint(0, 0)).y())
+                  .arg(underRow ? underRow->objectName() : QStringLiteral("nothing"))
+                  .arg(underRow ? QString::fromLatin1(underRow->metaObject()->className()) : QString())
+            : QStringLiteral("no row");
+        const QStringList layerMenu = groundRow ? menuOn(groundRow, onRow) : QStringList();
+        const QString plusTip = r.timeline->newDrawingButtonForTest() ? r.timeline->newDrawingButtonForTest()->toolTip()
+                                                                      : QString();
+        // Duplicate Frame pressed in the lane's menu, then Del on the block it made (the row has the edit keys).
+        const int before = stack->index();
+        menuOn(r.surface, blockCentre(1), QStringLiteral("Duplicate Frame"));
+        const QString undoDuplicate = stack->index() == before + 1 ? stack->undoText() : QStringLiteral("(no step)");
+        const QString afterDuplicate = startsOf(pa, ground);
+        hover(r, r.animatic, true);
+        realTap(blockCentre(pa->layers.at(ground).shown));
+        keyClaimed(&r.window, Qt::Key_Delete);
+        const QString undoDelete = stack->index() == before + 2 ? stack->undoText() : QStringLiteral("(no step)");
+        hover(r, r.animatic, false);
+        // Both steps undone: the run is the three drawings again, each at its frames.
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        goTo(0, 4);
+        bool oldName = false;
+        for (const QString &t : lane + layerMenu)
+            oldName = oldName || t.contains(QLatin1String("Drawing"));
+        check(QStringLiteral("(fr1) THE ENTRIES' NAMES: the lane's menu says New Frame (N), Duplicate Frame and Delete Frame "
+                             "(Del); the Layers panel's layer menu has New Frame (N) and Duplicate Frame; the + says "
+                             "\"New Frame (N)\"; the undo steps are \"New Frame\", \"Duplicate Frame\" and \"Delete "
+                             "Frame\"; no entry says \"Drawing\""),
+              runOk && lane == QStringList({QStringLiteral("New Frame\tN"), QStringLiteral("Duplicate Frame"),
+                                            QStringLiteral("Delete Frame\tDel")})
+                  && layerMenu.contains(QStringLiteral("New Frame\tN")) && layerMenu.contains(QStringLiteral("Duplicate Frame"))
+                  && plusTip == QLatin1String("New Frame (N)") && undoNew == QLatin1String("New Frame")
+                  && undoDuplicate == QLatin1String("Duplicate Frame") && undoDelete == QLatin1String("Delete Frame")
+                  && !oldName && startsOf(pa, ground) == QLatin1String("0,2,4"),
+              QStringLiteral("the run made %1; the lane's menu [%2]; the layer menu has %3 entries, New Frame %4, "
+                             "Duplicate Frame %5 (%12); the + '%6'; steps '%7', '%8' (starts then %9), '%10'; starts now %11")
+                  .arg(runOk).arg(lane.join(QStringLiteral(" | ")).replace(QLatin1Char('\t'), QLatin1Char(' ')))
+                  .arg(layerMenu.size()).arg(layerMenu.contains(QStringLiteral("New Frame\tN")))
+                  .arg(layerMenu.contains(QStringLiteral("Duplicate Frame"))).arg(plusTip).arg(undoNew).arg(undoDuplicate)
+                  .arg(afterDuplicate).arg(undoDelete).arg(startsOf(pa, ground)).arg(rowSaid));
+    }
+
+    // (fr3) THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME (the user's answer 2).
+    {
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1); // the Gull: one drawing, so the panel before is its ghost
+        goTo(1, 0);
+        const bool wasOn = r.canvas->isOnionSkinEnabled();
+        if (!wasOn)
+            keyClaimed(&r.window, Qt::Key_O);
+        const QTransform view = r.canvas->viewTransformForTest();
+        // The most tinted pixel of the canvas's picture within 8 px of a stage point: white paper unless a ghost
+        // lies there.
+        auto tintAt = [&](const QImage &img, const QPointF &stage) {
+            const QPoint c = view.map(stage).toPoint();
+            int most = -1;
+            for (int dy = -8; dy <= 8; ++dy)
+                for (int dx = -8; dx <= 8; ++dx) {
+                    const QPoint p = c + QPoint(dx, dy);
+                    if (img.valid(p))
+                        most = qMax(most, spreadOf(QColor(img.pixel(p))));
+                }
+            return most;
+        };
+        const QPointF row3(240, 300), boatLast(500, 300), square(700, 380), row0(240, 180), boatFirst(300, 200);
+        auto reading = [&](const QImage &img) {
+            return QStringLiteral("row 3 %1, boat's last place %2, row 0 %3, the square %4, boat's first place %5")
+                .arg(tintAt(img, row3)).arg(tintAt(img, boatLast)).arg(tintAt(img, row0)).arg(tintAt(img, square))
+                .arg(tintAt(img, boatFirst));
+        };
+        const bool ghostOn = r.canvas->previousGhostShownForTest();
+        const QImage last = grabCanvas(r.canvas);
+        check(QStringLiteral("(fr3) THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME: on panel 2 with the onion skin on, the ghost "
+                             "has what panel 1 shows at its end - the stroke of the Ground's last drawing and the Boat "
+                             "where its keys leave it - and nothing of panel 1's first frame: not the Ground's first "
+                             "drawing, not the Boat's first place, not the drawing in between"),
+              ghostOn && tintAt(last, row3) >= 20 && tintAt(last, boatLast) >= 20 && tintAt(last, row0) < 8
+                  && tintAt(last, square) < 8 && tintAt(last, boatFirst) < 8,
+              QStringLiteral("the ghost shown %1; the most tinted pixel near: %2").arg(ghostOn).arg(reading(last)));
+        // A new length for panel 1 exposes another drawing at its end: three frames, so drawing 2.
+        r.animatic->setPanelFramesForTest(0, 0, 3);
+        pump(250);
+        const QImage shortened = grabCanvas(r.canvas);
+        const int framesShort = shotcam::panelFrames(*pa, 24);
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        pump(200);
+        const QImage restored = grabCanvas(r.canvas);
+        check(QStringLiteral("(fr3) ...AND FOLLOWS PANEL 1'S LENGTH: cut to three frames, panel 1 ends on the Ground's second "
+                             "drawing, and the ghost has that drawing's stroke and no longer the third's; Ctrl+Z puts "
+                             "the length and the ghost back"),
+              framesShort == 3 && tintAt(shortened, row0) >= 20 && tintAt(shortened, row3) < 8
+                  && shotcam::panelFrames(*pa, 24) == 24 && tintAt(restored, row3) >= 20 && tintAt(restored, row0) < 8,
+              QStringLiteral("panel 1 at %1 frames: %2; back at %3 frames: %4").arg(framesShort).arg(reading(shortened))
+                  .arg(shotcam::panelFrames(*pa, 24)).arg(reading(restored)));
+        // Control: the strip's picture of panel 1 is still its first frame, and with the onion skin off the canvas
+        // has no ghost at all.
+        const QImage first = pa->flattenedImage().convertToFormat(QImage::Format_ARGB32);
+        int squareInk = 0, row3Ink = 0;
+        for (int y = 0; y < first.height(); ++y)
+            for (int x = 0; x < first.width(); ++x) {
+                const bool ink = qGray(first.pixel(x, y)) < 200;
+                if (ink && QRect(680, 360, 40, 40).contains(x, y))
+                    ++squareInk;
+                if (ink && QRect(150, 255, 190, 90).contains(x, y))
+                    ++row3Ink;
+            }
+        keyClaimed(&r.window, Qt::Key_O);
+        const QImage off = grabCanvas(r.canvas);
+        check(QStringLiteral("(fr3) control: panel 1's own picture - the strip's, the SHOTS clip's - is still its first frame "
+                             "(the Ground's first drawing, no stroke); and with the onion skin off the canvas has no ghost "
+                             "at any of the five places"),
+              squareInk > 200 && row3Ink == 0 && !r.canvas->previousGhostShownForTest() && tintAt(off, row3) < 8
+                  && tintAt(off, boatLast) < 8 && tintAt(off, row0) < 8 && tintAt(off, square) < 8,
+              QStringLiteral("first frame: the square's pixels %1, row 3's %2; onion off: %3").arg(squareInk).arg(row3Ink)
+                  .arg(reading(off)));
+        if (wasOn)
+            keyClaimed(&r.window, Qt::Key_O);
+    }
+
+    // (fr2) CUT, COPY AND PASTE ACT ONCE PER PRESS (the user's answer 3).
+    {
+        int copies = 0, cuts = 0, pastes = 0, pastesHere = 0;
+        const QMetaObject::Connection c1 = QObject::connect(copyAct, &QAction::triggered, &r.window, [&copies] { ++copies; });
+        const QMetaObject::Connection c2 = QObject::connect(cutAct, &QAction::triggered, &r.window, [&cuts] { ++cuts; });
+        const QMetaObject::Connection c3 = QObject::connect(pasteAct, &QAction::triggered, &r.window, [&pastes] { ++pastes; });
+        const QMetaObject::Connection c4 =
+            QObject::connect(pasteHereAct, &QAction::triggered, &r.window, [&pastesHere] { ++pastesHere; });
+        int claimedRepeats = 0;
+        auto hold = [&](int key, Qt::KeyboardModifiers mods) {
+            sendKey(key, mods, false);
+            for (int i = 0; i < 6; ++i)
+                claimedRepeats += sendKey(key, mods, true) ? 1 : 0;
+        };
+        clickThumb(r, 0); // the panel, nothing selected on the canvas: Ctrl+C copies the panel
+        const int panels0 = int(scene->panels.size());
+        hold(Qt::Key_C, Qt::ControlModifier);
+        const bool canPaste = pasteAct->isEnabled() && pasteHereAct->isEnabled();
+        hold(Qt::Key_V, Qt::ControlModifier);
+        const int panelsPasted = int(scene->panels.size());
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        hold(Qt::Key_V, Qt::ControlModifier | Qt::ShiftModifier);
+        const int panelsPastedHere = int(scene->panels.size());
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        const int panelsBack = int(scene->panels.size());
+        // Cut where it changes nothing however often it runs: the LAYER row has the edit keys and no key is
+        // selected (a block of the lane was pressed), so each Cut is one amber note.
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        goTo(0, 0);
+        realTap(blockCentre(1));
+        hold(Qt::Key_X, Qt::ControlModifier);
+        const QString cutSaid = said();
+        QObject::disconnect(c1);
+        QObject::disconnect(c2);
+        QObject::disconnect(c3);
+        QObject::disconnect(c4);
+        check(QStringLiteral("(fr2) CUT, COPY AND PASTE ACT ONCE PER PRESS: Ctrl+C, Ctrl+V, Ctrl+Shift+V and Ctrl+X each pressed "
+                             "and held for six repeats - through Qt's shortcut path - run their action once: one copy, one "
+                             "panel pasted, one pasted in place, one cut; and every repeat is still taken by the "
+                             "action, so nothing behind it hears the held key"),
+              copies == 1 && canPaste && pastes == 1 && panelsPasted == panels0 + 1 && pastesHere == 1
+                  && panelsPastedHere == panels0 + 1 && panelsBack == panels0 && cuts == 1 && claimedRepeats == 24
+                  && scene->panels.size() == panels0,
+              QStringLiteral("copies %1; Paste enabled %2; pastes %3 (panels %4 -> %5); in place %6 (panels %7); after the "
+                             "undos %8 panels; cuts %9 (said '%10'); repeats taken %11 of 24")
+                  .arg(copies).arg(canPaste).arg(pastes).arg(panels0).arg(panelsPasted).arg(pastesHere).arg(panelsPastedHere)
+                  .arg(panelsBack).arg(cuts).arg(cutSaid).arg(claimedRepeats));
+        check(QStringLiteral("(fr2) control: Undo keeps its repeat - Ctrl+Z pressed and held for three repeats, sent the same "
+                             "way, ran four times"),
+              undos == 4, QStringLiteral("Undo ran %1 times").arg(undos));
+        pa = scene->panels.at(0);
+        pb = scene->panels.at(1);
+    }
+
+    // (fr5) EVERY ROW INSIDE ITS BOUNDS, AND A THUMBNAIL IN ITS PICTURE'S SHAPE (the user's note 5).
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground); // a run: the LAYER row with its drawings lane
+        r.timeline->setZoomForTest(1217);
+        goTo(0, 8);
+        auto rowOf = [&](const char *name) {
+            const QStringList p = r.timeline->rowsForTest().value(QLatin1String(name)).toString().split(QLatin1Char(','));
+            return p.size() == 2 ? QPair<int, int>(p.at(0).toInt(), p.at(1).toInt()) : QPair<int, int>(-1, -1);
+        };
+        auto canvasH = [&] { return r.timeline->rowsForTest().value(QStringLiteral("canvas")).toInt(); };
+        auto setTimeline = [&](int height) {
+            const int total = split->height() - split->handleWidth();
+            split->setSizes({total - height, height});
+            pump(250);
+        };
+        const QList<int> sizesBefore = split->sizes();
+        // The smallest the splitter gives the timeline: the rows' own least. (10 px asked - less than any
+        // least, and not the 0 a splitter reads as "collapsed".)
+        setTimeline(10);
+        const int minRun = r.timeline->rowsMinimumForTest(), surfaceMinRun = r.surface->minimumHeight();
+        const QPair<int, int> shots = rowOf("shots"), camera = rowOf("camera"), layer = rowOf("layer"), audio = rowOf("audio");
+        const int hSmall = canvasH();
+        const QRect lane = r.timeline->drawingsLaneForTest();
+        check(QStringLiteral("(fr5) EVERY ROW INSIDE THE TIMELINE AT ITS SMALLEST: with a drawings lane (the LAYER row 71 px, "
+                             "the lane 41) and the timeline dragged as short as it goes, the rows follow one another - "
+                             "SHOTS, CAMERA, LAYER, AUDIO - and the AUDIO row ends inside the painted surface; the "
+                             "surface's least height is the rows' (48 + 30 + 28 + 71 + 36)"),
+              shots.first == 48 && shots.second >= 30 && camera.first == shots.first + shots.second && camera.second == 28
+                  && layer.first == camera.first + 28 && layer.second == 71 && audio.first == layer.first + 71
+                  && audio.second == 36 && audio.first + audio.second <= hSmall && minRun == 213 && surfaceMinRun == 213
+                  && lane.height() == 41 && lane.top() >= layer.first && lane.bottom() < layer.first + layer.second,
+              QStringLiteral("shots %1+%2, camera %3+%4, layer %5+%6, audio %7+%8, the surface %9 high (least %10, the rows' "
+                             "%11); the lane %12 to %13")
+                  .arg(shots.first).arg(shots.second).arg(camera.first).arg(camera.second).arg(layer.first).arg(layer.second)
+                  .arg(audio.first).arg(audio.second).arg(hSmall).arg(surfaceMinRun).arg(minRun).arg(lane.top())
+                  .arg(lane.bottom()));
+        // The SHOTS clips at that height and zoom: where the thumbnails spilled over the CAMERA row.
+        auto clipsFit = [&](QStringList *said, int *thumbH) {
+            bool fit = true;
+            const QPair<int, int> row = rowOf("shots");
+            for (int i = 0; i < 2; ++i) {
+                const QVariantMap parts = r.timeline->clipPartsForTest(i);
+                const QRect body = rectOfText(parts.value(QStringLiteral("body")).toString());
+                const QRect thumb = rectOfText(parts.value(QStringLiteral("thumb")).toString());
+                const bool shown = parts.value(QStringLiteral("thumbShown")).toBool();
+                const bool inRow = body.top() >= row.first && body.bottom() < row.first + row.second;
+                // 960 x 540: its shape within a pixel either way.
+                const bool shape = !shown || qAbs(thumb.width() * 9 - thumb.height() * 16) <= 16;
+                const bool inside = !shown || body.contains(thumb);
+                fit = fit && inRow && shape && inside && shown;
+                if (said)
+                    *said << QStringLiteral("clip %1 body %2x%3 at y %4, thumbnail %5x%6 at (%7, %8)%9")
+                                 .arg(i + 1).arg(body.width()).arg(body.height()).arg(body.top()).arg(thumb.width())
+                                 .arg(thumb.height()).arg(thumb.left() - body.left()).arg(thumb.top() - body.top())
+                                 .arg(shown ? QString() : QStringLiteral(" (not shown)"));
+                if (thumbH && i == 0)
+                    *thumbH = thumb.height();
+            }
+            return fit;
+        };
+        QStringList saidSmall, saidDefault, saidTall, saidTallFit;
+        int thSmall = 0, thDefault = 0, thTall = 0, thTallFit = 0;
+        const bool fitSmall = clipsFit(&saidSmall, &thSmall);
+        // What the SHOTS row draws stays in the SHOTS row: the picture with its eye off differs from the picture
+        // with it on inside the row only.
+        QToolButton *eye = r.timeline->trackControlForTest(QStringLiteral("trackEyeShots"));
+        pointerAt(r.surface, QPointF(labelCol + 400, 10)); // the pointer on the ruler: no hover in the rows
+        const QImage on = shot();
+        if (eye)
+            eye->click();
+        pump(150);
+        const QImage offShots = shot();
+        if (eye)
+            eye->click();
+        pump(150);
+        int outside = 0, inside = 0;
+        if (on.size() == offShots.size())
+            for (int y = 0; y < on.height(); ++y)
+                for (int x = 0; x < on.width(); ++x)
+                    if (farthest(QColor(on.pixel(x, y)), QColor(offShots.pixel(x, y))) > 8) {
+                        if (y >= shots.first && y < shots.first + shots.second)
+                            ++inside;
+                        else
+                            ++outside;
+                    }
+        check(QStringLiteral("(fr5) THE SHOTS ROW'S CLIPS STAY IN THE SHOTS ROW: at that height, at 1217 %, each clip's body is "
+                             "inside the row and its thumbnail inside the body, in the picture's shape; and the timeline's "
+                             "picture with the SHOTS eye off differs from the one with it on inside the SHOTS row only"),
+              fitSmall && eye && outside == 0 && inside > 500,
+              QStringLiteral("%1; pixels that differ with the eye off: %2 inside the row, %3 outside it")
+                  .arg(saidSmall.join(QStringLiteral("; "))).arg(inside).arg(outside));
+        // The design's height, a tall row, and the tall row at 300 %: the thumbnail grows with the row and keeps
+        // its shape; at the design's 80 px track it is the design's 42 px high.
+        int asked = AnimaticPage::kHeaderHeight + 48 + 80 + 28 + 71 + 36;
+        setTimeline(asked);
+        asked -= rowOf("shots").second - 80; // what the section holds besides its rows, taken off
+        setTimeline(asked);
+        const int trackDefault = rowOf("shots").second;
+        const bool fitDefault = clipsFit(&saidDefault, &thDefault);
+        setTimeline(split->height()); // as tall as the canvas column lets it be
+        const int trackTall = rowOf("shots").second;
+        r.timeline->setZoomForTest(1600);
+        pump(150);
+        const bool fitTall = clipsFit(&saidTall, &thTall);
+        // The whole picture, not a strip of it: the Ground's square and the Boat (at its first frame's place) lie
+        // in the thumbnail where they lie in the frame.
+        pointerAt(r.surface, QPointF(labelCol + 400, 10));
+        const QImage tall = shot();
+        const QRect thumb0 = rectOfText(r.timeline->clipPartsForTest(0).value(QStringLiteral("thumb")).toString());
+        int groundPx = 0, boatPx = 0;
+        const QPointF groundAt = thumb0.isValid() ? centroidOf(tall.copy(thumb0), kGround, &groundPx) : QPointF(-1, -1);
+        const QPointF boatAt = thumb0.isValid() ? centroidOf(tall.copy(thumb0), kBoat, &boatPx) : QPointF(-1, -1);
+        const QPointF groundWant(700.0 * thumb0.width() / 960.0, 380.0 * thumb0.height() / 540.0);
+        const QPointF boatWant(300.0 * thumb0.width() / 960.0, 200.0 * thumb0.height() / 540.0);
+        r.timeline->setZoomForTest(300); // 72 px clips: the thumbnail as wide as the clip lets it be
+        pump(150);
+        const bool fitTallFit = clipsFit(&saidTallFit, &thTallFit);
+        check(QStringLiteral("(fr5) THE THUMBNAIL KEEPS ITS PICTURE'S SHAPE AT ANY HEIGHT AND ZOOM: at the design's 80 px track "
+                             "it is the design's 42 px high; in a tall track it has grown with the row - the body's "
+                             "height less the name's strip; at 1600 % and at 300 % alike it is 16 : 9 inside its clip "
+                             "(at 300 % as wide as the clip lets it be, and lower); and it is the whole picture - the "
+                             "Ground's square and the Boat lie in it where they lie in the frame"),
+              fitDefault && trackDefault == 80 && thDefault == 42 && fitTall && trackTall >= 150
+                  && thTall == trackTall - 4 - 34 && fitTallFit && thTallFit < thTall && thSmall < thDefault && groundPx > 20
+                  && boatPx > 8 && QLineF(groundAt, groundWant).length() <= 2.0 && QLineF(boatAt, boatWant).length() <= 2.0,
+              QStringLiteral("track %1: %2 || track %3 at 1600 %: %4 || at 300 %: %5 || the square at %6 (wanted %7, %8 px), "
+                             "the Boat at %9 (wanted %10, %11 px)")
+                  .arg(trackDefault).arg(saidDefault.join(QStringLiteral("; "))).arg(trackTall)
+                  .arg(saidTall.join(QStringLiteral("; "))).arg(saidTallFit.join(QStringLiteral("; "))).arg(pt(groundAt))
+                  .arg(pt(groundWant)).arg(groundPx).arg(pt(boatAt)).arg(pt(boatWant)).arg(boatPx));
+        // Control: without a lane the rows' least is the plain LAYER row's, and the room comes back.
+        setTimeline(10);
+        const int hRun = canvasH();
+        r.storyboard->layerRowClickedForTest(boat); // keys, no run: the LAYER row 28 px
+        pump(250);
+        const int minPlain = r.timeline->rowsMinimumForTest(), hPlain = canvasH();
+        const QPair<int, int> audioPlain = rowOf("audio");
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(250);
+        const int hRunAgain = canvasH();
+        const QPair<int, int> audioAgain = rowOf("audio");
+        check(QStringLiteral("(fr5) control: the same timeline with a layer that has keys and no drawings selected needs 188 px "
+                             "(48 + 48 + 28 + 28 + 36), not 213; selecting the layer with the lane again gives the lane its "
+                             "room again, the AUDIO row inside the surface both times"),
+              minPlain == 188 && hRun >= 213 && hPlain >= 188 && audioPlain.first + audioPlain.second <= hPlain
+                  && hRunAgain >= 213 && audioAgain.first + audioAgain.second <= hRunAgain,
+              QStringLiteral("with the lane %1 px; with keys only the rows need %2 and the surface is %3 (AUDIO ends at %4); "
+                             "with the lane again %5 (AUDIO ends at %6)")
+                  .arg(hRun).arg(minPlain).arg(hPlain).arg(audioPlain.first + audioPlain.second).arg(hRunAgain)
+                  .arg(audioAgain.first + audioAgain.second));
+        split->setSizes(sizesBefore);
+        pump(250);
+        r.timeline->setZoomForTest(1600);
+        pump(150);
+    }
+
+    // (fr6) A PRESS ON THE EASE MARK OPENS THE EASES, AND A MARK NEVER SITS ON A KEY (the user's note 6).
+    {
+        // The Ground gets a key at frame 6 - the middle of the Boat's move from frame 0 to frame 12.
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        goTo(0, 6);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QAbstractButton *diamond = nullptr;
+        for (QFrame *f : r.storyboard->findChildren<QFrame *>(QStringLiteral("layerRow")))
+            if (f->property("layerIndex").toInt() == ground && f->isVisible())
+                diamond = f->findChild<QAbstractButton *>(QStringLiteral("layerAnimate"));
+        const int beforeKey = stack->index();
+        if (diamond)
+            diamond->click();
+        pump(200);
+        const bool groundKey = pa->layers.at(ground).keys.size() == 1 && stack->index() == beforeKey + 1;
+        r.storyboard->layerRowClickedForTest(boat);
+        r.timeline->setZoomForTest(1600);
+        goTo(0, 2);
+        struct Marks
+        {
+            QRectF mark;
+            bool glyph = false, smallMark = false, lineOnly = false;
+            qreal x0 = 0, x1 = 0;
+            QVector<QPointF> keys; // x, half width as drawn
+            qreal otherX = -1;
+            bool found = false;
+        };
+        auto marks = [&] {
+            Marks m;
+            for (const QVariant &v : r.timeline->layerKeysForTest()) {
+                const QVariantMap k = v.toMap();
+                const bool own = k.value(QStringLiteral("own")).toBool();
+                if (k.value(QStringLiteral("flat")).toInt() != 0)
+                    continue;
+                m.keys.append(QPointF(k.value(QStringLiteral("x")).toDouble() + 0.5, own ? 5.0 : 3.0));
+                if (!own)
+                    m.otherX = k.value(QStringLiteral("x")).toDouble() + 0.5;
+            }
+            for (const QVariant &v : r.timeline->layerSegmentsForTest()) {
+                const QVariantMap s = v.toMap();
+                if (s.value(QStringLiteral("flat")).toInt() != 0)
+                    continue;
+                m.mark = s.value(QStringLiteral("markRect")).toRectF();
+                m.glyph = s.value(QStringLiteral("glyph")).toBool();
+                m.smallMark = s.value(QStringLiteral("small")).toBool();
+                m.lineOnly = s.value(QStringLiteral("lineOnly")).toBool();
+                m.x0 = s.value(QStringLiteral("x0")).toDouble();
+                m.x1 = s.value(QStringLiteral("x1")).toDouble();
+                m.found = true;
+            }
+            return m;
+        };
+        // A drawn mark's rect against every key's diamond.
+        auto onAKey = [](const Marks &m) {
+            if (!m.found || m.lineOnly)
+                return false;
+            for (const QPointF &k : m.keys)
+                if (m.mark.right() > k.x() - k.y() && m.mark.left() < k.x() + k.y())
+                    return true;
+            return false;
+        };
+        const Marks at1600 = marks();
+        const qreal mid = (at1600.x0 + at1600.x1) / 2.0;
+        // A press on the mark, through the window system.
+        const int layerBefore = pa->activeLayerIndex, playBefore = playhead();
+        realTap(at1600.mark.center());
+        QWidget *popover = r.window.findChild<QWidget *>(QStringLiteral("easePopover"));
+        const bool easesOpen = popover && popover->isVisible();
+        const int layerAfterMark = pa->activeLayerIndex, playAfterMark = playhead();
+        // (Closed from the check: marked first, or Qt replays a later pass's menu-closing click onto the canvas
+        // - the (ct) check, which this pass's first full run failed.)
+        if (popover) {
+            popover->setAttribute(Qt::WA_NoMouseReplay);
+            popover->close();
+        }
+        pump(150);
+        // A press on the other layer's key, beside the mark: it takes the playhead and its layer, as ever.
+        const qreal rowY = r.timeline->layerRowForTest().top() + 14.0;
+        realTap(QPointF(at1600.otherX, rowY));
+        QWidget *popoverAfterKey = r.window.findChild<QWidget *>(QStringLiteral("easePopover"));
+        const bool easesAfterKey = popoverAfterKey && popoverAfterKey->isVisible();
+        const int layerAfterKey = pa->activeLayerIndex, playAfterKey = playhead();
+        check(QStringLiteral("(fr6) A PRESS ON THE EASE MARK OPENS THE EASES AND TAKES NO KEY: with the Ground's key in the "
+                             "middle of the Boat's move, the Boat's mark is the pill, beside that key and clear of it; a "
+                             "press on the mark opens the five eases and leaves the layer and the playhead alone; a press "
+                             "on the Ground's key still takes the playhead and that layer"),
+              groundKey && at1600.found && at1600.glyph && at1600.otherX > 0 && qAbs(at1600.otherX - mid) < 1.0
+                  && !onAKey(at1600) && qAbs(at1600.mark.center().x() - mid) < 20.0 && easesOpen
+                  && layerAfterMark == boat && layerBefore == boat && playAfterMark == playBefore && !easesAfterKey
+                  && layerAfterKey == ground && playAfterKey == 6,
+              QStringLiteral("the Ground's key made %1, at x %2 (the move's middle %3); the mark %4 to %5 (pill %6); the "
+                             "eases open %7, layer %8, playhead %9 -> %10; after the press on the key: eases open %11, "
+                             "layer %12, playhead %13")
+                  .arg(groundKey).arg(at1600.otherX).arg(mid).arg(at1600.mark.left()).arg(at1600.mark.right())
+                  .arg(at1600.glyph).arg(easesOpen).arg(layerAfterMark).arg(playBefore).arg(playAfterMark)
+                  .arg(easesAfterKey).arg(layerAfterKey).arg(playAfterKey));
+        // At every zoom: a drawn mark is clear of every key; where the pill has no clear place it is the small
+        // mark, and where that has none the line alone.
+        r.storyboard->layerRowClickedForTest(boat);
+        pump(150);
+        QStringList byZoom;
+        int pills = 0, smalls = 0, lines = 0, onKeys = 0, moved = 0;
+        for (const int zoom : {200, 283, 400, 566, 800, 1131, 1600}) {
+            r.timeline->setZoomForTest(float(zoom));
+            pump(80);
+            const Marks m = marks();
+            if (!m.found) {
+                byZoom << QStringLiteral("%1 %: no move drawn").arg(zoom);
+                continue;
+            }
+            pills += m.glyph ? 1 : 0;
+            smalls += m.smallMark ? 1 : 0;
+            lines += m.lineOnly ? 1 : 0;
+            onKeys += onAKey(m) ? 1 : 0;
+            const qreal middle = (m.x0 + m.x1) / 2.0;
+            if (!m.lineOnly && qAbs(m.mark.center().x() - middle) > 1.0)
+                ++moved;
+            byZoom << QStringLiteral("%1 %: %2 px, %3%4").arg(zoom).arg(m.x1 - m.x0, 0, 'f', 0)
+                          .arg(m.glyph ? QStringLiteral("pill") : m.smallMark ? QStringLiteral("small mark")
+                                                                              : QStringLiteral("line"))
+                          .arg(m.lineOnly ? QString()
+                                          : QStringLiteral(" %1 px from the middle").arg(m.mark.center().x() - middle, 0, 'f', 1));
+        }
+        check(QStringLiteral("(fr6) A MARK NEVER SITS ON A KEY, AT ANY ZOOM: from 200 % to 1600 % the Boat's mark is clear of "
+                             "every key on the row - the pill where it has a clear place, the small mark where only that "
+                             "has, the line alone where neither has"),
+              onKeys == 0 && pills >= 1 && smalls >= 1 && lines >= 1 && moved >= 2,
+              QStringLiteral("%1; on a key %2 times").arg(byZoom.join(QStringLiteral("; "))).arg(onKeys));
+        // Control: without the Ground's key the mark is where it always was - the middle of the move.
+        r.timeline->setZoomForTest(1600);
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(150);
+        const int beforeUndo = stack->index();
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        const bool keyGone = stack->index() == beforeUndo - 1 && pa->layers.at(ground).keys.isEmpty();
+        r.storyboard->layerRowClickedForTest(boat);
+        pump(150);
+        const Marks plain = marks();
+        check(QStringLiteral("(fr6) control: with the Ground's key undone the Boat's mark is the pill at the middle of its "
+                             "move, as before"),
+              keyGone && plain.found && plain.glyph && qAbs(plain.mark.center().x() - (plain.x0 + plain.x1) / 2.0) < 0.6
+                  && plain.otherX < 0,
+              QStringLiteral("the key undone %1; the mark's centre %2, the move's middle %3")
+                  .arg(keyGone).arg(plain.mark.center().x()).arg((plain.x0 + plain.x1) / 2.0));
+
+        // THE CAMERA ROW, the same rule. Two camera keys two frames apart at 1450 %: 29 px from key to key, the
+        // move between them 17 px - the small mark, whose edge is inside the first key's 8 px reach. A press there
+        // used to take the key.
+        shotcam::SceneCamera camera;
+        camera.keys << shotcam::makeKey(*scene, 0, 2, 24, shotcam::CameraState{480, 270, 1.2, 0}, shotcam::Ease::Linear)
+                    << shotcam::makeKey(*scene, 0, 4, 24, shotcam::CameraState{500, 280, 1.4, 0}, shotcam::Ease::Linear);
+        r.storyboard->applyCameraForUndo(scene, camera);
+        r.timeline->setZoomForTest(1450);
+        r.timeline->userScrollForTest(0);
+        pump(200);
+        QRectF camMark;
+        bool camSmall = false;
+        for (const QVariant &v : r.timeline->cameraSegmentsForTest())
+            if (v.toMap().value(QStringLiteral("from")).toInt() == 0) {
+                camMark = v.toMap().value(QStringLiteral("markRect")).toRectF();
+                camSmall = v.toMap().value(QStringLiteral("small")).toBool();
+            }
+        int key0X = -1, key1X = -1;
+        for (const QVariant &v : r.timeline->cameraKeysForTest()) {
+            if (v.toMap().value(QStringLiteral("key")).toInt() == 0)
+                key0X = v.toMap().value(QStringLiteral("x")).toInt();
+            if (v.toMap().value(QStringLiteral("key")).toInt() == 1)
+                key1X = v.toMap().value(QStringLiteral("x")).toInt();
+        }
+        // The mark's first column - the pixel its 1 px edge of grace takes in: on the mark, and inside the key's
+        // reach.
+        const int pressX = int(std::ceil(camMark.left() - 1.0));
+        const int camY = r.timeline->cameraRowForTest().y() + 14;
+        int selScene = -1, selKey = -1;
+        const bool selBefore = r.timeline->selectedCameraKey(&selScene, &selKey);
+        realTap(QPointF(pressX, camY));
+        QWidget *camPopover = r.storyboard->easePopoverForTest();
+        const bool camEases = camPopover && camPopover->isVisible();
+        const bool selAfterMark = r.timeline->selectedCameraKey(&selScene, &selKey);
+        if (camPopover) {
+            camPopover->setAttribute(Qt::WA_NoMouseReplay);
+            camPopover->close();
+        }
+        pump(150);
+        realTap(QPointF(key0X, camY)); // the key itself, outside the mark
+        int keyScene = -1, keyIndex = -1;
+        const bool selAfterKey = r.timeline->selectedCameraKey(&keyScene, &keyIndex);
+        check(QStringLiteral("(fr6) THE CAMERA ROW, THE SAME: two camera keys 29 px apart have the small mark between them, its "
+                             "first column inside the first key's 8 px reach; a press on that column opens the eases and "
+                             "selects no key; a press on the key itself selects it"),
+              camSmall && key0X > 0 && key1X - key0X == 29 && pressX - key0X <= 8
+                  && camMark.adjusted(-1, -2, 1, 2).contains(QPointF(pressX, camY))
+                  && !selBefore && camEases && !selAfterMark && selAfterKey && keyIndex == 0,
+              QStringLiteral("keys at x %1 and %2; the mark %3 to %4 (small %5); pressed at x %6, %7 px from the first key; "
+                             "the eases open %8, a key selected %9; after the press on the key: selected %10 (key %11)")
+                  .arg(key0X).arg(key1X).arg(camMark.left()).arg(camMark.right()).arg(camSmall).arg(pressX)
+                  .arg(pressX - key0X).arg(camEases).arg(selAfterMark).arg(selAfterKey).arg(keyIndex + 1));
+        r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+        r.timeline->setZoomForTest(1600);
+        pump(150);
+    }
+
+    // (fr7) THE FRAMES LANE AT THE USER'S SIZE (their Figma "Proposal drawing size", 737:872).
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(ground);
+    r.timeline->setZoomForTest(1600);
+    goTo(0, 4); // on drawing 3: block 2 (frames 2-3) is a plain block, drawn on
+    {
+        const QRect lane = r.timeline->drawingsLaneForTest();
+        const QRect row = r.timeline->layerRowForTest();
+        bool trueToTime = true;
+        QStringList widths;
+        for (const QVariant &v : r.timeline->drawingBlocksForTest()) {
+            const QVariantMap b = v.toMap();
+            trueToTime = trueToTime
+                && qRound(b.value(QStringLiteral("x0")).toDouble()) == r.timeline->frameScreenXForTest(b.value(QStringLiteral("start")).toInt())
+                && qRound(b.value(QStringLiteral("x1")).toDouble()) == r.timeline->frameScreenXForTest(b.value(QStringLiteral("end")).toInt());
+            widths << QString::number(b.value(QStringLiteral("x1")).toDouble() - b.value(QStringLiteral("x0")).toDouble());
+        }
+        pointerAt(r.surface, QPointF(labelCol + 600, 10)); // off the lane: no hover
+        const QImage img = shot();
+        const QVariantMap b1 = blockOf(1);
+        const int x0 = qRound(b1.value(QStringLiteral("x0")).toDouble());
+        const int xc = x0 + 22, mid = lane.center().y();
+        auto px = [&](int x, int y) { return QColor(img.pixel(x, y)); };
+        // The bands: three rows at the top and three at the bottom, one colour, and the block's own under them.
+        const bool bandTop = farthest(px(xc, lane.top()), px(xc, lane.top() + 2)) <= 2
+            && farthest(px(xc, lane.top() + 2), px(xc, lane.top() + 3)) > 8
+            && farthest(px(xc, lane.top() + 3), px(xc, mid)) <= 2;
+        const bool bandBottom = farthest(px(xc, lane.bottom()), px(xc, lane.bottom() - 2)) <= 2
+            && farthest(px(xc, lane.bottom() - 2), px(xc, lane.bottom() - 3)) > 8
+            && farthest(px(xc, lane.bottom() - 3), px(xc, mid)) <= 2;
+        // The cut: one column, the lane's height between the bands.
+        const bool cut = farthest(px(x0, mid), px(x0 + 1, mid)) > 8 && farthest(px(x0 + 1, mid), px(x0 + 2, mid)) <= 2
+            && farthest(px(x0, lane.top() + 4), px(x0, mid)) <= 2 && farthest(px(x0, lane.bottom() - 4), px(x0, mid)) <= 2;
+        // The number: light pixels at the block's left, centred on the lane's height.
+        qint64 lightY = 0;
+        int light = 0;
+        for (int y = lane.top() + 4; y <= lane.bottom() - 4; ++y)
+            for (int x = x0 + 3; x < x0 + 16; ++x)
+                if (qGray(px(x, y).rgb()) > 150) {
+                    lightY += y;
+                    ++light;
+                }
+        const double numberY = light ? double(lightY) / light : -1;
+        check(QStringLiteral("(fr7) THE FRAMES LANE AT THE USER'S SIZE: the lane is 41 px high in a 71 px LAYER row; each block "
+                             "starts and ends on its frames' places on the ruler (widths true to time: 32 px for two "
+                             "frames at 1600 %); in the picture the band along the top and the one along the bottom are "
+                             "3 px, the cut is one column the lane's height, and the number sits in the middle of the "
+                             "lane's height"),
+              lane.height() == 41 && row.height() == 71 && trueToTime && widths.value(1) == QLatin1String("32") && bandTop
+                  && bandBottom && cut && light >= 6 && qAbs(numberY - lane.center().y()) <= 3.0,
+              QStringLiteral("lane %1 px, row %2 px; true to time %3, widths %4; top band %5, bottom band %6, cut %7; the "
+                             "number's %8 light pixels centred at y %9 (the lane's middle %10)")
+                  .arg(lane.height()).arg(row.height()).arg(trueToTime).arg(widths.join(QLatin1Char(','))).arg(bandTop)
+                  .arg(bandBottom).arg(cut).arg(light).arg(numberY, 0, 'f', 1).arg(lane.center().y()));
+    }
+
+    // (fr10) A NEW, EMPTY FRAME IS GREY UNTIL IT IS DRAWN ON.
+    {
+        pointerAt(r.surface, QPointF(labelCol + 600, 10));
+        const int before = stack->index();
+        const bool made = pressN(); // drawing 4, at frame 6: nothing on it
+        const QVariantMap fresh = blockOf(3), drawn = blockOf(1);
+        const QString own = drawn.value(QStringLiteral("tint")).toString();
+        const QRect lane = r.timeline->drawingsLaneForTest();
+        auto blockColour = [&](const QImage &img, int index) {
+            const QVariantMap b = blockOf(index);
+            return QColor(img.pixel(qRound(b.value(QStringLiteral("x0")).toDouble()) + 24, lane.top() + 8));
+        };
+        const QImage emptyShot = shot();
+        const QColor emptyColour = blockColour(emptyShot, 3), drawnColour = blockColour(emptyShot, 1);
+        // Something drawn on it: the app's own repaint, once the stroke's thumbnail refresh has run.
+        LanePaints counter;
+        r.surface->installEventFilter(&counter);
+        drawRow(1);
+        QElapsedTimer guard;
+        guard.start();
+        while (r.storyboard->thumbRefreshPendingForTest() && guard.elapsed() < 15000)
+            pump(20);
+        pump(60);
+        const int paints = counter.paints;
+        r.surface->removeEventFilter(&counter);
+        const QVariantMap after = blockOf(3);
+        const QImage drawnShot = shot();
+        const QColor afterColour = blockColour(drawnShot, 3);
+        check(QStringLiteral("(fr10) A NEW, EMPTY FRAME IS GREY UNTIL IT IS DRAWN ON: N makes a block that is grey - in what the "
+                             "lane says and in its picture, beside a drawn block in the layer's colour; a stroke on it and "
+                             "it has the layer's colour, the lane repainted by the app itself"),
+              made && stack->index() == before + 2 && fresh.value(QStringLiteral("blank")).toBool()
+                  && fresh.value(QStringLiteral("tint")).toString() == QLatin1String("#8a8c99")
+                  && !drawn.value(QStringLiteral("blank")).toBool() && own != QLatin1String("#8a8c99")
+                  && spreadOf(emptyColour) + 10 <= spreadOf(drawnColour) && !after.value(QStringLiteral("blank")).toBool()
+                  && after.value(QStringLiteral("tint")).toString() == own && paints >= 1
+                  && spreadOf(afterColour) >= spreadOf(emptyColour) + 10,
+              QStringLiteral("made %1; the new block blank %2, tint %3, its pixel %4 (a drawn block's %5, tint %6); after the "
+                             "stroke: blank %7, tint %8, its pixel %9; the lane painted %10 times meanwhile")
+                  .arg(made).arg(fresh.value(QStringLiteral("blank")).toBool()).arg(fresh.value(QStringLiteral("tint")).toString())
+                  .arg(emptyColour.name()).arg(drawnColour.name()).arg(own).arg(after.value(QStringLiteral("blank")).toBool())
+                  .arg(after.value(QStringLiteral("tint")).toString()).arg(afterColour.name()).arg(paints));
+        // Control: the stroke undone, the frame is empty again - and grey again.
+        keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
+        pump(200);
+        const QVariantMap undone = blockOf(3);
+        check(QStringLiteral("(fr10) control: the stroke undone, the block is grey again; the blocks drawn on keep the layer's "
+                             "colour"),
+              stack->index() == before + 1 && undone.value(QStringLiteral("blank")).toBool()
+                  && undone.value(QStringLiteral("tint")).toString() == QLatin1String("#8a8c99")
+                  && blockOf(1).value(QStringLiteral("tint")).toString() == own
+                  && blockOf(2).value(QStringLiteral("tint")).toString() == own,
+              QStringLiteral("blank %1, tint %2; blocks 2 and 3: %3, %4")
+                  .arg(undone.value(QStringLiteral("blank")).toBool()).arg(undone.value(QStringLiteral("tint")).toString())
+                  .arg(blockOf(1).value(QStringLiteral("tint")).toString())
+                  .arg(blockOf(2).value(QStringLiteral("tint")).toString()));
+    }
+
+    // (fr11) THE BLOCK UNDER THE POINTER IS A LITTLE LIGHTER.
+    {
+        goTo(0, 6); // the playhead on drawing 4: blocks 2 and 3 are plain blocks
+        const QRect lane = r.timeline->drawingsLaneForTest();
+        pointerAt(r.surface, QPointF(labelCol + 600, 10));
+        const QImage away = shot();
+        pointerAt(r.surface, blockCentre(1));
+        QStringList hovered;
+        for (const QVariant &v : r.timeline->drawingBlocksForTest())
+            if (v.toMap().value(QStringLiteral("hovered")).toBool())
+                hovered << QString::number(v.toMap().value(QStringLiteral("index")).toInt() + 1);
+        const QImage over = shot();
+        pointerAt(r.surface, QPointF(labelCol + 600, 10));
+        QStringList hoveredAfter;
+        for (const QVariant &v : r.timeline->drawingBlocksForTest())
+            if (v.toMap().value(QStringLiteral("hovered")).toBool())
+                hoveredAfter << QString::number(v.toMap().value(QStringLiteral("index")).toInt() + 1);
+        const QImage awayAgain = shot();
+        auto at = [&](const QImage &img, int index) {
+            const QVariantMap b = blockOf(index);
+            return QColor(img.pixel(qRound(b.value(QStringLiteral("x0")).toDouble()) + 24, lane.top() + 8));
+        };
+        const QColor b2Away = at(away, 1), b2Over = at(over, 1), b3Away = at(away, 2), b3Over = at(over, 2);
+        const int lift = qMin(b2Over.red() - b2Away.red(), qMin(b2Over.green() - b2Away.green(), b2Over.blue() - b2Away.blue()));
+        check(QStringLiteral("(fr11) THE BLOCK UNDER THE POINTER IS A LITTLE LIGHTER: with the pointer over block 2 - moved there "
+                             "through the window system - that block alone is the hovered one, lighter in the picture on "
+                             "every channel and by little; the block beside it is unchanged; off the lane, none is "
+                             "hovered and the picture is as it was"),
+              hovered == QStringList({QStringLiteral("2")}) && lift >= 4 && lift <= 40 && farthest(b3Away, b3Over) <= 1
+                  && hoveredAfter.isEmpty() && farthest(at(awayAgain, 1), b2Away) <= 1,
+              QStringLiteral("hovered [%1]; block 2's pixel %2 -> %3 (each channel up by at least %4); block 3's %5 -> %6; "
+                             "off the lane hovered [%7], block 2's pixel %8")
+                  .arg(hovered.join(QLatin1Char(','))).arg(b2Away.name()).arg(b2Over.name()).arg(lift).arg(b3Away.name())
+                  .arg(b3Over.name()).arg(hoveredAfter.join(QLatin1Char(','))).arg(at(awayAgain, 1).name()));
+    }
+
+    // (fr8) ZOOM TO FRAMES: the small button beside the +, and a double-click on the lane.
+    {
+        // On panel 2, made 600 frames long so the film is wider than the view: the Gull gets drawings at frames
+        // 0, 4, 8 and 300 - the shortest four frames long.
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1);
+        r.animatic->setPanelFramesForTest(0, 1, 600);
+        pump(250);
+        for (const int frame : {4, 8, 300}) {
+            goTo(1, frame);
+            pressN();
+        }
+        const QString starts = startsOf(pb, 1);
+        auto narrowest = [&] {
+            double w = 1e9;
+            for (const QVariant &v : r.timeline->drawingBlocksForTest())
+                w = qMin(w, v.toMap().value(QStringLiteral("x1")).toDouble() - v.toMap().value(QStringLiteral("x0")).toDouble());
+            return w;
+        };
+        auto centred = [&] {
+            return r.timeline->playheadScreenXForTest() - (labelCol + r.timeline->visibleWidthForTest() / 2);
+        };
+        QAbstractButton *zoomBtn = r.timeline->zoomToFramesButtonForTest();
+        QAbstractButton *plus = r.timeline->newDrawingButtonForTest();
+        const bool beside = zoomBtn && plus && zoomBtn->isVisible() && plus->isVisible() && zoomBtn->y() == plus->y()
+            && zoomBtn->x() >= plus->x() + plus->width() && zoomBtn->x() <= plus->x() + plus->width() + 6;
+        r.timeline->fitZoomToView();
+        pump(150);
+        const double fit = r.timeline->zoomForTest(), narrowFit = narrowest();
+        if (zoomBtn)
+            realTapOn(zoomBtn, QPointF(zoomBtn->width() / 2.0, zoomBtn->height() / 2.0));
+        const double zoomA = r.timeline->zoomForTest(), narrowA = narrowest();
+        const int offA = centred(), scrollA = r.timeline->scrollXForTest();
+        check(QStringLiteral("(fr8) ZOOM TO FRAMES, THE BUTTON: beside the lane's +; pressed - through the window system - with "
+                             "the film at Fit, the timeline zooms so the shortest drawing of the lane (four frames) is 32 px "
+                             "wide - 800 % - and the playhead is in the middle of the view"),
+              starts == QLatin1String("0,4,8,300") && beside && narrowFit < 32.0 && qAbs(zoomA - 800.0) < 0.5
+                  && narrowA >= 32.0 - 0.01 && qAbs(offA) <= 1 && scrollA > 0 && playhead() == 300,
+              QStringLiteral("starts %1; the button beside the + %2; at Fit (%3 %) the narrowest block %4 px; after the press "
+                             "%5 %, the narrowest %6 px, the playhead %7 px from the view's middle (scrolled %8)")
+                  .arg(starts).arg(beside).arg(fit, 0, 'f', 1).arg(narrowFit, 0, 'f', 1).arg(zoomA, 0, 'f', 1)
+                  .arg(narrowA, 0, 'f', 1).arg(offA).arg(scrollA));
+        // Already closer: the zoom stays, the view goes to the playhead.
+        r.timeline->setZoomForTest(1600);
+        r.timeline->userScrollForTest(0);
+        pump(150);
+        const int offBefore = centred();
+        if (zoomBtn)
+            realTapOn(zoomBtn, QPointF(zoomBtn->width() / 2.0, zoomBtn->height() / 2.0));
+        const double zoomB = r.timeline->zoomForTest();
+        const int offB = centred();
+        // A fifth drawing two frames after the fourth: the shortest is two frames now. Then Fit, the playhead
+        // elsewhere, and a double-click on the fifth block (frame 302 to the panel's end): the first click takes
+        // the playhead to its first frame, the second zooms.
+        goTo(1, 302);
+        pressN();
+        const QString starts5 = startsOf(pb, 1);
+        goTo(1, 8);
+        r.timeline->fitZoomToView();
+        pump(150);
+        const double fitAgain = r.timeline->zoomForTest();
+        const int scrollFit = r.timeline->scrollXForTest();
+        const int stepsBefore = stack->index();
+        realDoubleClick(blockCentre(4));
+        const double zoomC = r.timeline->zoomForTest(), narrowC = narrowest();
+        const int offC = centred(), playC = playhead();
+        r.timeline->fitZoomToView();
+        pump(150);
+        check(QStringLiteral("(fr8) ...AND THE DOUBLE-CLICK: already at 1600 % the button leaves the zoom and brings the playhead "
+                             "to the middle; with a two-frame drawing in the lane, a double-click on a block at Fit - two "
+                             "presses through the window system - puts the playhead on that block's first frame and zooms "
+                             "to 1600 % (16 px a frame, 32 px a drawing), centred there, with no undo step; Fit goes back to "
+                             "the whole film"),
+              qAbs(zoomB - 1600.0) < 0.5 && qAbs(offBefore) > 100 && qAbs(offB) <= 1
+                  && starts5 == QLatin1String("0,4,8,300,302") && qAbs(fitAgain - fit) < 0.01 && scrollFit == 0
+                  && qAbs(zoomC - 1600.0) < 0.5 && narrowC >= 32.0 - 0.01 && playC == 302 && qAbs(offC) <= 1
+                  && stack->index() == stepsBefore && qAbs(r.timeline->zoomForTest() - fit) < 0.01
+                  && r.timeline->scrollXForTest() == 0,
+              QStringLiteral("at 1600 %: the playhead %1 px off the middle before, %2 after, zoom %3 %; starts %4; Fit %5 % "
+                             "(scroll %6); after the double-click %7 %, narrowest %8 px, playhead on frame %9, %10 px off "
+                             "the middle, steps %11; Fit again %12 % (scroll %13)")
+                  .arg(offBefore).arg(offB).arg(zoomB, 0, 'f', 1).arg(starts5).arg(fitAgain, 0, 'f', 2).arg(scrollFit)
+                  .arg(zoomC, 0, 'f', 1).arg(narrowC, 0, 'f', 1).arg(playC).arg(offC).arg(stack->index() - stepsBefore)
+                  .arg(r.timeline->zoomForTest(), 0, 'f', 2).arg(r.timeline->scrollXForTest()));
+        // Control: on a layer with no drawings lane there is no button, and a double-click where the lane would be
+        // changes no zoom.
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(boat);
+        pump(200);
+        const bool hiddenNoLane = zoomBtn && !zoomBtn->isVisible();
+        const double zoomBeforeDbl = r.timeline->zoomForTest();
+        realDoubleClick(QPointF(labelCol + 300, r.timeline->layerRowForTest().center().y()));
+        check(QStringLiteral("(fr8) control: with a layer that has no drawings lane selected the button is not there, and a "
+                             "double-click on the LAYER row changes no zoom"),
+              hiddenNoLane && qAbs(r.timeline->zoomForTest() - zoomBeforeDbl) < 0.01,
+              QStringLiteral("the button hidden %1; zoom %2 % -> %3 %").arg(hiddenNoLane).arg(zoomBeforeDbl, 0, 'f', 2)
+                  .arg(r.timeline->zoomForTest(), 0, 'f', 2));
     }
     r.window.markCleanForTest();
 }
@@ -39717,13 +41997,14 @@ void runSafeSavePass(const QString &scratch)
         const Page first = viaPreferences(2);
         const bool afterDelete = window.keepPreviousVersionForTest();
         const bool nothingAtTheClick = stateOf(f.work) == diskBefore && QFileInfo::exists(previousFile);
-        check(QStringLiteral("(ss11) PREFERENCES > SAVING: the last page, \"Saving\", after Camera, Keyframes, Playback "
-                             "and Recovery - \"After each save\", \"Keep the previous saved version\" (chosen, the "
+        // (Changed with batch I-2, 2026-11-26: "Onion Skin" joined the list after Keyframes. Nothing else moved.)
+        check(QStringLiteral("(ss11) PREFERENCES > SAVING: the last page, \"Saving\", after Camera, Keyframes, Onion Skin, "
+                             "Playback and Recovery - \"After each save\", \"Keep the previous saved version\" (chosen, the "
                              "default) with its note, \"Delete the previous pictures right away\" with its note; "
                              "choosing the second sets the preference and changes nothing on disk at the click"),
               first.categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"),
-                                               QStringLiteral("Playback"), QStringLiteral("Recovery"),
-                                               QStringLiteral("Saving")})
+                                               QStringLiteral("Onion Skin"), QStringLiteral("Playback"),
+                                               QStringLiteral("Recovery"), QStringLiteral("Saving")})
                   && first.found && first.keepChecked && !first.deleteChecked
                   && first.notes.contains(QStringLiteral("After each save"))
                   && first.notes.contains(QStringLiteral("Keep the previous saved version"))
@@ -41063,6 +43344,22 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i2")) {
+        runI2Pass(scratch); // batch I-2: frame-by-frame drawings in a layer (2026-11-26)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i2b")) {
+        runI2bPass(scratch); // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i1b2")) {
         runI1b2Pass(scratch); // batch I-1b round 2 (2026-11-25)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -41368,6 +43665,8 @@ int main(int argc, char **argv)
     runLayerMotionPass(scratch);  // batch I-1, layer motion (2026-11-24)
     runI1bPass(scratch);          // batch I-1b round 1: notes, scrub, Move bar, diamond, panning (2026-11-25)
     runI1b2Pass(scratch);         // batch I-1b round 2: layer keys' copy/cut/paste/Delete, key colours, Esc, Soft (2026-11-25)
+    runI2Pass(scratch);           // batch I-2: frame-by-frame drawings in a layer (2026-11-26)
+    runI2bPass(scratch);          // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

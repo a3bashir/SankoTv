@@ -105,6 +105,8 @@ public:
     // Preferences > Keyframes (batch I-1b round 2): the keys' colours read from the settings again,
     // as a launch reads them.
     void loadKeyColorsForTest() { loadKeyColors(); }
+    // Preferences > Onion Skin (batch I-2): the same for the onion skin's settings.
+    void loadOnionSkinForTest() { loadOnionSkin(); }
     void setKeepPreviousVersionForTest(bool keep) { setKeepPreviousVersion(keep); }
     QAction *restorePreviousActionForTest() const { return m_restorePreviousAct; }
     bool restorePreviousVersionForTest() { return restorePreviousVersion(); }
@@ -713,6 +715,9 @@ private:
     void refreshPasteAction();
     // Preferences > Keyframes (batch I-1b round 2): the keys' colours from the settings, at start.
     void loadKeyColors();
+    // Preferences > Onion Skin (batch I-2): how many drawings before and after, their colours
+    // and opacities, from the settings, at start.
+    void loadOnionSkin();
     QAction *m_flipHAct = nullptr; // batch D: Edit > Flip Horizontal / Vertical (the Move box)
     QAction *m_flipVAct = nullptr;
     // Edit-menu audio actions (the workspace page, with a project open).

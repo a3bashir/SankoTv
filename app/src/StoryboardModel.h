@@ -15,6 +15,7 @@
 #include <QUuid>
 #include <QVector>
 
+#include <cmath>   // std::floor
 #include <cstring> // memcpy in Panel::flattenFingerprint
 
 // One AI-generated "take" of a panel: a single Seedance render attempt. A panel
@@ -29,13 +30,13 @@ struct GeneratedTake
     double costEstimate = 0.0;  // e.g. 0.05
 };
 
-// One drawing layer inside a panel. QImage (not QPixmap) so strokes and
-// compositing work at pixel level off the GPU.
-struct Layer
+// THE PIXELS OF ONE DRAWING (batch I-2, 2026-11-26; Figma I-2 727:757, approved): what a
+// Layer held as its own before a layer could hold a run of drawings. A Layer IS the pixels of
+// the drawing it shows (Layer::shown) - it inherits these - so everything that reads or draws
+// on `layer.image` works on that drawing, as it always has; the run's other drawings keep
+// theirs in Layer::drawings.
+struct LayerPixels
 {
-    QString id;             // UUID
-    QString name;           // "Layer 1", "Reference", ...
-    QString type;           // "raster" (drawn) or "image" (imported)
     // THE PIXELS (batch 6b-V, 2026-11-07). `image` is the full image, stage-sized,
     // ARGB32_Premultiplied: only the panel on the canvas is sure to have it, so
     // that every tool works as it always has. Any other panel's layer is at rest:
@@ -48,6 +49,91 @@ struct Layer
     layertiles::TilesPtr tiles;
     QRect stageRect;        // frame space: where the stage lies, for `tiles`
     qint64 tilesOf = 0;
+
+    bool atRest() const { return image.isNull() && tiles; }
+    bool hasPixels() const { return !image.isNull() || tiles; }
+    QSize pixelSize() const { return !image.isNull() ? image.size() : tiles ? stageRect.size() : QSize(); }
+    // The tiles still say what the image says.
+    bool tilesCurrent() const { return tiles && !image.isNull() && image.cacheKey() == tilesOf; }
+    // THE IDENTITY OF THE PIXELS, what cacheKey() was before there were tiles: it
+    // moves on with every edit and stays put through a fold and an unfold, so a
+    // thumbnail, a mip and the save's ledger see the same pixels as the same.
+    qint64 contentKey() const
+    {
+        if (image.isNull())
+            return tiles ? tiles->key : 0;
+        return tilesCurrent() ? tiles->key : image.cacheKey();
+    }
+    // NOTHING DRAWN (2026-11-26, the user's note 7 after hand test I2-1: a new, empty frame is
+    // grey on the timeline until it is drawn on): every pixel clear. The tiles say it at once
+    // - a fold keeps no tile that is all its fill - and a full image is read through to its
+    // first drawn pixel, so whoever asks often keeps the answer by contentKey().
+    bool blank() const
+    {
+        if (image.isNull() || tilesCurrent())
+            return !tiles || (tiles->tiles.isEmpty() && (tiles->fill >> 24) == 0);
+        if (image.depth() != 32)
+            return false; // (never a layer's)
+        for (int y = 0; y < image.height(); ++y) {
+            const quint32 *line = reinterpret_cast<const quint32 *>(image.constScanLine(y));
+            for (int x = 0, w = image.width(); x < w; ++x)
+                if (line[x] >> 24)
+                    return false;
+        }
+        return true;
+    }
+    // The same, where they are read: the same pixels on another stage are another
+    // picture, and a margin change moves no pixel, so the identity stays put through
+    // it (batch 6c). What a cache of the stage's image asks by.
+    qint64 placedKey() const
+    {
+        return contentKey() ^ qint64(qHash(stageRect.topLeft(), qHash(pixelSize())));
+    }
+    // The stage's pixels as a full image: the layer's own, or one made for the
+    // caller from the tiles. A copy of nothing when the layer holds the image.
+    QImage pixels() const
+    {
+        if (!image.isNull() || !tiles)
+            return image;
+        return layertiles::unfold(*tiles, stageRect);
+    }
+    // The full image back on this layer.
+    void unfoldNow()
+    {
+        if (atRest()) {
+            image = layertiles::unfold(*tiles, stageRect);
+            tilesOf = image.cacheKey();
+        }
+    }
+    // Paints the stage's pixels with the painter's opacity, the stage's top-left
+    // at the painter's origin (identity transform), as drawImage(0, 0, pixels()).
+    void paintTo(QPainter &painter) const
+    {
+        if (!image.isNull())
+            painter.drawImage(0, 0, image);
+        else if (tiles)
+            layertiles::paint(painter, *tiles, stageRect);
+    }
+};
+
+// ONE DRAWING OF A LAYER'S RUN (batch I-2). `start`: the frame of the panel it is first
+// shown at, counted at Layer::runRate frames per second - 0 for the first; it is shown until
+// the next one starts, the last to the panel's end. `px`: its pixels, EMPTY for the drawing
+// the layer shows (those are the layer's own).
+struct LayerDrawing
+{
+    QString id;      // UUID: the name of its file (ProjectIO)
+    int start = 0;
+    LayerPixels px;
+};
+
+// One drawing layer inside a panel. QImage (not QPixmap) so strokes and
+// compositing work at pixel level off the GPU.
+struct Layer : LayerPixels
+{
+    QString id;             // UUID
+    QString name;           // "Layer 1", "Reference", ...
+    QString type;           // "raster" (drawn) or "image" (imported)
     bool visible = true;
     double opacity = 1.0;   // 0.0 - 1.0
     bool locked = false;
@@ -85,51 +171,108 @@ struct Layer
     // What the file and the version follow: a layer with motion of any kind kept.
     bool hasMotionData() const { return animate || !keys.isEmpty(); }
 
-    bool atRest() const { return image.isNull() && tiles; }
-    bool hasPixels() const { return !image.isNull() || tiles; }
-    QSize pixelSize() const { return !image.isNull() ? image.size() : tiles ? stageRect.size() : QSize(); }
-    // The tiles still say what the image says.
-    bool tilesCurrent() const { return tiles && !image.isNull() && image.cacheKey() == tilesOf; }
-    // THE IDENTITY OF THE PIXELS, what cacheKey() was before there were tiles: it
-    // moves on with every edit and stays put through a fold and an unfold, so a
-    // thumbnail, a mip and the save's ledger see the same pixels as the same.
-    qint64 contentKey() const
+    // A RUN OF DRAWINGS (batch I-2, 2026-11-26; Figma I-2 727:757, approved). Empty: the
+    // layer has one drawing, its own pixels, as every layer before I-2 (and no project
+    // without a run changes). Otherwise two or more, in time order (LayerDrawing): the frames
+    // they start at rise, the first one's is 0. `shown` is the drawing the layer's own pixels
+    // are - the one under the playhead for the panel on the canvas, so every tool draws on
+    // it (Panel::showDrawingsAtPlace); the others keep theirs in `px`. The starts are FRAMES,
+    // counted at `runRate`: a panel made longer or shorter moves no drawing (the user's
+    // answer 6: "the drawings keep their frames and the last one holds, while the keys
+    // stretch"), and one past the panel's end is kept, unseen, until the panel is long
+    // enough again. Copied with the layer, as its keys are.
+    QVector<LayerDrawing> drawings;
+    int shown = 0;
+    int runRate = 24;
+    bool hasRun() const { return drawings.size() > 1; }
+    int drawingCount() const { return hasRun() ? int(drawings.size()) : 1; }
+    int drawingStart(int i) const { return hasRun() && i >= 0 && i < drawings.size() ? drawings.at(i).start : 0; }
+    // The drawing shown at `frame` (counted at runRate): the last that starts at or before it.
+    int drawingAt(int frame) const
     {
-        if (image.isNull())
-            return tiles ? tiles->key : 0;
-        return tilesCurrent() ? tiles->key : image.cacheKey();
+        int at = 0;
+        for (int i = 1; i < drawings.size() && drawings.at(i).start <= frame; ++i)
+            at = i;
+        return at;
     }
-    // The same, where they are read: the same pixels on another stage are another
-    // picture, and a margin change moves no pixel, so the identity stays put through
-    // it (batch 6c). What a cache of the stage's image asks by.
-    qint64 placedKey() const
+    int drawingIndexOf(const QString &drawingId) const
     {
-        return contentKey() ^ qint64(qHash(stageRect.topLeft(), qHash(pixelSize())));
+        for (int i = 0; i < drawings.size(); ++i)
+            if (drawings.at(i).id == drawingId)
+                return i;
+        return -1;
     }
-    // The stage's pixels as a full image: the layer's own, or one made for the
-    // caller from the tiles. A copy of nothing when the layer holds the image.
-    QImage pixels() const
+    // The id of the drawing the layer shows; empty for a layer without a run.
+    QString shownId() const { return hasRun() && shown >= 0 && shown < drawings.size() ? drawings.at(shown).id : QString(); }
+    // The pixels of drawing `i`, wherever they are kept.
+    const LayerPixels &pixelsOf(int i) const
     {
-        if (!image.isNull() || !tiles)
-            return image;
-        return layertiles::unfold(*tiles, stageRect);
+        return !hasRun() || i == shown || i < 0 || i >= drawings.size() ? static_cast<const LayerPixels &>(*this)
+                                                                       : drawings.at(i).px;
     }
-    // The full image back on this layer.
-    void unfoldNow()
+    LayerPixels &pixelsOf(int i)
     {
-        if (atRest()) {
-            image = layertiles::unfold(*tiles, stageRect);
-            tilesOf = image.cacheKey();
+        return !hasRun() || i == shown || i < 0 || i >= drawings.size() ? static_cast<LayerPixels &>(*this)
+                                                                       : drawings[i].px;
+    }
+    // This layer as drawing `i` alone - its pixels the layer's own, no run: for whatever
+    // draws, measures or writes one drawing with the code that takes a layer. Shared pixels,
+    // nothing copied.
+    Layer asDrawing(int i) const
+    {
+        Layer one = *this;
+        static_cast<LayerPixels &>(one) = pixelsOf(i);
+        one.drawings.clear();
+        one.shown = 0;
+        return one;
+    }
+    // Drawing `i` onto the layer: the one shown goes back among the others. No pixel is
+    // copied or changed. False when it is there already (or there is no such drawing).
+    bool show(int i)
+    {
+        if (!hasRun() || i == shown || i < 0 || i >= drawings.size())
+            return false;
+        drawings[shown].px = static_cast<const LayerPixels &>(*this);
+        static_cast<LayerPixels &>(*this) = drawings.at(i).px;
+        drawings[i].px = LayerPixels();
+        shown = i;
+        return true;
+    }
+    // The starts counted at `rate` from now on, each drawing at its time to the nearest frame
+    // and never on the frame of the one before it. What an edit does first, so that it works
+    // in the project's frames; nothing for a run already at that rate.
+    void countRunAt(int rate)
+    {
+        rate = rate < 1 ? 1 : rate;
+        if (!hasRun() || rate == runRate) {
+            runRate = hasRun() ? runRate : rate;
+            return;
         }
+        for (int i = 1; i < drawings.size(); ++i) {
+            const int moved = int(std::floor(double(drawings.at(i).start) * rate / runRate + 0.5));
+            drawings[i].start = moved > drawings.at(i - 1).start ? moved : drawings.at(i - 1).start + 1;
+        }
+        runRate = rate;
     }
-    // Paints the stage's pixels with the painter's opacity, the stage's top-left
-    // at the painter's origin (identity transform), as drawImage(0, 0, pixels()).
-    void paintTo(QPainter &painter) const
+    // Every drawing's pixels, the shown one's first: for whatever must reach all of them (a
+    // fold, a margin, a resize).
+    template <typename Visit>
+    void forEachPixels(Visit visit)
     {
-        if (!image.isNull())
-            painter.drawImage(0, 0, image);
-        else if (tiles)
-            layertiles::paint(painter, *tiles, stageRect);
+        visit(static_cast<LayerPixels &>(*this));
+        if (hasRun())
+            for (int i = 0; i < drawings.size(); ++i)
+                if (i != shown)
+                    visit(drawings[i].px);
+    }
+    template <typename Visit>
+    void forEachPixels(Visit visit) const
+    {
+        visit(static_cast<const LayerPixels &>(*this));
+        if (hasRun())
+            for (int i = 0; i < drawings.size(); ++i)
+                if (i != shown)
+                    visit(drawings.at(i).px);
     }
 };
 
@@ -251,17 +394,22 @@ struct Panel
         for (Layer &layer : layers) {
             if (layer.type == QLatin1String("group"))
                 continue;
-            if (!layer.image.isNull() && !layer.tilesCurrent()) {
-                const QImage image = layertiles::foldable(layer.image)
-                    ? layer.image
-                    : layer.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                const quint32 fill = layer.type == QLatin1String("background")
-                    ? layertiles::paperFill(image, layer.tiles)
-                    : 0u;
-                layer.tiles = layertiles::fold(image, frameAt(), fill, layer.tiles, layer.image.cacheKey());
-            }
-            layer.image = QImage();
-            layer.tilesOf = 0;
+            const bool paper = layer.type == QLatin1String("background");
+            const QPoint at = frameAt();
+            // Every drawing of a run (batch I-2), each as the layer's own pixels always were.
+            layer.forEachPixels([&](LayerPixels &px) {
+                if (!px.image.isNull() && !px.tilesCurrent()) {
+                    const QImage image = layertiles::foldable(px.image)
+                        ? px.image
+                        : px.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                    const quint32 fill = paper ? layertiles::paperFill(image, px.tiles) : 0u;
+                    px.tiles = layertiles::fold(image, at, fill, px.tiles, px.image.cacheKey());
+                }
+                px.image = QImage();
+                px.tilesOf = 0;
+                if (px.tiles) // a drawing that holds nothing yet stays nothing
+                    px.stageRect = stageRect;
+            });
             layer.stageRect = stageRect;
         }
         margin = newMargin;
@@ -417,6 +565,57 @@ struct Panel
         const Layer *group = groupOf(layer);
         return group ? own * qBound(0.0, group->opacity, 1.0) : own;
     }
+
+    // --- DRAWINGS (batch I-2) ----------------------------------------------------------
+    // A layer with a run shows, at every frame, the drawing exposed there. Every consumer
+    // that draws a panel at a time asks drawnAtPlace(layer, at) for the layer to draw - the
+    // layer itself when it has no run, so a project without one draws exactly as before.
+    // `at` is the place in the panel, as for the motion: 0 its first frame, 1 its end.
+    bool layerHasRun(const Layer &layer) const { return layer.hasRun() && !isGroupLayer(layer); }
+    bool hasRuns() const
+    {
+        for (const Layer &layer : layers)
+            if (layerHasRun(layer))
+                return true;
+        return false;
+    }
+    // The frame of the layer's run (counted at its runRate) at the place `at`.
+    int runFrameAtPlace(const Layer &layer, double at) const
+    {
+        const double f = at * frames * double(layer.runRate < 1 ? 1 : layer.runRate) / double(rate < 1 ? 1 : rate);
+        return f <= 0.0 ? 0 : int(std::floor(f + 1e-6));
+    }
+    int drawingAtPlace(const Layer &layer, double at) const
+    {
+        return layerHasRun(layer) ? layer.drawingAt(runFrameAtPlace(layer, at)) : 0;
+    }
+    // A run with a drawing that starts inside the panel: its picture changes over its time.
+    bool runChangesIn(const Layer &layer) const
+    {
+        if (!layerHasRun(layer) || !layerEffectivelyVisible(layer))
+            return false;
+        return layer.drawings.at(1).start
+            < double(frames) * double(layer.runRate < 1 ? 1 : layer.runRate) / double(rate < 1 ? 1 : rate);
+    }
+    bool hasLiveRuns() const
+    {
+        for (const Layer &layer : layers)
+            if (runChangesIn(layer))
+                return true;
+        return false;
+    }
+    // The picture is not one picture: a layer moves, or a run changes drawing.
+    bool changesOverTime() const { return hasMotion() || hasLiveRuns(); }
+    // On every layer with a run, the drawing exposed at `at` (the canvas draws on what a
+    // layer shows). True when any layer changed drawing; no pixel is copied.
+    bool showDrawingsAtPlace(double at)
+    {
+        bool changed = false;
+        for (Layer &layer : layers)
+            if (layerHasRun(layer))
+                changed = layer.show(layer.drawingAt(runFrameAtPlace(layer, at))) || changed;
+        return changed;
+    }
     // True when any drawn layer is off the picture plane: only then does
     // the camera place the layers one by one (shotcam's layered path).
     bool hasDepth() const
@@ -464,14 +663,18 @@ struct Panel
     // Group folders paint nothing themselves; members composite with the
     // folder's visibility/opacity applied. Sized from the panel's OWN
     // layers, so it can never crop a document to some other size.
-    QPixmap flattenedPixmap() const
+    // `at` (2026-11-26, the user's answer 2 to hand test I2-1): the place in the panel the
+    // picture is of - 0, the first frame, for everyone who shows a panel as one picture; the
+    // onion skin asks for the previous panel's LAST frame (what was on screen just before the
+    // cut): each run's drawing there, each moving layer's pose there.
+    QPixmap flattenedPixmap(double at = 0.0) const
     {
-        const QImage out = flattenedImage();
+        const QImage out = flattenedImage(at);
         return out.isNull() ? QPixmap() : QPixmap::fromImage(out);
     }
     // The same composite as an image - usable on a worker thread (a QPixmap
     // belongs to the UI thread), for the strip's parallel thumbnails.
-    QImage flattenedImage() const
+    QImage flattenedImage(double at = 0.0) const
     {
         const QSize size = canvasSize();
         if (!size.isValid())
@@ -480,9 +683,16 @@ struct Panel
         out.fill(Qt::white); // paper — keeps blank checks / ghosts / export identical
         QPainter painter(&out);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        for (const Layer &layer : layers) {
-            if (layer.type == QLatin1String("group"))
+        for (const Layer &stored : layers) {
+            if (stored.type == QLatin1String("group"))
                 continue;
+            // A run of drawings (batch I-2): its FIRST drawing, whichever the layer shows -
+            // the flatten is the panel's first frame, as for a layer that moves. (At another
+            // place: the drawing exposed there.)
+            Layer first;
+            if (layerHasRun(stored))
+                first = stored.asDrawing(drawingAtPlace(stored, at));
+            const Layer &layer = layerHasRun(stored) ? first : stored;
             if (!layerEffectivelyVisible(layer) || !layer.hasPixels())
                 continue;
             // A layer that moves (batch I-1): AT THE PANEL'S FIRST FRAME (the user's answer
@@ -490,12 +700,12 @@ struct Panel
             // whole image through its pose - never tile by tile, which would seam when
             // turned or sized.
             if (layerMoves(layer)) {
-                const double posed = layerOpacityAt(layer, 0.0);
+                const double posed = layerOpacityAt(layer, at);
                 if (posed <= 0.0)
                     continue;
                 painter.save();
                 painter.setOpacity(posed);
-                painter.setTransform(motionAt(layer, 0.0));
+                painter.setTransform(motionAt(layer, at));
                 painter.drawImage(0, 0, layer.pixels());
                 painter.restore();
                 continue;
@@ -553,7 +763,9 @@ struct Panel
         QVector<quint64> fp;
         fp.reserve(layers.size() * 3);
         for (const Layer &layer : layers) {
-            fp.append(quint64(layer.contentKey()));
+            // A run (batch I-2): its first drawing's pixels are the flatten's, whichever the
+            // layer shows. A layer without one: its own, as before.
+            fp.append(quint64(layer.pixelsOf(0).contentKey()));
             quint64 opacityBits = 0;
             static_assert(sizeof(opacityBits) == sizeof(layer.opacity),
                           "opacity bits must fit the fingerprint word");

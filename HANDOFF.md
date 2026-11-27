@@ -1,5 +1,395 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-27 (11:3x): BATCH I-2 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I2-2 - FRAME-BY-FRAME DRAWINGS IN A LAYER, WITH THE USER'S NOTES 2 TO 8; NEXT: THE SLIDERS ROUND (PREFERENCES > ONION SKIN AND CAMERA, "FRAME" EVERYWHERE, THE FRAMES LABEL) AND A FIGMA PROPOSAL FOR LIGHT TABLE AGAINST ONION SKIN
+THE USER'S WORD (pasted 2026-11-27, about 11:20): "Hand test I2-2 done: all steps looked right. Read every Dev Recorder
+session made after 22:49 on 26 November, oldest first (two, because of the restart in the docks step). Confirm from
+system.txt that it ran the Nov 26 2026 22:49:45 build (git 1b828a5bf+dirty) and that the title bar named "TEST COPY -
+small pirate, I-2 round 2", then report pass, fail or "not tested" per step of handtest_I2_retest.md. My answers: 1. The
+opacity sliders' stalls: fix them in the next round, which rebuilds those sliders. 2. "frame" everywhere, in the next
+round: the lane's label becomes FRAMES, in capitals like SCENES, SHOTS, CAMERA and AUDIO; the bar says "Bird · frame 3 of
+24 · held 2 frames"; "Change Frame Length", "Move Frame Cut", and "24 frames" in the tooltip. 3. The lane's 3 px bands:
+keep them. If it ran the right build and nothing failed: 1. Commit and push I-2 with its HANDOFF notes, matching its hash
+list, git status clean. Mark I-2 BUILT in Figma. 2. Then the next round. Build: Preferences > Onion Skin: hue sliders for
+the previous and next colours, as in the Perspective tool's guides, and standard Sanko sliders (the Zoom Toolbar's) for
+their opacity, with no stalls while I drag. Preferences > Camera: standard Sanko sliders for the Action Safe and Title
+Safe opacity, plus a line-thickness slider for each. Every new slider in SankoTV uses the standard Sanko slider from the
+Zoom Toolbar. The "frame" wording and the FRAMES label above. Checks with controls and red runs, none judged by the
+clock, quick check, full gate before stopping (every family green in both builds), a fresh TEST COPY, the exe stamp and a
+short hand-test list. Don't commit until my hand test passes. 3. A proposal first, before building, for the Onion Skin
+and Light Table. Today Light Table works as onion skinning between storyboard panels, and Onion Skin works between
+animation frames, but on a run's first frame Onion Skin also shows the previous panel. I want them independent: Light
+Table for panels, Onion Skin for animation frames, each with its own switch. I also want an Onion Skin button on the
+LAYER row, between the Zoom to Frames magnifier and the FRAMES lane, using the existing Light Table icon for consistency.
+Propose in a Figma frame, in the area labelled "Claude Code please Start new design here 002", using SankoTV's existing
+UI: how the two buttons stay easy to tell apart while sharing the icon (for example a small frames mark, and clear
+tooltips); what each shows (Light Table: the previous panel's last frame; Onion Skin: the previous and next frames of
+the layer), and what happens when both are on; the keys that switch each one; and a better way to manage the two, if you
+see one. Screenshot it and stop for my approval before building any of point 3. If anything failed or the build is
+wrong, commit nothing and report. ALL DONE when finished, and send a notification."
+HAND TEST I2-2 (read 2026-11-27; report, crops and the compact timeline in
+Documents\SankoTV-Design\batch-I2-2026-11-26\handtest_I2-2\): ONE session, not two - 20261127-101526 (10:15:26 to
+11:13:38, 3491.8 s, screenshots to the end). Release, built Nov 26 2026 22:49:45, git 1b828a5bf+dirty; the title bar
+"SANKO TV — TEST COPY - small pirate, I-2 round 2". NO STEP FAILED:
+- 1 PASS: the panel made longer twice (185 s, 196 s; undone) - Bird's blocks keep their frames, the last holds to the new
+  end, Bird's two keys and the camera's stretch. At 1496 s the panel was made 9 frames shorter (Alt + its edge) and left
+  so (74 frames): Bird's last key f82 to f73, the seagulls' keys f0, f37, f73.
+- 2 PASS: Alt + drag on a middle cut moves that cut alone (16 to 17, the next stays 18, "Move Drawing Cut", 1503 s); a
+  plain drag moves every later one (1529 s).
+- 3 PASS for the first press (N on frame 73 of 74: a last, one-frame drawing; 1626 s and 1635 s). The refusal at the
+  next N was NOT TESTED (the cut had been dragged before it, a frame was free again).
+- 4 PASS: O on Bird's first drawing - the next drawing only, no blue; both on the second (1732 s).
+- 5 PASS: "Use the default" from red / 50 % / 19 % and again from red before, teal after: blue, orange, 1 and 1, 30 %.
+- 6 PASS: New Frame, Duplicate Frame, Delete Frame in the lane's menu and the Layers panel's. MY LIST WAS WRONG in one
+  line: Edit > Undo only says "Undo" (it never named the step); the name is in the Undo button's tip.
+- 7 PASS (41 px). 8 PASS for the magnifier (1600 % from 400, 141, 200, 565 and 400 % with Bird; 133 % with Layer 11,
+  whose shortest drawing is 24 frames; nothing when already there); a double-click on a BLOCK was NOT TESTED.
+- 9 PASS (grey at 354 s; a stroke gives the others' colour at 1654 s; Ctrl+Z grey again at 1703 s). 10 PASS (1745 s).
+- 11, 12 PASS at 565 %, 1217 % and Fit: every row whole at the least height, the thumbnails in their shape when tall, the
+  LAYER row small again for a layer without drawings.
+- 13 PASS: the mark 15 px left of the seagulls' middle key; four presses on it open the eases, Bird stays selected; a
+  press on the small key selects Layer 6 with the playhead on the key. 14 PASS as far as it went (1131 % down to 200 %:
+  the mark beside the key; the line-only stage not reached - the move is 74 frames long).
+- 15 PASS: on OCEAN panel 2 the blue ghost is panel 1 as it ends (the seagulls where their keys leave them, the bird's
+  last drawing at its last place).
+- 16 PASS: Ctrl+X three times, Ctrl+V once, each press acted once; with no key selected Ctrl+X is refused in amber and
+  the panel is untouched. (The recorder logs no key release: how long each was held is not in it. Ctrl+C not pressed.)
+- 17 NOT TESTED AS WRITTEN: the column was dragged to 871 px, Ctrl+S, File > Close Project, reopened from the start
+  page - still 871 px. That is a closed project, not a quit. Then set to 287 px and left so to the quit (11:13:38). The
+  live settings hold sidebar/right = 287 (read-only, through a process made outside the tools' package; -1 after every
+  quit before the fix). No recording after the quit, and no SankoTV setting written after 11:13:38 (the recents at
+  11:02:56): a start of the program after it is nowhere on record. THE NEXT START IS THE TEST: the right column must
+  come back 287 px wide - read it from the next recording's first screenshot.
+- 18 (export) NOT TESTED (optional).
+SEEN OUTSIDE THE LIST: the Zoom to Frames tip writes a Qt warning twice ("Unable to set geometry 500x27 ... Resulting
+geometry: 500x42" on sankoTipWindow - the tip takes two lines; it is drawn right); Left / Right did nothing (as in I2-1);
+with the Light Table and the onion skin both on the previous panel shows twice (the Light Table's first frame, the onion
+skin's last) - the user's point 3; no stall during any action (the gaps over 150 ms: the project opening, the window
+minimised from 781 s to 1406 s, one of 1.2 s at 1483 s with no input).
+COMMITTED: the 22 files of app/build/_probe/split/sha_I2b_gate.txt (all OK before staging) and this HANDOFF - the files
+gate I2b ran on, green in both builds (Lifecycle 1977, Camera 354, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock
+74, DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3).
+THE USER'S ANSWERS: the opacity sliders' stalls and "frame" everywhere go into the next round; the 3 px bands stay.
+NEXT: (1) Figma I-2 (727:757) renamed BUILT. (2) The next round, built and NOT committed before its hand test: the
+sliders of Preferences > Onion Skin and Camera, the "frame" wording, the FRAMES label. (3) A Figma proposal for Light
+Table against Onion Skin in "Claude Code please Start new design here 002" - nothing of it built before the user's word.
+
+## STATUS 2026-11-26 (night): HAND TEST I2-1 READ - NOTHING FAILED; I-2 CHANGED BY THE USER'S NOTES 2 TO 8 (THE PREVIOUS PANEL'S LAST FRAME AS ITS GHOST, CUT / COPY / PASTE ONCE A PRESS, THE DOCKS' WIDTH ACROSS A RESTART, EVERY TIMELINE ROW INSIDE ITS BOUNDS AND THE CLIPS' THUMBNAILS IN THEIR PICTURE'S SHAPE, THE EASE MARK BEFORE THE KEY, THE FRAMES LANE 41 PX WITH ZOOM TO FRAMES, NEW FRAME / DUPLICATE FRAME / DELETE FRAME); NOTHING OF I-2 COMMITTED - WAITING FOR HAND TEST I2-2
+THE USER'S WORD (pasted 2026-11-26, about 20:35): "Hand test I2-1 done. Read every Dev Recorder session made after 17:29 on
+26 November, oldest first. Confirm from system.txt that it ran the Nov 26 2026 17:29:17 build (git 1b828a5bf+dirty) and
+that the title bar named "TEST COPY - small pirate, I-2 drawings", then report pass, fail or "not tested" per step of
+handtest_I2.md. Commit nothing yet. My answers from your last report: 1. A run's first drawing shows both: the previous
+panel's ghost and the next drawing, as you built it. 2. The previous panel's ghost is that panel's LAST frame (what was on
+screen just before the cut), not its first. 3. Cut, Copy and Paste act once per press: holding Ctrl+X, Ctrl+C or Ctrl+V
+never repeats them. 4. Find why the right dock came back about 32 px narrower after a restart, and fix it if it's a fault
+(the docks reopen at the width I left them). New from my test (my screenshots are in
+Documents\SankoTV-Design\reference\): 5. The timeline's rows. In stretching_timeline.png the SHOTS row is very tall but
+its thumbnails stay a thin cropped strip with empty space under them. In stretching_timeline_overlapping.png, with the
+timeline made shorter, the thumbnails spill over the CAMERA row (both at 1217 % zoom). Thumbnails always keep their
+picture's aspect ratio, never stretched or cropped, and every row stays inside its own bounds, whatever the timeline's
+height and zoom. 6. The ease mark and keys. In ease_overlap_key.png, a press on the ease mark selected the key under it
+instead of opening the eases. A press on the ease mark always opens the eases and never selects or moves a key; a key
+stays reachable by pressing it outside the mark. Where a move is too short for its mark to sit clear of its keys, use the
+small mark or the line itself (your short-move rule), so a mark never sits on a key. 7. The frames lane (drawings): Use my
+Figma "Proposal drawing size" (node 737:872) for the lane's height (41 px), its cuts, its bands and its numbers, so
+frames read clearly. Widths stay true to time, lined up with the ruler, the keys and the sound. Add "Zoom to frames": a
+small button beside the lane's +, and a double-click on the lane, zoom the timeline so each drawing in the selected panel
+is at least 32 px wide (16 px per frame), centred on the playhead. Fit goes back as today. A new, empty frame is drawn
+grey; once I draw on it, it takes the same colour as the other frames. A subtle hover effect when the pointer moves over
+a frame block. 8. New names, everywhere these entries appear (the lane's menu and the Layers panel's layer menu, and
+their tooltips): "New Drawing" → "New Frame", "New Drawing from This One" → "Duplicate Frame", "Delete Drawing" →
+"Delete Frame". The + keeps N. Build 2 to 8 in I-2, each with a check, a control and a red run, none judged by the clock;
+old checks that change reported with old and new text. Quick check, full gate before stopping (every family green in both
+builds), a fresh TEST COPY, the exe stamp and a re-test list covering 2 to 8 and any step of I2-1 that didn't pass or
+wasn't tested. Don't commit I-2 until my re-test passes. Next round, after I-2 is committed (don't start it now):
+Preferences > Onion Skin with hue sliders for the colours (as in the Perspective tool's guides) and standard Sanko
+sliders for opacity; Preferences > Camera with standard Sanko sliders for the Action Safe and Title Safe opacity, plus a
+line-thickness slider for each; and every new slider in SankoTV using the standard Sanko slider from the Zoom Toolbar. If
+anything else failed or the build is wrong, report it before changing anything. ALL DONE when finished, and send a
+notification."
+HAND TEST I2-1 AS READ: one session, 20261126-183536 (18:35 to 19:50, 74 minutes; its screenshots stop at minute 57, the
+recorder's size cap - the events go on). system.txt: built Nov 26 2026 17:29:17, git 1b828a5bf+dirty - the right build;
+the title bar names "TEST COPY - small pirate, I-2 drawings". NOTHING FAILED. Not tested: N on the panel's last frame
+(step 11), Alt+drag on a cut in the MIDDLE (step 9: Alt was used on the last cut only, where both ways are the same),
+Bird's first drawing with the onion skin (step 12), "Use the default" (step 14). Step 16 (retiming) was done, played and
+undone after the screenshots had stopped - the recording cannot show what the blocks did. Steps 15, 17, 18 pass by the
+events and the files (the saved project and the recovery copy written after the reopen and the Duplicate Panel hold the
+drawings at their frames); 19: exported, "Export complete". Report and crops:
+Documents\SankoTV-Design\batch-I2-2026-11-26\handtest_I2-1\ (handtest_I2-1_report.md; compact_timeline.txt is every
+press, key and drawing edit in time order). SEEN OUTSIDE THE LIST, NOT CHANGED: dragging the opacity sliders of
+Preferences > Onion Skin holds the window 0.2 to 0.7 s at a time (14 stalls of 150 ms or more, the worst 733 ms -
+onionSkinSettingsChanged rebuilds every ghost, the previous panel's flatten included, at each tick; an opacity alone
+needs no rebuild) - reported, for the user's word (the next round re-makes those sliders); the arrow keys did nothing
+(six presses); Shift / Ctrl + click on blocks are plain clicks; Ctrl+C / X / V with a block selected copy nothing (later).
+WHAT CHANGED (the main tree, uncommitted; 22 files now - the 20 of sha_I2a_gate.txt and docking/DockController.cpp / .h):
+2. THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME. Panel::flattenedImage / flattenedPixmap take `at`, the place in the panel
+(0, the first frame, for everyone who shows a panel as one picture - the strip, the SHOTS clips, the export's stills):
+each run's drawing exposed there, each moving layer's pose there. StoryboardPage::updateOnionGhost asks for
+lastPlaceOf(previous) - panelAt(frames - 1, frames); applyPanelDurationForUndo refreshes the ghost when the panel before
+the one on the canvas changes length and changes over its time (another drawing is its last). The light table's
+neighbours are untouched (their first frame).
+3. CUT, COPY AND PASTE ONCE PER PRESS. The Edit menu's Copy, Cut, Paste and Paste in Place (objectNames editCopy, editCut,
+editPaste, editPasteInPlace) have setAutoRepeat(false): Qt's shortcut map still takes a held key's repeats - nothing
+behind hears them - and drops them. Undo and Redo keep their repeat.
+4. THE DOCKS' WIDTH - A FAULT, FOUND AND FIXED. Measured in the recordings: the right column 256 px to the end of session
+20261126-144218, 220 px from the next start on (220 is the Layers panel's least width). Reproduced (a probe, kept:
+...\round2\dock_probe_before_the_fix.txt): a dock left 452 px wide comes back 220 when the workspace first appears in a
+window narrower than the one its layout was saved in (1300 px against 1880) and stays 220 when the window is enlarged; a
+window that opens wide, or full-screen, keeps the width. WHY: QMainWindow::restoreState's sizes - sidebar and canvas
+column as saved - do not fit the narrower host, Qt squeezes both toward their least, and the room a later resize gives
+goes to the canvas alone. The app's window opens at its normal size on the start page and is made full-screen after.
+TWO THINGS MADE THE CONTROLLER'S OWN REMEDY DEAD: the sidebar width it saves beside the layout was always -1 (the layout
+is saved after the window has closed, and a QDockWidget unchecks its toggle action the moment an ancestor hides - so
+"the open dock of the area" found none), and the widths were applied one event-loop turn after the restore, when the
+workspace is still hidden. NOW (DockController): sidebarWidth() of a hidden host reads the first dock of the area that
+was not itself hidden; the saved widths WAIT (m_pendingLeftWidth / Right, queuePendingSidebarWidths,
+applyPendingSidebarWidths) - asked for at each Show and Resize of the host (its event filter), applied the first time it
+is on screen with room for the sidebars beside the canvas column's least width; a press on the host itself (a separator
+taken by hand) ends the wait. After the fix the probe's four ways of opening all give the width left
+(...\round2\dock_probe_after_the_fix.txt).
+5. THE TIMELINE'S ROWS. (a) A SHOTS clip's thumbnail keeps its picture's shape (AnimaticTimeline::clipLayout,
+clipPictureSize - the panel's FRAME): fitted whole at the clip's left, over the 28 px strip of the name and the pill
+while the body has room for a 24 px picture above it (kNameStripH, kStoreyMinThumbH; the design's 42 px on its 76 px
+body, growing with a taller track), else in the body's height less 4 px above and below with the name beside it; under
+10 px no picture. It was a strip 42 px tall across the whole clip, cropped to fill, at any height - the user's choice of
+2026-10-18, changed by their note. The picture is drawn whole (no crop path left). (b) The clips are painted inside the
+SHOTS track's rect (a clip rect). (c) THE CANVAS IS NEVER SHORTER THAN ITS ROWS: rowsMinH() / syncMinimumHeight() - the
+painted surface's minimum was the four rows of before the LAYER row (160 px), so with that row (28 px, 71 with a lane) a
+timeline at its smallest had its AUDIO row past its bottom edge (so since I-1); the minimum follows the rows, the
+signal rowsMinimumChanged goes up through AnimaticPage, and StoryboardPage sets the section's own least height again
+(it is SET, not asked of the layout) and gives it the height the artist left it, or the rows' least when that is more.
+6. THE EASE MARK AND THE KEYS. placeEaseMark (AnimaticTimeline.cpp): a move's mark sits at its middle while nothing is
+in the way, else beside the key in the way, 2 px clear, by the least it must move; the pill needs 11 px of the move's
+ends (the 40 px rule), the small mark 2 (the 16 px rule); no clear place for the pill - the small mark; none for that -
+no mark, and the line itself opens the eases. In the way: every key drawn on the row but the move's own two - on the
+LAYER row the other layers' small keys (the user's picture: the Bird's mark on the seagulls' middle key), on the CAMERA
+row a stranded key. LayerSegment / CameraSegment carry markX. THE PRESS: onLayerEaseMark / onCameraEaseMark - a DRAWN
+mark (not a short move's line, not a greyed move's) is asked before the keys at the press, the right-click, the hover
+and the tooltip; the line still gives way to a key.
+7. THE FRAMES LANE. To the user's Figma "Proposal drawing size" (737:872; read with use_figma): the lane 41 px
+(kDrawingsLaneH; it was 16), the LAYER row 71 (kLayerRowRunH; 46), the bands 3 px (kDrawingsBandH - the proposal's 2.56
+on whole pixels; they were 1), the cut 1 px the lane's height, the numbers 5 px in and centred, the one under the
+playhead DemiBold. ZOOM TO FRAMES (zoomToFrames): a 20 px button "layerZoomToFrames" beside the + (its magnifier drawn
+in code - no icon file, no licence) and a double-click on the lane or its label: the zoom at which the lane's shortest
+drawing is 32 px (never past 1600 %, never out), the view scrolled to put the playhead in its middle. A BLANK DRAWING IS
+GREY (#8a8c99): LayerPixels::blank() - the tiles say it at once, a full image is read to its first drawn pixel - kept by
+contentKey in the timeline (drawingBlank); the lane repaints with the panel thumbnail's refresh after a stroke. HOVER:
+m_hoverDrawing, white at 8 % over the block.
+8. THE NAMES: "New Frame", "Duplicate Frame", "Delete Frame" - the lane's menu, the Layers panel's layer menu, the +'s
+tooltip, the undo steps, the notes that begin with the name, the Dev Recorder's "what". STILL "DRAWING" (asked of the
+user): the lane's label "drawings", the bar's "drawing 3 of 24 · 2 frames", "Change Drawing Length", "Move Drawing Cut",
+the "24 drawings" tooltip.
+THE CHECKS: lifecycle slice "i2b" (SANKO_LIFECYCLE_ONLY=i2b), 23, the pass runI2bPass after runI2Pass: (fr1) the names
+(the two menus opened by right-clicks through the window system and read; the +; the three undo steps); (fr2) Cut / Copy /
+Paste / Paste in Place each pressed and held for six repeats through Qt's shortcut path (qt_sendShortcutOverrideEvent with
+its repeat flag) - one each, every repeat still taken - and its control (Undo, held, runs four times); (fr3) the ghost on
+panel 2 read from the canvas's picture at five stage points, then with panel 1 cut to three frames and back, and its
+control (panel 1's own flatten still its first frame; onion off, no ghost); (fr4) the docks across two windows, the
+second opened 1300 px wide then made 1880, and its control (the width left was another than opened and than the least;
+the saved sidebar width is it); (fr5) the rows at the smallest timeline, the clips in the SHOTS row (the picture with
+the SHOTS eye off differs from the one with it on inside the row only), the thumbnail's shape at three heights and three
+zooms and the Ground's square and the Boat found in it where they lie in the frame, and its control (188 px without a
+lane, 213 with); (fr6) the mark beside the key, the press on the mark, the press on the key, every zoom from 200 % to
+1600 %, its control (no key in the way: the mark at the middle), and the CAMERA row (a press on the small mark's first
+column, inside a key's 8 px reach); (fr7) the lane's size and its picture (bands, cut, number); (fr8) Zoom to Frames by
+the button and by a double-click, both through the window system, and its control (no lane: no button, no zoom); (fr10)
+grey, drawn on, undone; (fr11) the hover. CAMERA +1 (354): a second (c1p) control - each pinned thumbnail is its panel's
+whole picture reduced (mean grey difference 0.4 to 0.9). OLDER CHECKS CHANGED, old and new text in
+Documents\SankoTV-Design\batch-I2-2026-11-26\round2\changed_checks_round2_old_new.md: (dr1), (dr7) twice, (dr8), (dr10),
+(dr19) (names, 46 -> 71 px), (aw) twice and (tz3) (the thumbnail's shape; (tz3) read a pixel beside the new thumbnail),
+the Camera family's (c1p) control and its 20 clip pins - re-recorded, every old value in a comment beside the new - and
+the three pin helpers (a failing pin prints the whole value). They were found by running both families on the changed
+app BEFORE the test files were touched: Lifecycle 9 of 1954 failed, Camera 22 of 353, those and no other.
+RED RUNS (...\round2\red_runs\, each file lists its markers): A - the ghost at place 0, the sidebar width not read from a
+hidden host, "New Drawing" again: (fr3) twice, (fr4) twice (the dock 220, saved -1), (fr1). A3 - the four actions
+repeating: (fr2) (7 copies, 7 pastes, 7 cuts; (fr8) twice as a knock-on of the pasted panels). A4 - the saved widths
+applied at once, hidden or not: (fr4) (220). B - the old strip, no row clip, no minimum: (fr5) four times (the AUDIO row
+at 213 in a 172 px surface; 11152 pixels outside the SHOTS row) and the Camera family's pins and control. B2 - the old
+strip CROPPED, the row clip and the minimum kept: (fr5) twice (0 pixels outside the row: the clip rect alone holds it),
+both (c1p) controls (mean difference 26 to 31). C - the mark at the middle, the key asked first: (fr6) three times (the
+press on the mark took the Ground's key and the playhead; on a key at six zooms; the CAMERA key selected). D - the lane
+16 px with 1 px bands, no zoom, no grey, no hover: (fr7), (fr8) twice, (fr10) twice, (fr11), and (fr5) twice by the row's
+height. Every marker out (grep = 0) and the 22 files back at the hashes taken before the red runs.
+MY MISTAKES THIS ROUND: (1) THE DOCK FIX I WROTE FIRST DID NOT FIX IT, and its check passed anyway: I had made the saved
+widths wait for the host to be visible, but the width saved was -1 (so nothing waited), and my check's second window
+opened wide (where the fault does not show). The check's own control - "the saved layout had the width" - failed and
+showed it; a probe with four ways of opening then found the real cause. (2) Red run A3's dock switch could not fail
+(fr4): the wait for room covers the wait for visibility; A4, both off, does. (3) Red run B left one Camera control
+passing - a picture stretched to the old strip equals its reference stretched the same way; B2 draws the old crop and
+fails it. (4) THE FIRST QUICK CHECK FAILED (ct), an older check, 1 of 1977: my (fr6) closed the ease popover from the
+check without WA_NoMouseReplay, the trap of 2026-11-24 (memory: qt-menu-replay-flag) - fixed in the check, not in (ct).
+(5) Checks of mine that were wrong, the app right: (fr1) expected the starts 0,2,4 after Duplicate Frame and Delete
+Frame (on 2s the later drawings move on and stay; both steps are undone now); (fr1) right-clicked the middle of a Layers
+row, where no menu opens in the rig (the layer's name now, where the user's own right-clicks were); (fr5) asked for a
+300 px track the 900 px window cannot give; (fr6) pressed one pixel outside the key's reach; (fr8) double-clicked a 5 px
+block next to two cuts, and its two presses had no time between them (Qt made no double-click). (6) My build helper's
+sed printed an error instead of the compiler's. NO SOURCE EDIT WITH A SCRIPT: every edit of the 22 files by the Edit
+tool; line endings as before (17 CRLF files line count = CR count; MainWindow.h, StoryboardModel.h, SankoOnionSkin.h,
+DockController.cpp / .h LF).
+FOR THE RE-TEST (hand test I2-2): Documents\SankoTV-Design\handtest_I2_retest.md (18 steps: the five of I2-1 not tested
+or not recorded FIRST, since the recorder's screenshots stop at about 57 minutes), on "TEST COPY - small pirate, I-2
+round 2" (C:\SankoTV-TestCopies; 117 files, version 7): the small pirate, the seagulls' three keys, and on OCEAN panel 1
+"Bird" with 24 drawings on 2s AND two keys (the first frame and the last), so its ease mark would fall on the seagulls'
+middle key - the user's case. Made by the scratch tool MakeRunCopy (rebuilt on this tree) from a fresh copy of the
+original, whose 94 files hashed the same before and after (...\round2\pirate_original_hashes_*.txt) and the same as
+before I-2.
+A WRONG LINE IN MY FIRST HAND-TEST LIST (handtest_I2.md step 11, not tested by the user): "N on the panel's last frame:
+an amber note". The app makes a last, one-frame drawing there - a frame is still free; the note comes at the NEXT N. The
+re-test list's step 3 says so.
+QUICK CHECKS (Release): the first, 21:50-22:12 - Camera 354/354, Lifecycle 1976 of 1977, (ct) failing (mistake 4 above);
+the second, on the final files, 22:26-22:47 - Camera 354/354, Lifecycle 1977/1977.
+GATE I2b (app/build/_probe/split/fullgate_I2b.log, clean builds, normal mode, 2026-11-26 22:48-23:48, 3644 s): every
+family GREEN IN BOTH BUILDS - Lifecycle 1977, Camera 354, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74,
+DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3, Release and Debug alike. Hash list
+app/build/_probe/split/sha_I2b_gate.txt (the 22 changed or new source and test files, made at 22:47 - the same hashes the
+second quick check ran on and the ones taken before the red runs; all 22 OK after the gate; no RED RUN marker in any),
+exes sha_I2b_exes.txt (Release 97436d29..., Debug 8875df4e...). EXE: built "Nov 26 2026 22:49:45", 1b828a5bf+dirty
+(22:50:04 on disk). After the gate the slice i2b was run once more (23/23) while the screen was copied each second - a
+look at the new timeline in the checks' own window, kept in ...\round2\look\.
+NEXT: the user's hand test I2-2 (handtest_I2_retest.md). If it passes and they say so, commit I-2 (the 22 files of
+sha_I2b_gate.txt + this HANDOFF), push, rename Figma I-2 (727:757) BUILT. COMMIT NOTHING OF I-2 BEFORE THAT. FOR THE
+USER'S WORD: (a) the Preferences > Onion Skin opacity sliders' stalls - fix now or with the next round's new sliders;
+(b) should "drawings" (the lane's label), "drawing 3 of 24" (the bar), "Change Drawing Length", "Move Drawing Cut" and
+the "24 drawings" tooltip say "frame" too; (c) the bands at 3 px (the proposal's 2.56).
+THE NEXT ROUND (the user's, NOT STARTED): Preferences > Onion Skin with hue sliders (as the Perspective tool's guides)
+and standard Sanko sliders for opacity; Preferences > Camera with standard Sanko sliders for the Action Safe and Title
+Safe opacity plus a line-thickness slider each; every new slider the standard Sanko slider of the Zoom Toolbar.
+
+## STATUS 2026-11-26 (evening): BATCH I-2 BUILT - FRAME-BY-FRAME DRAWINGS IN A LAYER (A RUN OF DRAWINGS, NEW DRAWING ON 2S WITH N, THE DRAWINGS LANE OF THE LAYER ROW, THE ONION SKIN BEFORE AND AFTER, PREFERENCES > ONION SKIN, CTRL+SHIFT+N NEW LAYER, FILE VERSION 7); NOTHING OF I-2 COMMITTED - WAITING FOR HAND TEST I2-1
+THE USER'S WORD: the section below (pasted 2026-11-26 about 15:05) - I-2 (Figma 727:757) approved with eight answers, "build
+I-2 without waiting for me ... Don't commit until my hand test passes."
+FIGMA: I-1b (701:755) renamed "BUILT 2026-11-26 I-1b ...". I-2 (727:757) renamed "APPROVED 2026-11-26 I-2 ..." and
+changed to the answers: section 3 redrawn (the drawing before in blue, the one after in orange; two small canvases for a
+run's first and last drawing), a new section 3b (the Preferences > Onion Skin page, drawn from the Keyframes page's
+parts), section 7 now "Your answers". Pictures in Documents\SankoTV-Design\figma-I2\ (I-2_approved_full.png,
+I-2_section3_onion_skin.png, I-2_section3b_preferences_onion_skin.png).
+N AND CTRL+SHIFT+N WERE BOTH FREE: no shortcut, menu entry or key handler had either (Ctrl+N is New Project).
+THE MODEL (StoryboardModel.h, LF): struct LayerPixels - image, tiles, stageRect, tilesOf and what reads them (atRest,
+hasPixels, pixelSize, tilesCurrent, contentKey, placedKey, pixels, unfoldNow, paintTo) - moved out of Layer, which now
+INHERITS it: `layer.image` is as it was. Layer::drawings (QVector<LayerDrawing {id, start, px}>): EMPTY for a layer with
+one drawing (every layer before I-2: no project without a run changes), else two or more in time order, the first's
+start 0; Layer::shown is the drawing the layer's own pixels ARE, the others keep theirs in px (its own px is empty);
+Layer::runRate is what the starts are counted at (frames). So the canvas, every tool, the engine and the history work on
+the drawing under the playhead with the code that worked on a layer. show(i) swaps (no pixel copied); asDrawing(i) is the
+layer as one drawing alone (shared pixels) for whatever draws, measures or writes one; pixelsOf(i); drawingAt(frame);
+countRunAt(fps) (what every edit does first: the starts in the project's frames); forEachPixels (a fold, a margin, a
+resize reach all). Panel: layerHasRun, hasRuns, runFrameAtPlace / drawingAtPlace(layer, at), runChangesIn / hasLiveRuns,
+changesOverTime() = hasMotion() || hasLiveRuns(), showDrawingsAtPlace(at). flattenedImage and flattenFingerprint use a
+run's FIRST drawing (pixelsOf(0)): the strip, the SHOTS clips, the stills and the saved flatten are the panel's first
+frame whichever drawing is on the canvas. marginTo folds and re-rects every drawing.
+WHAT DRAWS A FRAME: camera/ShotCamera.cpp paintLayers takes, for a layer with a run, stored.asDrawing(drawingAtPlace(at));
+layeredPaint is true for changesOverTime(); depthKey adds the exposed drawing's contentKey (every frame of one drawing is
+one cache entry). The preview (AnimaticPage's display: setAt and paintEvent) and the MP4 (export/ProjectExport.cpp
+pumpVideo) switch on changesOverTime() where they switched on hasMotion().
+AT REST (LayerFolder.cpp): sweep folds every drawing of every panel - on the panel on the canvas all but each layer's
+shown one; land() gives the tiles to every holder of that image (a drawing made "from this one" shares its image until
+drawn on); held() counts them all.
+THE CANVAS (DrawingCanvas): MotionView::fps; DrawingCommand and SankoPaintStrokeCommand remember the drawing a step was
+made on (shownDrawingIdOf at construction) and undo / redo call showDrawingForUndo first - for the panel on the canvas it
+emits drawingNeededForUndo (the page puts the playhead on that drawing) and makes sure the drawing is on the layer.
+runNoteText() ("Ground  ·  drawing 3 of 8  ·  2 frames"; the last: "holds to the panel's end") is the bar's note after the
+camera's and the pose's, before "Drawing view". The onion skin: setPreviousPixmap tints with SankoOnionSkin's "before"
+colour and paints at its opacity (the blue #4D9FFF at 30 % by default: as it was); setDrawingGhosts(QVector<OnionGhost>),
+painted after it in the order given, not while the Move tool poses an animated layer; drawingGhost(pixels, tint) takes
+each pixel's alpha.
+THE WORKSPACE (StoryboardPage): showDrawingsAtPlayhead() - called first in refreshLayerMotionUi (playheadMoved, undo,
+another panel) and when the preview goes: settleForLayerChange, panel->showDrawingsAtPlace(placeInPanel), unfoldNow, the
+folder's sweep, the Move box, the Layers thumbnails, the ghosts, the bar; settleDrawingsAtPlayhead(panel) (no pixel work)
+in selectPanel before the open and in applyLayerStackForUndo. newDrawing(fromThisOne) - N, the +, the lane's menu, the
+Layers panel's layer menu: start = max(playhead, the drawing under it's start + 2); with a later drawing in the way the
+later ones move on by start + 2 - its start; refused in amber when start or the last drawing would pass the panel's last
+frame, on a folder, the Background ("has one drawing"), a locked layer; blank (a transparent image) or a copy (shared);
+the playhead steps onto it; one LayerStackCommand ("New Drawing" / "New Drawing from This One"). deleteDrawing: the one
+before holds (the first one's frames go to the one after), down to one drawing the layer is a plain layer again; "Delete
+Drawing". moveDrawingCut(layer, drawing, frame, alone): never onto the drawing before, alone never onto the one after;
+"Change Drawing Length" / "Move Drawing Cut". goToDrawing. onDrawingsLaneMenu (layerDrawingMenu: layerDrawingNew,
+layerDrawingNewFrom, layerDrawingDelete). m_layerKeyFocus.drawing: the block tapped is the selected thing on the row
+(timelineDelete deletes it; a press on the timecode row drops it, as it drops a key). Merge Layers is refused when a layer
+has a run. Ctrl+Shift+N = layerAdd. The Layers panel: LayerDrawingsMark ("layerDrawingsMark", its tooltip "8 drawings")
+after the name of a layer with a run; its menu has New Drawing and New Drawing from This One. layerDrawingEdited ->
+MainWindow -> the Dev Recorder's "layerDrawing" line (what, layer, panel, frame, frames, drawings, shown, starts).
+updateOnionGhost: the previous panel's ghost only when panelGhostWanted() (the selected layer has one drawing, or shows
+its run's first, and "before" is not 0); updateDrawingGhosts: on a run, the drawings after then before, the farthest
+first, each side's count, colour and opacity (opacityAt: 60 % per step away); a cache of at most four stage-sized ghosts.
+MY READING OF ANSWER 5, FLAGGED TO THE USER: on a run's first drawing the drawing(s) AFTER show too.
+THE TIMELINE (AnimaticTimeline): the LAYER row is there when a layer has motion OR a run; 46 px (kLayerRowRunH) while the
+selected layer has a run, the SHOTS track giving the 18 px (its floor then kPanelRunMinH 30). The drawings lane: blocks at
+y +25, 16 px high (drawingBlocks: start, end, x0, x1, shown, selected, tint, strength 0.46 shown / 0.22 / 0.10 the last),
+the cut 1 px at 70 %, the number when it fits and "holds to the panel's end" on the last, a band line top and bottom, the
+onion skin's colours on the blocks it ghosts. The pointer's lane decides (inDrawingsLane: below kKeysLaneH 24): a cut
+(drawingCutAt, 4 px) may become Drag::DrawingCut - Alt read as the drag goes, Snap takes the playhead and the layer's
+keys, the chip "drawing 2 · 4 frames" - one drawingCutMoveRequested on release; a block: drawingBlockPressed; right-click:
+drawingsLaneContextMenuRequested. The + (QToolButton "layerNewDrawing", its font in POINTS - (pz5) caught a pixel one) at
+the row's left: newDrawingRequested. AnimaticPage forwards all four and setSelectedDrawing / setOnionSkinShown.
+PREFERENCES (MainWindow): the list is Camera, Keyframes, Onion Skin, Playback, Recovery, Saving. The page: for "Drawings
+before" and "Drawings after" a brushlib::StudioSegmentedRow "Drawings shown" 0-3 (prefsOnionBeforeCount / AfterCount),
+eight KeySwatch presets (SankoOnionSkin::presets: Blue #4D9FFF, Purple, Teal, Green, Yellow, Orange, Pink, Red) + the
+side's custom diamond + Custom..., a SankoSlider opacity 5-100 %; OnionPreview; "Use the default (blue before, orange
+after)" (prefsOnionDefault). New header SankoOnionSkin.h (LF, written with Write): the choices, the defaults (1 and 1,
+#4D9FFF and #F27A3D, 30 %), kFalloff 0.6, the settings' keys onionSkin/<before|after><Count|Color|Opacity|Custom>.
+loadOnionSkin() at the start. WHY ORANGE: blue and orange stay apart on white paper and beside black ink, and for most
+colour-blind eyes.
+THE FILE (ProjectIO): VERSION 7 only when a layer has a run (kFileVersionLayerDrawings; an older build refuses it). A
+run's layer says "drawings": [{"id", "start", "imageFile", "origin", "size"(, "fill")}] and "runRate"; its own "imageFile"
+is the first drawing's and its place is said in the drawing's entry alone. Each drawing a file
+"p_<panel>_l_<layer>_d_<drawing>.png" (namesFor / drawingNameKey; isIdImageName takes the "_d_" part), written by
+saver.layer(layer.asDrawing(d)) - so skipped when its file holds it, and a stroke on one drawing writes that one;
+ImageJob::drawing and sayLayerPlace put a background save's place into the drawing's entry; namedImages has
+"D:<panel>:<layer>:<drawing>" for each (Clean Up Project Folder and the superseded-pictures rule know the files);
+flattenContent takes the first drawing. LOADING: a run's first drawing is read into the layer and each further one into a
+STAND-IN layer put after it - the same code that has always read a layer's pixels, run once per drawing (two names hide
+the outer ones on purpose) - placed and folded with the rest, then handed to the layer as that drawing's pixels and
+removed (runStandIns); the panel's active layer and its flatten's ledger line are said after that (runActive,
+runFlattens). ProjectResize::resizePanel resizes every drawing.
+NOT DONE / KNOWN LIMITS: Trim Hidden Art trims the drawing each layer shows, not a run's other drawings (art outside the
+stage arises only after a margin was made smaller). Ctrl+C / Ctrl+X with a block selected say "No layer key is
+selected" (copy and paste of drawings: later, the user's answer 8). A loaded run whose starts do not rise is repaired
+silently (no count shown). The previous PANEL's ghost is that panel's first frame, as before.
+CHECKS: lifecycle slice "i2" (SANKO_LIFECYCLE_ONLY=i2), 36: (dr1)-(dr20) with controls - N, Del, Ctrl+Z, Ctrl+Y and
+Ctrl+Shift+N through Qt's shortcut path; the lane's blocks, cuts, + and menu pressed through the window system
+(libbox::pointerTo); strokes drawn with the brush; what a drawing holds read from its pixels; the row, the canvas (ghost
+colours) and the preview read from their pictures. Camera family +5: (dw1)-(dw3) - a run with NOTHING moving in the film,
+the flatten, layeredPaint, and the frames the real MP4 job is offered. Two older checks changed, (kp1) and (ss11): the
+list of Preferences pages they ask for has "Onion Skin" - old and new text in
+Documents\SankoTV-Design\batch-I2-2026-11-26\changed_checks_I2_old_new.md. RED RUNS (...\red_runs\): A (film frames,
+folding, Ctrl+Shift+N, the panel-ghost rule, loading: dr11 dr17 dr13 dr12 dr19 dr14 dr18 fail), C (undo on its drawing,
+the ghosts: dr6 dr14 dr15), D (on 1s: dr1 and what follows), E (the canvas not following the playhead: dr5 and what
+follows), B (the lanes, the save: dr8 dr9 controls, dr18), B1 alone (the strip's first frame: dr11), F (the preview's
+switch: dr20), G (the MP4's switch, camera family: dw3). MY MISTAKES IN THE NEW CHECKS: (dr17) asked for the new drawing
+two frames on with the playhead deep in a hold - the app was right, it starts at the playhead; (dr20)'s first red run
+PASSED because the fixture's Boat was moving, so the preview drew frame by frame anyway - the check now switches the
+Boat's Animate off first; red run B's strip part was masked by its lane part and was run again alone.
+A BREACH OF RULE 11, MINE, CAUGHT BY MY NEXT COMMAND: a one-word change with `sed -i` on ProjectExport.cpp and
+AnimaticPage.cpp rewrote both CRLF files as LF. Both had no other change, so `git checkout --` restored them (proved by
+the index's recorded size = blob bytes + lines, the CR counts and the gate's hash of AnimaticPage.cpp), and the three
+lines were made again with the Edit tool. Every other source edit of I-2: the Edit tool; SankoOnionSkin.h: Write.
+MEASURED (Documents\SankoTV-Design\batch-I2-2026-11-26\measure_24_drawings.txt; a scratch tool built from the tree's own
+ProjectIO / LayerTiles / ShotCamera, offscreen, on two fresh copies of the scratch copy of the song project in
+C:\SankoTV-TestCopies\MEASURE COPY - Mansour song, drawings\ - never the original): the song's 4K panel 1 (3840 x 2160),
+its "Layer 1" given 24 drawings on 2s. HEAVY (each drawing the layer's own art again, 12.8 MB of tiles): the 24 at rest
+302 MB (the process 351 MB against 40 just opened); on the canvas + one full image 31.6 MB (414 MB); the playhead onto
+the next drawing 5.9 ms (worst 6.2); a ghost of the onion skin 14.8 ms each, 31.6 MB each (four kept at most); the film
+at 1920 x 1080: median 2.7 ms a frame first time through (worst 11.5), 2.2 ms again, none over 41.7 ms - one drawing took
+1.9; at 4K 16 ms (worst 22); the first save 647 ms on the worker (30 files), Ctrl+S holds the window 2 ms; a stroke on one
+drawing: one file, 154 ms; opened again 325 ms. LIGHT (a few strokes each): 120 MB at rest, 5.7 ms a step, the same film
+times, saves 293 / 72 ms.
+THE EXISTING CHECKS ON THE CHANGED APP, BEFORE THE TEST FILE WAS TOUCHED (Release, 16:10): Camera 348/348; Lifecycle 1918
+run, 3 failed - (kp1) and (ss11) (the page list, above) and (pz5) (the +'s pixel font, fixed).
+FOR THE HAND TEST (I2-1): Documents\SankoTV-Design\handtest_I2.md, on "TEST COPY - small pirate, I-2 drawings"
+(C:\SankoTV-TestCopies; 117 files): the small pirate with the seagulls' three keys as in the earlier copies, and on OCEAN
+panel 1 a layer "Bird" with 24 drawings on 2s (frames 0 to 46 of 83), made and saved by the app's own code (a scratch
+tool, MakeRunCopy; version 7). The original's 94 files hashed before and after, unchanged
+(pirate_original_hashes_before_I2.txt / _after_I2copy.txt).
+QUICK CHECK (Release, 17:03-17:24, before the gate): Lifecycle 1954/1954, Camera 353/353.
+GATE I2a (app/build/_probe/split/fullgate_I2a.log, clean builds, normal mode, 2026-11-26 17:27-18:27, 3603 s): every
+family GREEN IN BOTH BUILDS - Lifecycle 1954, Camera 353, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74,
+DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13, CanvasBrushLock 3, Release and Debug alike. Hash list
+app/build/_probe/split/sha_I2a_gate.txt (the 20 changed or new source and test files, made at 17:25 before the gate; all
+20 OK after it; no RED RUN marker in any), exes sha_I2a_exes.txt (Release 354df1ff..., Debug 7f9d0206...). EXE: built
+"Nov 26 2026 17:29:17", 1b828a5bf+dirty (17:29:37 on disk). No source was edited after the hash list was made.
+NEXT: the user's hand test I2-1 (handtest_I2.md). If it passes and they say so, commit I-2 (the 20 files of
+sha_I2a_gate.txt + this HANDOFF), push, and rename Figma I-2 (727:757) BUILT. COMMIT NOTHING OF I-2 BEFORE THAT. One
+thing to ask about in the report: on a run's FIRST drawing the next drawing shows as a ghost too (my reading of answer 5).
+
 ## 2026-11-26 (15:2x): BATCH I-1b ROUND 2 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I1b-4 - COPY, CUT AND PASTE OF LAYER KEYS, DEL ON A LAYER KEY, KEY COLOURS IN PREFERENCES, SPACE AND ESC WHEREVER THE POINTER IS WHILE THE FILM IS UP, THE CAMERA NOTE'S "SOFT" IN AMBER, THE PERSPECTIVE PROMPT BACK ON THE CANVAS; FIGMA I-2 (727:757) APPROVED WITH EIGHT ANSWERS - TO BE BUILT NEXT
 THE USER'S WORD (pasted 2026-11-26, about 15:05): "Hand test I1b-4 done: all steps looked right. Read every Dev Recorder
 session made after 12:54 on 26 November, oldest first (two, because of the restart). Confirm from system.txt that each ran

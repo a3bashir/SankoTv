@@ -123,11 +123,13 @@ struct ImageJob
     // - `image` is reduced to its drawn part where the job runs, with `tiles` the layer's
     // tiles so far, `frameAt` the frame's top-left in the image and `paper` for a
     // Background; the place it then has (`origin`) and a Background's `fill` are written
-    // into the project file's text at scenes[scene].panels[panel].layers[layer].
+    // into the project file's text at scenes[scene].panels[panel].layers[layer] - or, for
+    // a drawing of a run (batch I-2), at that layer's drawings[drawing].
     bool fold = false;
     QPoint frameAt;
     bool paper = false;
     int scene = -1, panel = -1, layer = -1;
+    int drawing = -1;
     quint32 fill = 0;
     QString why;                          // a failure's reason, as the writer and the file gave it
     bool tried = false;                   // the job ran (false: an earlier one had failed)
@@ -210,9 +212,18 @@ PlanResult runSavePlan(ImagePlan &plan, QJsonObject *root);
 inline constexpr int kFileVersion = 4;
 inline constexpr int kFileVersionOneMargin = 3;
 inline constexpr int kFileVersionLockedScene = 5;
+//
+// VERSION 7 (batch I-2, 2026-11-26): a layer may say "drawings": [{"id", "start",
+// "imageFile", "origin", "size" (and a Background's "fill")}, ...] and "runRate" - a run of
+// two or more drawings, each a picture file of its own ("p_<panel>_l_<layer>_d_<drawing>.png"),
+// "start" the frame of the panel it is first shown at, counted at "runRate". The layer's own
+// "imageFile" names the first drawing's file; its place is said in the drawing's entry
+// alone. Only a project with such a layer is written so - an older build refuses it rather
+// than drop the drawings silently - and one without stays the version it was. Reads 1 to 7.
 inline constexpr int kFileVersionLayerMotion = 6;
+inline constexpr int kFileVersionLayerDrawings = 7;
 // The newest version this build reads (MainWindow refuses a later one).
-inline constexpr int kFileVersionNewest = kFileVersionLayerMotion;
+inline constexpr int kFileVersionNewest = kFileVersionLayerDrawings;
 // The older form, for the checks' fixtures only: version 2, every layer's file the
 // whole stage, with no "origin" or "fill".
 void setWriteVersion2ForTest(bool on);

@@ -1,6 +1,7 @@
 #include "SankoTheme.h"
 #include "SankoSettings.h"
 #include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
+#include "SankoOnionSkin.h" // the onion skin's counts, colours and opacities (batch I-2)
 #include "DrawingCanvas.h"
 
 #include "StageMarginDialog.h" // stagemargin::kMaxSide
@@ -74,18 +75,21 @@ namespace {
 // Build a display-only ghost: previous strokes become semi-transparent blue
 // (#4d9fff) and the white paper becomes fully transparent, so compositing it
 // over the current panel shows a faint blue ghost without washing the canvas.
-QPixmap buildGhost(const QPixmap &previous)
+// (`tint`: the onion skin's "before" colour - that blue unless Preferences > Onion Skin
+// says another, batch I-2.)
+QPixmap buildGhost(const QPixmap &previous, const QColor &tint)
 {
     if (previous.isNull())
         return QPixmap();
     QImage img = previous.toImage().convertToFormat(QImage::Format_ARGB32);
     const int w = img.width();
     const int h = img.height();
+    const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
     for (int y = 0; y < h; ++y) {
         QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
         for (int x = 0; x < w; ++x) {
             const int alpha = 255 - qGray(line[x]); // dark strokes opaque, white clear
-            line[x] = qRgba(0x4d, 0x9f, 0xff, alpha);
+            line[x] = qRgba(tr, tg, tb, alpha);
         }
     }
     return QPixmap::fromImage(img);
@@ -702,7 +706,9 @@ public:
                    const QRect &region, const QImage &before, const QImage &after,
                    const QString &text)
         : QUndoCommand(text), m_canvas(canvas), m_panel(panel),
-          m_layerId(layerId), m_region(region), m_before(before), m_after(after)
+          m_layerId(layerId), m_region(region), m_before(before), m_after(after),
+          // The drawing of a run it was made on (batch I-2): the one the layer shows now.
+          m_drawingId(canvas ? canvas->shownDrawingIdOf(panel, layerId) : QString())
     {
     }
     // KEPT ART (batch B1): the layer's tiles before and after as well - they hold
@@ -715,6 +721,7 @@ public:
     }
     void undo() override
     {
+        m_canvas->showDrawingForUndo(m_panel, m_layerId, m_drawingId);
         m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_before,
                                           m_withTiles ? &m_tilesBefore : nullptr);
     }
@@ -724,6 +731,7 @@ public:
             m_firstRedo = false; // already applied interactively
             return;
         }
+        m_canvas->showDrawingForUndo(m_panel, m_layerId, m_drawingId);
         m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_after,
                                           m_withTiles ? &m_tilesAfter : nullptr);
     }
@@ -732,6 +740,7 @@ private:
     DrawingCanvas *m_canvas;
     Panel *m_panel;
     QString m_layerId;
+    QString m_drawingId;
     QRect m_region;
     QImage m_before;
     QImage m_after;
@@ -751,8 +760,10 @@ public:
                             const QString &layerId,
                             const SankoPaintHostAdapter::StrokeResult &result)
         : QUndoCommand(QStringLiteral("Brush Stroke")), m_canvas(canvas),
-          m_panel(panel), m_layerId(layerId), m_commit(result.commit),
-          m_replay(result.replay)
+          m_panel(panel), m_layerId(layerId),
+          // The drawing of a run the stroke was made on (batch I-2).
+          m_drawingId(canvas ? canvas->shownDrawingIdOf(panel, layerId) : QString()),
+          m_commit(result.commit), m_replay(result.replay)
     {
         for (const BrushTilePatch &patch : m_commit.tilePatches) {
             m_afterBytes += patch.after.sizeInBytes();
@@ -762,8 +773,10 @@ public:
 
     void undo() override
     {
-        if (m_canvas)
-            m_canvas->applyBrushCommitForUndo(m_panel, m_layerId, m_commit, false);
+        if (!m_canvas)
+            return;
+        m_canvas->showDrawingForUndo(m_panel, m_layerId, m_drawingId);
+        m_canvas->applyBrushCommitForUndo(m_panel, m_layerId, m_commit, false);
     }
 
     void redo() override
@@ -774,6 +787,7 @@ public:
             m_firstRedo = false;
             return; // pixels were published before QUndoStack::push()
         }
+        m_canvas->showDrawingForUndo(m_panel, m_layerId, m_drawingId);
         if (m_hasAfterPixels) {
             m_canvas->applyBrushCommitForUndo(m_panel, m_layerId, m_commit, true);
             return;
@@ -812,6 +826,7 @@ private:
     DrawingCanvas *m_canvas = nullptr;
     Panel *m_panel = nullptr;
     QString m_layerId;
+    QString m_drawingId;
     BrushStrokeCommit m_commit;
     SankoPaintHostAdapter::StrokeWork m_replay;
     QHash<QPoint, QByteArray> m_afterHashes;
@@ -1114,9 +1129,106 @@ void DrawingCanvas::setOnionSkinEnabled(bool enabled)
 
 void DrawingCanvas::setPreviousPixmap(const QPixmap &previous, const QRect &onStage)
 {
-    m_ghost = buildGhost(previous); // null pixmap -> empty ghost
+    m_ghostSource = previous;
+    m_ghost = buildGhost(previous, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color); // null pixmap -> empty ghost
     m_ghostRect = onStage;
     update();
+}
+
+// --- THE DRAWINGS BEFORE AND AFTER (batch I-2) -----------------------------------------------
+
+void DrawingCanvas::setDrawingGhosts(const QVector<OnionGhost> &ghosts)
+{
+    if (ghosts.isEmpty() && m_drawingGhosts.isEmpty())
+        return;
+    m_drawingGhosts = ghosts;
+    update();
+}
+
+// A drawing is its own pixels on nothing (no paper), so the ghost takes each pixel's alpha:
+// the tint as opaque as the drawing is there, whatever colour it was drawn in.
+QPixmap DrawingCanvas::drawingGhost(const QImage &pixels, const QColor &tint)
+{
+    if (pixels.isNull())
+        return QPixmap();
+    QImage img = pixels.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const int w = img.width();
+    const int h = img.height();
+    const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const int a = qAlpha(line[x]);
+            if (a)
+                line[x] = qPremultiply(qRgba(tr, tg, tb, a));
+        }
+    }
+    return QPixmap::fromImage(img);
+}
+
+void DrawingCanvas::refreshOnionColors()
+{
+    m_ghost = buildGhost(m_ghostSource, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color);
+    update();
+}
+
+QString DrawingCanvas::shownDrawingIdOf(const Panel *panel, const QString &layerId) const
+{
+    if (panel)
+        for (const Layer &layer : panel->layers)
+            if (layer.id == layerId)
+                return layer.shownId();
+    return QString();
+}
+
+// A PIXEL STEP LANDS ON THE DRAWING IT WAS MADE ON (batch I-2): a stroke, a fill, an erase on
+// one drawing of a run is undone and redone on that drawing, wherever the playhead is by then.
+// For the panel on the canvas the page is asked to put the playhead on the drawing first, so
+// the step shows; whatever it did, the drawing is on the layer when this returns.
+void DrawingCanvas::showDrawingForUndo(Panel *panel, const QString &layerId, const QString &drawingId)
+{
+    if (!panel || drawingId.isEmpty())
+        return;
+    for (int index = 0; index < panel->layers.size(); ++index) {
+        if (panel->layers.at(index).id != layerId)
+            continue;
+        const int wanted = panel->layers.at(index).drawingIndexOf(drawingId);
+        if (wanted < 0 || wanted == panel->layers.at(index).shown)
+            return;
+        if (panel == m_panel)
+            emit drawingNeededForUndo(panel, layerId, drawingId);
+        Layer &layer = panel->layers[index]; // (the page may have swapped: read again)
+        const int now = layer.drawingIndexOf(drawingId);
+        if (now >= 0 && layer.show(now)) {
+            if (panel == m_panel)
+                layer.unfoldNow();
+            invalidateComposite();
+            update();
+        }
+        return;
+    }
+}
+
+QString DrawingCanvas::runNoteText() const
+{
+    const Layer *layer = m_panel ? m_panel->activeLayer() : nullptr;
+    if (!layer || !m_panel->layerHasRun(*layer))
+        return QString();
+    const int count = layer->drawingCount();
+    const int shown = qBound(0, layer->shown, count - 1);
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    QString text = layer->name + dot + QStringLiteral("drawing %1 of %2").arg(shown + 1).arg(count);
+    if (shown + 1 < count) {
+        // Its length in the project's frames (the run's are counted at its own rate).
+        const MotionView v = motionView();
+        const double perRunFrame = double(v.valid ? v.fps : layer->runRate) / qMax(1, layer->runRate);
+        const int frames = qMax(1, int(std::lround((layer->drawingStart(shown + 1) - layer->drawingStart(shown))
+                                                   * perRunFrame)));
+        text += dot + (frames == 1 ? QStringLiteral("1 frame") : QStringLiteral("%1 frames").arg(frames));
+    } else {
+        text += dot + QStringLiteral("holds to the panel's end");
+    }
+    return text;
 }
 
 void DrawingCanvas::setLightTableEnabled(bool enabled)
@@ -1279,6 +1391,9 @@ QString DrawingCanvas::toolNoteText() const
         return camera;
     if (poseMode())
         return poseChipText();
+    // A layer with a run of drawings (batch I-2): which drawing is on the canvas.
+    if (const QString run = runNoteText(); !run.isEmpty())
+        return run;
     // (The Perspective tool's "Tap anywhere to create the first Vanishing Point." is not a note of
     // the bar's: it is painted at the canvas's centre - the user's deliberate exception, paintEvent.)
     if (shotCameraDrawingViewChip())
@@ -9129,13 +9244,28 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     }
     painter.setOpacity(1.0);
 
-    // Onion skin: faint blue ghost of the previous panel (display only).
+    // Onion skin: faint blue ghost of the previous panel (display only). Its colour and its
+    // opacity are the onion skin's "before" (the blue at 30 % unless Preferences says another).
     if (m_onionSkin && !m_ghost.isNull()) {
         painter.save();
         painter.setClipRect(canvasRi, Qt::IntersectClip); // by the frame (batch 6c)
-        painter.setOpacity(0.30);
+        painter.setOpacity(SankoOnionSkin::opacityAt(SankoOnionSkin::Side::Before, 1));
         painter.drawPixmap(m_ghostRect.isEmpty() ? canvasRi : m_ghostRect.translated(canvasRi.topLeft()),
                            m_ghost);
+        painter.setOpacity(1.0);
+        painter.restore();
+    }
+    // ...and, on a layer with a run of drawings, its drawings before and after the one under
+    // the playhead (batch I-2), in the order the page gave them.
+    if (m_onionSkin && !m_drawingGhosts.isEmpty() && !poseMode()) {
+        painter.save();
+        painter.setClipRect(canvasRi, Qt::IntersectClip);
+        for (const OnionGhost &ghost : std::as_const(m_drawingGhosts)) {
+            if (ghost.pixmap.isNull())
+                continue;
+            painter.setOpacity(ghost.opacity);
+            painter.drawPixmap(canvasRi, ghost.pixmap);
+        }
         painter.setOpacity(1.0);
         painter.restore();
     }

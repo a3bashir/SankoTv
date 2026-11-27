@@ -100,6 +100,10 @@ public:
 
     QMainWindow *host() const { return m_host; }
 
+protected:
+    // The host's Show and Resize ask for the sidebar widths that are still waiting (2026-11-26).
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     // --- floating-size normalization -----------------------------------------
     void applyFloatingSize(QDockWidget *dock);
@@ -115,6 +119,12 @@ private:
     void preserveSidebarWidth(Qt::DockWidgetArea area,
                               const std::function<void()> &operation);
     void applySidebarWidth(Qt::DockWidgetArea area, int width);
+    // The sidebars' saved widths wait until the host is on screen (2026-11-26; see the
+    // comment at queuePendingSidebarWidths): -1, nothing waiting.
+    void queuePendingSidebarWidths();
+    void applyPendingSidebarWidths();
+    int m_pendingLeftWidth = -1, m_pendingRightWidth = -1;
+    bool m_pendingQueued = false;
     void releaseSidebarWidthHolds();
     void releaseWidthHold(QDockWidget *dock);
     // Qt pins a floating dock window's min/max to its content hints (a

@@ -48,6 +48,9 @@ DockController::DockController(QMainWindow *host,
     // sidebar at one uniform width, which is what makes capturing and
     // preserving "the sidebar width" well-defined.
     m_host->setDockNestingEnabled(false);
+    // The host's Show and Resize: the saved sidebar widths wait for it to be on screen
+    // (queuePendingSidebarWidths, 2026-11-26).
+    m_host->installEventFilter(this);
 }
 
 QDockWidget *DockController::addPanel(QWidget *content, const QString &title,
@@ -201,13 +204,68 @@ bool DockController::restoreLayout()
     const int rightWidth =
         settings.value(m_settingsGroup + QStringLiteral("/sidebar/right"), -1)
             .toInt();
-    QTimer::singleShot(0, this, [this, leftWidth, rightWidth] {
-        if (leftWidth > 0 && leftWidth < m_host->width())
-            applySidebarWidth(Qt::LeftDockWidgetArea, leftWidth);
-        if (rightWidth > 0 && rightWidth < m_host->width())
-            applySidebarWidth(Qt::RightDockWidgetArea, rightWidth);
-    });
+    // ...AND NOT BEFORE THE HOST IS ON SCREEN (2026-11-26): see queuePendingSidebarWidths.
+    m_pendingLeftWidth = leftWidth;
+    m_pendingRightWidth = rightWidth;
+    queuePendingSidebarWidths();
     return true;
+}
+
+// THE SAVED SIDEBAR WIDTHS WAIT FOR THE HOST TO BE ON SCREEN, WITH ROOM FOR THEM (2026-11-26;
+// the user's note 4 after hand test I2-1: "the right dock came back about 32 px narrower after a
+// restart" - a fault, reproduced: a dock left 324 px wide came back 220, its content's least).
+// What happened: the workspace first appeared in a window narrower than the one its layout was
+// saved in (the app's window opens at its normal size and is made full-screen after; 1304 px
+// in the recording, the layout saved at 1920). restoreState()'s sizes - the sidebar and the
+// canvas column as they were - do not fit that width, so Qt squeezes both toward their least;
+// and when the window then grows, the room it gains goes to the canvas alone. The sidebar
+// stays at its least width, and that is what the next quit saves. (The widths this controller
+// saves beside the layout were meant to put that right, and never did: the one saved was always
+// -1, see sidebarWidth; and they were applied one event-loop turn after the restore, when the
+// workspace is still hidden behind the start page.) So the widths wait: asked for again each
+// time the host is shown or resized, and applied the first time it is on screen with room for
+// the sidebars beside the canvas column's own least width - one turn later still, since
+// restoreState() and a show both finish dock geometry in a deferred layout pass that would
+// overwrite a synchronous resize. A press on the host itself - a separator taken by hand - ends
+// the wait: from then the widths are the artist's.
+void DockController::queuePendingSidebarWidths()
+{
+    if (m_pendingQueued || (m_pendingLeftWidth <= 0 && m_pendingRightWidth <= 0))
+        return;
+    m_pendingQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_pendingQueued = false;
+        applyPendingSidebarWidths();
+    });
+}
+
+void DockController::applyPendingSidebarWidths()
+{
+    if (!m_host->isVisible())
+        return; // still hidden: the host's next Show or Resize asks again
+    const int leftWidth = m_pendingLeftWidth, rightWidth = m_pendingRightWidth;
+    // Room for them beside the canvas column: without it the sidebars would be squeezed again,
+    // so the wait goes on until the host is wide enough (its next Resize asks).
+    const QWidget *central = m_host->centralWidget();
+    const int centralLeast = central ? qMax(central->minimumWidth(), central->minimumSizeHint().width()) : 0;
+    if (qMax(0, leftWidth) + qMax(0, rightWidth) + centralLeast > m_host->width())
+        return;
+    m_pendingLeftWidth = m_pendingRightWidth = -1;
+    if (leftWidth > 0)
+        applySidebarWidth(Qt::LeftDockWidgetArea, leftWidth);
+    if (rightWidth > 0)
+        applySidebarWidth(Qt::RightDockWidgetArea, rightWidth);
+}
+
+bool DockController::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_host) {
+        if (event->type() == QEvent::Show || event->type() == QEvent::Resize)
+            queuePendingSidebarWidths();
+        else if (event->type() == QEvent::MouseButtonPress)
+            m_pendingLeftWidth = m_pendingRightWidth = -1; // a separator taken by hand: the widths are the artist's
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 void DockController::resetLayout()
@@ -512,7 +570,19 @@ QDockWidget *DockController::representativeDock(Qt::DockWidgetArea area) const
 int DockController::sidebarWidth(Qt::DockWidgetArea area) const
 {
     const QDockWidget *dock = representativeDock(area);
-    return dock ? dock->width() : -1;
+    if (dock)
+        return dock->width();
+    // THE HOST HIDDEN (2026-11-26): the layout is saved as the app ends, after its window has
+    // closed - and a dock unchecks its own toggle action the moment an ancestor hides, so
+    // representativeDock (which asks that action) finds no open dock and the width saved was
+    // always -1: "the sidebar was empty". A dock that was not itself hidden still has the
+    // geometry it had on screen; the first such in the area gives the sidebar's width.
+    if (!m_host->isVisible())
+        for (const QDockWidget *panel : m_panels)
+            if (!panel->isFloating() && !panel->isHidden() && m_host->dockWidgetArea(const_cast<QDockWidget *>(panel)) == area
+                && panel->width() >= kMinSidebarWidth)
+                return panel->width();
+    return -1;
 }
 
 void DockController::applySidebarWidth(Qt::DockWidgetArea area, int width)

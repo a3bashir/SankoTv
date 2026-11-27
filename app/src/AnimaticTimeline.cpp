@@ -1,6 +1,7 @@
 #include "AnimaticTimeline.h"
 #include "SankoIcons.h"
 #include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
+#include "SankoOnionSkin.h" // the onion skin's colours on the drawings lane's blocks (batch I-2)
 #include "SankoTip.h" // sankoHideTipSoon: the hovers' grace (batch C)
 #include "SankoTheme.h"
 #include "SankoTimelineTheme.h"
@@ -122,6 +123,21 @@ constexpr double kFrameTicksPpf = 8.0;
 constexpr qreal kClipR = 5.0;
 constexpr int kThumbInset = 6, kThumbH = 42, kThumbR = 3;
 constexpr int kPillW = 28, kPillH = 18;
+// THE THUMBNAIL KEEPS ITS PICTURE'S SHAPE, AND STAYS IN ITS ROW (2026-11-26, the user's note 5
+// after hand test I2-1; it was a strip kThumbH tall across the clip, cropped to fill, at any
+// height of the track - cropped to a sliver on a wide clip, and over the CAMERA row once the
+// track was shorter than it). The picture is fitted whole - never stretched, never cropped -
+// at the clip's left, where the cut begins: over the strip that holds the name and the pill
+// (kNameStripH; the design's 42 px on its 76 px body) while the body has room for a picture
+// of kStoreyMinThumbH above it, else in the body's whole height less kShortInset above and
+// below, the name beside it. Under kThumbMinH there is no picture.
+constexpr int kNameStripH = 28, kStoreyMinThumbH = 24, kShortInset = 4, kThumbMinH = 10;
+constexpr int kShortNameMinW = 30; // beside the picture, a name with less room than this is not drawn
+// THE DRAWINGS LANE (2026-11-26, the user's note 7): the block under the pointer is white at
+// this alpha over its own fill (8 %); Zoom to Frames makes the lane's shortest drawing
+// kFramesZoomBlockPx wide.
+constexpr int kDrawingHoverAlpha = 20;
+constexpr int kFramesZoomBlockPx = 32;
 // What hides first as a clip narrows (the user's order, 2026-10-18): the
 // name (below 86 px of body), then the thumbnail (below 48), then the pill
 // (below 42); the number stays while the body is 20 px or more.
@@ -148,6 +164,67 @@ QPainterPath clipShape(const QRectF &r, qreal rad, bool roundL, bool roundR)
         path.arcTo(QRectF(r.left(), r.top(), 2 * rl, 2 * rl), 180, -90);
     path.closeSubpath();
     return path;
+}
+
+// WHERE A MOVE'S EASE MARK SITS (2026-11-26, the user's note 6 after hand test I2-1: a mark sat
+// on another layer's key, and a press on it took the key). Centred on the move, as ever, while
+// nothing is in the way; else moved along the move by as little as puts it clear of every key
+// drawn on the row (kMarkKeyGap px between them). The pill needs what it always needed of the
+// move's ends - 11 px each side, the 40 px rule - and the small mark 2 (the 16 px rule); where
+// the pill has no clear place the small mark is tried, and where that has none the move has no
+// mark: the line itself opens the eases (the short-move rule of batch E). `keys`: each key
+// drawn on the row but the move's own two - its centre x and its half width.
+constexpr qreal kMarkKeyGap = 2.0;
+struct EaseMarkPlace
+{
+    bool glyph = false, smallMark = false;
+    qreal x = 0;
+};
+bool clearPlaceFor(qreal width, qreal endPad, qreal x0, qreal x1, const QVector<QPointF> &keys, qreal *centre)
+{
+    const qreal lo = x0 + endPad + width / 2.0, hi = x1 - endPad - width / 2.0;
+    if (lo > hi + 1e-6)
+        return false;
+    const qreal mid = (x0 + x1) / 2.0;
+    const auto blocked = [&](qreal c) {
+        for (const QPointF &key : keys)
+            if (qAbs(c - key.x()) < key.y() + kMarkKeyGap + width / 2.0 - 1e-6)
+                return true;
+        return false;
+    };
+    if (!blocked(mid)) {
+        *centre = mid;
+        return true;
+    }
+    // Beside a key in the way, on either side of it: the nearest such place to the middle.
+    bool found = false;
+    qreal best = 0;
+    for (const QPointF &key : keys) {
+        const qreal reach = key.y() + kMarkKeyGap + width / 2.0;
+        for (const qreal c : {key.x() - reach, key.x() + reach}) {
+            if (c < lo - 1e-6 || c > hi + 1e-6 || blocked(c))
+                continue;
+            if (!found || qAbs(c - mid) < qAbs(best - mid)) {
+                best = c;
+                found = true;
+            }
+        }
+    }
+    if (found)
+        *centre = best;
+    return found;
+}
+EaseMarkPlace placeEaseMark(qreal x0, qreal x1, const QVector<QPointF> &keys)
+{
+    EaseMarkPlace place;
+    place.x = (x0 + x1) / 2.0;
+    if (clearPlaceFor(kGlyphW, (kGlyphMinSegment - kGlyphW) / 2.0, x0, x1, keys, &place.x))
+        place.glyph = true;
+    else if (clearPlaceFor(kSmallMarkW, (kSmallMarkMinSegment - kSmallMarkW) / 2.0, x0, x1, keys, &place.x))
+        place.smallMark = true;
+    else
+        place.x = (x0 + x1) / 2.0;
+    return place;
 }
 } // namespace
 
@@ -638,6 +715,58 @@ void AnimaticTimeline::buildTrackControls()
         m_animateButton->setChecked(m_cameraAnimate); // until the answer
         emit cameraAnimateToggled(on);
     });
+    // NEW DRAWING (batch I-2, Figma I-2 section 2): the + at the LAYER row's left - beside the
+    // drawings lane when the selected layer has one, else in the row. A click asks; the
+    // workspace makes the drawing (its undo step, its refusals). Placed and shown by
+    // layoutNewDrawingButton.
+    m_newDrawingButton = new QToolButton(m_canvas);
+    m_newDrawingButton->setObjectName(QStringLiteral("layerNewDrawing"));
+    m_newDrawingButton->setText(QStringLiteral("+"));
+    m_newDrawingButton->setAutoRaise(true);
+    m_newDrawingButton->setCursor(Qt::PointingHandCursor);
+    m_newDrawingButton->setFocusPolicy(Qt::NoFocus);
+    m_newDrawingButton->setFixedSize(20, 20);
+    m_newDrawingButton->setToolTip(QStringLiteral("New Frame (N)")); // "New Drawing (N)" until note 8
+    // (Its font in POINTS: a tool button with a pixel-sized font logs "QFont::setPointSize: Point
+    // size <= 0" at each hover - the census of (pz5), which caught this one's first sheet.)
+    m_newDrawingButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border: none; background: #1c1e25; color: #e5e5ed; border-radius: 4px;"
+        " font-size: 10pt; padding: 0px 0px 2px 0px; }"
+        "QToolButton:hover { background: %1; }")
+                                          .arg(kFlatHoverBg));
+    connect(m_newDrawingButton, &QToolButton::clicked, this, [this] { emit newDrawingRequested(); });
+    m_newDrawingButton->hide();
+    // ZOOM TO FRAMES (the user's note 7 after hand test I2-1, 2026-11-26): a small button
+    // beside the lane's +. Its picture is drawn here - a magnifier, two strokes - so no icon
+    // file (and no licence) comes with it.
+    m_zoomFramesButton = new QToolButton(m_canvas);
+    m_zoomFramesButton->setObjectName(QStringLiteral("layerZoomToFrames"));
+    m_zoomFramesButton->setAutoRaise(true);
+    m_zoomFramesButton->setCursor(Qt::PointingHandCursor);
+    m_zoomFramesButton->setFocusPolicy(Qt::NoFocus);
+    m_zoomFramesButton->setFixedSize(20, 20);
+    m_zoomFramesButton->setToolTip(QStringLiteral("Zoom to Frames: each drawing at least 32 px wide, the playhead "
+                                                  "in the middle. A double-click on the lane does the same."));
+    {
+        const qreal dpr = devicePixelRatioF();
+        QPixmap glyph(QSize(16, 16) * dpr);
+        glyph.setDevicePixelRatio(dpr);
+        glyph.fill(Qt::transparent);
+        QPainter g(&glyph);
+        g.setRenderHint(QPainter::Antialiasing, true);
+        g.setPen(QPen(QColor(0xe5, 0xe5, 0xed), 1.4, Qt::SolidLine, Qt::RoundCap));
+        g.drawEllipse(QPointF(7.0, 7.0), 4.2, 4.2);
+        g.drawLine(QPointF(10.2, 10.2), QPointF(13.6, 13.6));
+        g.end();
+        m_zoomFramesButton->setIcon(QIcon(glyph));
+        m_zoomFramesButton->setIconSize(QSize(16, 16));
+    }
+    m_zoomFramesButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border: none; background: #1c1e25; border-radius: 4px; padding: 0px; }"
+        "QToolButton:hover { background: %1; }")
+                                          .arg(kFlatHoverBg));
+    connect(m_zoomFramesButton, &QToolButton::clicked, this, [this] { zoomToFrames(); });
+    m_zoomFramesButton->hide();
 
     // The volume popup: a vertical slider, a child of the canvas, hidden
     // until the speaker opens it; placed by layoutVolumePopup (x 34 of the
@@ -678,6 +807,7 @@ void AnimaticTimeline::layoutTrackControls()
             m_animateButton->move(kControlX[1] - 2, y);
     }
     layoutVolumePopup();
+    layoutNewDrawingButton();
 }
 
 // The popup rises from the speaker's icon top: x 34 of the column (the
@@ -859,10 +989,32 @@ void AnimaticTimeline::refuse(const QString &why, const QPoint &globalPos)
 
 // --- Track geometry -------------------------------------------------------
 
+// The least the rows need, top to bottom. (While the LAYER row holds a drawings lane - batch
+// I-2 - the SHOTS track gives it its height, down to kPanelRunMinH, so the section keeps the
+// height the artist gave it.)
+int AnimaticTimeline::rowsMinH() const
+{
+    return kPanelY + (m_layerRowRun ? kPanelRunMinH : kPanelMinH) + kCameraH + layerRowH() + kAudioH;
+}
+
+// THE CANVAS IS NEVER SHORTER THAN ITS ROWS (2026-11-26, the user's note 5: "every row stays
+// inside its own bounds, whatever the timeline's height"). Its minimum was the four rows of
+// before the LAYER row, so with that row shown - 28 px, 71 with a drawings lane - a timeline
+// dragged to its smallest had its AUDIO row past its bottom edge. The minimum follows the rows
+// now, and the splitter above gives the timeline the room when a row appears.
+void AnimaticTimeline::syncMinimumHeight()
+{
+    if (!m_canvas || m_canvas->minimumHeight() == rowsMinH())
+        return;
+    m_canvas->setMinimumHeight(rowsMinH());
+    m_canvas->updateGeometry();
+    updateGeometry();
+    emit rowsMinimumChanged();
+}
+
 int AnimaticTimeline::tracksH() const
 {
-    return qMax(kPanelY + kPanelMinH + kCameraH + layerRowH() + kAudioH,
-                m_canvas ? m_canvas->height() : 0);
+    return qMax(rowsMinH(), m_canvas ? m_canvas->height() : 0);
 }
 
 int AnimaticTimeline::panelTrackH() const
@@ -992,7 +1144,8 @@ bool AnimaticTimeline::computeLayerRowShown() const
         for (const Panel *panel : scene->panels)
             if (panel)
                 for (const Layer &layer : panel->layers)
-                    if (layer.hasMotionData() && !isGroupLayer(layer)
+                    // ...or a run of drawings (batch I-2): the row is where its blocks are.
+                    if ((layer.hasMotionData() || layer.hasRun()) && !isGroupLayer(layer)
                         && layer.type != QLatin1String("background"))
                         return true;
     return false;
@@ -1001,17 +1154,346 @@ bool AnimaticTimeline::computeLayerRowShown() const
 void AnimaticTimeline::refreshLayerRow()
 {
     const bool shown = computeLayerRowShown();
-    if (shown != m_layerRowShown) {
+    // The drawings lane (batch I-2): the row is taller (kLayerRowRunH) while the selected layer has a run.
+    const bool run = shown && runLayer() != nullptr;
+    if (shown != m_layerRowShown || run != m_layerRowRun) {
         m_layerRowShown = shown;
+        m_layerRowRun = run;
+        syncMinimumHeight();   // the canvas is never shorter than its rows
         layoutTrackControls(); // the AUDIO row's controls move with it
     }
+    if (!run) {
+        m_selectedDrawing = -1;
+        m_hoverDrawing = -1;
+        if (m_drag == Drag::DrawingCut)
+            m_drag = Drag::None;
+    }
+    layoutNewDrawingButton();
     if (m_canvas)
         m_canvas->update();
 }
 
 QRect AnimaticTimeline::layerRowForTest() const
 {
-    return m_layerRowShown ? QRect(0, layerTrackY(), m_canvas ? m_canvas->width() : 0, kLayerRowH) : QRect();
+    return m_layerRowShown ? QRect(0, layerTrackY(), m_canvas ? m_canvas->width() : 0, layerRowH()) : QRect();
+}
+
+// --- THE DRAWINGS LANE (batch I-2, 2026-11-26; Figma I-2 727:757) -------------------------
+
+const Layer *AnimaticTimeline::runLayer(int *layerIndex, int *flat) const
+{
+    if (m_selected < 0 || m_selected >= m_blocks.size())
+        return nullptr;
+    const Block &b = m_blocks.at(m_selected);
+    const Panel *panel = b.sceneIndex < m_scenes.size() ? m_scenes.at(b.sceneIndex)->panels.value(b.panelIndex)
+                                                         : nullptr;
+    const Layer *layer = panel ? panel->activeLayer() : nullptr;
+    if (!layer || !panel->layerHasRun(*layer) || layer->type == QLatin1String("background"))
+        return nullptr;
+    if (layerIndex)
+        *layerIndex = panel->activeLayerIndex;
+    if (flat)
+        *flat = m_selected;
+    return layer;
+}
+
+QVector<int> AnimaticTimeline::runStarts(const Layer &layer) const
+{
+    // In the project's frames, as the workspace's edits count them (Layer::countRunAt).
+    Layer counted = layer;
+    counted.countRunAt(m_fps);
+    QVector<int> starts;
+    for (const LayerDrawing &drawing : counted.drawings)
+        starts.append(drawing.start);
+    if (m_drag == Drag::DrawingCut && m_cutDragActive && m_cutDragDrawing >= 1 && m_cutDragDrawing < starts.size()) {
+        const int delta = m_cutDragFrame - starts.at(m_cutDragDrawing);
+        if (m_cutDragAlone)
+            starts[m_cutDragDrawing] = m_cutDragFrame;
+        else
+            for (int i = m_cutDragDrawing; i < starts.size(); ++i)
+                starts[i] += delta;
+    }
+    return starts;
+}
+
+QRect AnimaticTimeline::drawingsLaneRect() const
+{
+    if (!m_layerRowShown || !m_layerRowRun || !m_canvas)
+        return QRect();
+    return QRect(kLabelCol, layerTrackY() + kDrawingsLaneY, m_canvas->width() - kLabelCol, kDrawingsLaneH);
+}
+
+QVector<AnimaticTimeline::DrawingBlock> AnimaticTimeline::drawingBlocks() const
+{
+    QVector<DrawingBlock> blocks;
+    const Layer *layer = runLayer();
+    if (!layer || !m_layerRowRun || m_selected < 0 || m_selected >= m_blocks.size())
+        return blocks;
+    const Block &b = m_blocks.at(m_selected);
+    const QVector<int> starts = runStarts(*layer);
+    const double ppf = pxPerFrame();
+    const int inPanel = playheadFrame() - b.startFrame;
+    using SankoKeyColors::Row;
+    const QColor own = SankoKeyColors::key(Row::Layer);
+    // The drawing under the playhead - or, off this panel, the one the layer shows.
+    int current = qBound(0, layer->shown, int(starts.size()) - 1);
+    if (inPanel >= 0 && inPanel < b.frames) {
+        current = 0;
+        for (int i = 1; i < starts.size() && starts.at(i) <= inPanel; ++i)
+            current = i;
+    }
+    for (int i = 0; i < starts.size(); ++i) {
+        if (starts.at(i) >= b.frames)
+            break; // past the panel's end: kept, unseen
+        DrawingBlock block;
+        block.index = i;
+        block.start = starts.at(i);
+        block.last = i + 1 >= starts.size() || starts.at(i + 1) >= b.frames;
+        block.end = block.last ? b.frames : starts.at(i + 1);
+        block.x0 = contentXToScreen((b.startFrame + block.start) * ppf);
+        block.x1 = contentXToScreen((b.startFrame + block.end) * ppf);
+        block.shown = i == current;
+        block.selected = i == m_selectedDrawing;
+        block.hovered = i == m_hoverDrawing;
+        block.tint = own;
+        // The blocks the onion skin ghosts, in its colours (Preferences > Onion Skin).
+        if (m_onionShown && i != current) {
+            using SankoOnionSkin::Side;
+            const Side side = i < current ? Side::Before : Side::After;
+            if (qAbs(i - current) <= SankoOnionSkin::choice(side).count)
+                block.tint = SankoOnionSkin::choice(side).color;
+        }
+        const bool plainTint = block.tint == own;
+        // A NEW, EMPTY FRAME IS GREY (the user's note 7, 2026-11-26) until something is drawn
+        // on it; then it takes the colour of the others. (An empty drawing has no ghost either.)
+        block.blank = drawingBlank(layer->pixelsOf(i));
+        if (block.blank)
+            block.tint = QColor(0x8a, 0x8c, 0x99);
+        block.strength = block.shown ? 0.46 : (block.last && i + 1 >= starts.size() && plainTint ? 0.10 : 0.22);
+        blocks.append(block);
+    }
+    return blocks;
+}
+
+bool AnimaticTimeline::inDrawingsLane(const QPoint &pos) const
+{
+    // The pointer's lane: below the keys' lane, to the row's bottom.
+    return m_layerRowShown && m_layerRowRun && pos.x() >= kLabelCol && pos.y() >= layerTrackY() + kKeysLaneH
+        && pos.y() < layerTrackY() + layerRowH();
+}
+
+int AnimaticTimeline::drawingBlockAt(const QPoint &pos) const
+{
+    if (!inDrawingsLane(pos))
+        return -1;
+    for (const DrawingBlock &block : drawingBlocks())
+        if (pos.x() >= block.x0 && pos.x() < block.x1)
+            return block.index;
+    return -1;
+}
+
+int AnimaticTimeline::drawingCutAt(const QPoint &pos) const
+{
+    if (!inDrawingsLane(pos))
+        return -1;
+    constexpr int kCutGrab = 4; // px either side, as a clip's edge takes
+    int best = -1, bestD = kCutGrab + 1;
+    for (const DrawingBlock &block : drawingBlocks()) {
+        if (block.index < 1)
+            continue; // the first drawing starts the panel
+        const int d = qAbs(int(std::lround(block.x0)) - pos.x());
+        if (d < bestD) {
+            bestD = d;
+            best = block.index;
+        }
+    }
+    return best;
+}
+
+bool AnimaticTimeline::drawingBlank(const LayerPixels &px) const
+{
+    const qint64 key = px.contentKey();
+    const auto known = m_blankByKey.constFind(key);
+    if (known != m_blankByKey.constEnd())
+        return known.value();
+    if (m_blankByKey.size() > 512) // a session's worth of drawings looked at: start again
+        m_blankByKey.clear();
+    const bool blank = px.blank();
+    m_blankByKey.insert(key, blank);
+    return blank;
+}
+
+QString AnimaticTimeline::drawingBlockLabel(const DrawingBlock &block) const
+{
+    QFont f = font();
+    f.setPixelSize(9);
+    if (block.shown)
+        f.setWeight(QFont::DemiBold); // as it is drawn (paintDrawingsLane)
+    const QFontMetrics fm(f);
+    const qreal room = block.x1 - block.x0 - 8.0;
+    const QString number = QString::number(block.index + 1);
+    if (block.last) {
+        const QString held = number + QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  holds to the panel's end");
+        if (fm.horizontalAdvance(held) <= room)
+            return held;
+    }
+    return fm.horizontalAdvance(number) <= room ? number : QString();
+}
+
+void AnimaticTimeline::paintDrawingsLane(QPainter &p)
+{
+    const QRect lane = drawingsLaneRect();
+    if (lane.isEmpty())
+        return;
+    const QVector<DrawingBlock> blocks = drawingBlocks();
+    if (blocks.isEmpty())
+        return;
+    p.save();
+    p.setClipRect(lane.adjusted(0, -1, 0, 1), Qt::IntersectClip);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    using SankoKeyColors::Row;
+    const QColor own = SankoKeyColors::key(Row::Layer);
+    QFont f = font();
+    f.setPixelSize(9);
+    QFont shownFont = f; // the drawing under the playhead: its number heavier (Figma 737:872)
+    shownFont.setWeight(QFont::DemiBold);
+    for (const DrawingBlock &block : blocks) {
+        const QRectF r(block.x0, lane.top(), block.x1 - block.x0, lane.height());
+        QColor fill = block.tint;
+        fill.setAlphaF(float(block.strength));
+        p.fillRect(r, fill);
+        // THE POINTER OVER IT (the user's note 7, 2026-11-26): a little lighter, no more.
+        if (block.hovered)
+            p.fillRect(r, QColor(255, 255, 255, kDrawingHoverAlpha));
+        // The cut where it starts, a little stronger than the tint: 1 px, the lane's height.
+        QColor cut = own;
+        cut.setAlphaF(0.70f);
+        p.fillRect(QRectF(block.x0, lane.top(), 1.0, lane.height()), cut);
+        const QString label = drawingBlockLabel(block);
+        if (!label.isEmpty()) {
+            p.setFont(block.shown ? shownFont : f);
+            p.setPen(block.shown ? QColor(Qt::white) : QColor(0xcf, 0xcb, 0xea));
+            p.drawText(r.adjusted(5, 0, -3, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
+        }
+        if (block.selected) {
+            p.setPen(QPen(SankoKeyColors::keyEdge(Row::Layer), 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5));
+        }
+    }
+    // The run as one band: a line along its top and its bottom (kDrawingsBandH: 3 px since
+    // the user's proposal; 1 px before).
+    QColor band = own;
+    band.setAlphaF(0.50f);
+    const qreal x0 = blocks.first().x0, x1 = blocks.last().x1;
+    p.fillRect(QRectF(x0, lane.top(), x1 - x0, kDrawingsBandH), band);
+    p.fillRect(QRectF(x0, lane.bottom() + 1 - kDrawingsBandH, x1 - x0, kDrawingsBandH), band);
+    p.restore();
+}
+
+void AnimaticTimeline::layoutNewDrawingButton()
+{
+    if (!m_newDrawingButton)
+        return;
+    // At the row's left: beside the drawings lane when there is one, else in the row.
+    const bool can = m_layerRowShown && m_selected >= 0 && layerRowLabel() != QLatin1String("LAYER");
+    m_newDrawingButton->setVisible(can);
+    // Zoom to Frames beside it, while there is a lane to zoom to.
+    if (m_zoomFramesButton)
+        m_zoomFramesButton->setVisible(can && m_layerRowRun);
+    if (!can)
+        return;
+    // (Centred on the lane: 41 px since 2026-11-26.)
+    const int y = m_layerRowRun ? layerTrackY() + kDrawingsLaneY + (kDrawingsLaneH - 20) / 2
+                                : layerTrackY() + (kLayerRowH - 20) / 2;
+    m_newDrawingButton->move(4, y);
+    if (m_zoomFramesButton)
+        m_zoomFramesButton->move(4 + 20 + 3, y);
+}
+
+// ZOOM TO FRAMES (the user's note 7, 2026-11-26): the timeline zoomed so each drawing of the lane
+// is at least 32 px wide - on 2s that is 16 px a frame, the zoom's own top, which nothing passes
+// - with the playhead in the middle of the view. Already that close or closer, the zoom stays
+// and only the view moves. Fit goes back, as ever.
+void AnimaticTimeline::zoomToFrames()
+{
+    const QVector<DrawingBlock> blocks = drawingBlocks();
+    if (blocks.isEmpty())
+        return;
+    int shortest = blocks.first().end - blocks.first().start;
+    for (const DrawingBlock &block : blocks)
+        shortest = qMin(shortest, block.end - block.start);
+    // 100 % is 1 px a frame.
+    const float wanted = qBound(kZoomMin, 100.0f * kFramesZoomBlockPx / float(qMax(1, shortest)), kZoomMax);
+    if (wanted > m_zoom)
+        applyZoom(wanted);
+    setScrollX(qRound(playheadContentX()) - visibleWidth() / 2);
+    if (m_canvas)
+        m_canvas->update();
+}
+
+QAbstractButton *AnimaticTimeline::zoomToFramesButtonForTest() const
+{
+    return m_zoomFramesButton;
+}
+
+QVariantMap AnimaticTimeline::rowsForTest() const
+{
+    const auto row = [](int y, int h) { return QStringLiteral("%1,%2").arg(y).arg(h); };
+    return {{QStringLiteral("timecode"), row(kRulerY, kRulerH)},
+            {QStringLiteral("scenes"), row(kSceneY, kSceneH)},
+            {QStringLiteral("shots"), row(kPanelY, panelTrackH())},
+            {QStringLiteral("camera"), row(cameraTrackY(), kCameraH)},
+            {QStringLiteral("layer"), row(layerTrackY(), layerRowH())},
+            {QStringLiteral("audio"), row(audioTrackY(), kAudioH)},
+            {QStringLiteral("canvas"), m_canvas ? m_canvas->height() : 0}};
+}
+
+void AnimaticTimeline::setSelectedDrawing(int drawingIndex)
+{
+    if (m_selectedDrawing == drawingIndex)
+        return;
+    m_selectedDrawing = drawingIndex;
+    if (m_canvas)
+        m_canvas->update();
+}
+
+void AnimaticTimeline::setOnionSkinShown(bool on)
+{
+    if (m_onionShown == on)
+        return;
+    m_onionShown = on;
+    if (m_canvas)
+        m_canvas->update();
+}
+
+QRect AnimaticTimeline::drawingsLaneForTest() const
+{
+    return drawingsLaneRect();
+}
+
+QVariantList AnimaticTimeline::drawingBlocksForTest() const
+{
+    QVariantList list;
+    for (const DrawingBlock &block : drawingBlocks())
+        list.append(QVariantMap{{QStringLiteral("index"), block.index},
+                                {QStringLiteral("start"), block.start},
+                                {QStringLiteral("end"), block.end},
+                                {QStringLiteral("x0"), block.x0},
+                                {QStringLiteral("x1"), block.x1},
+                                {QStringLiteral("shown"), block.shown},
+                                {QStringLiteral("selected"), block.selected},
+                                {QStringLiteral("blank"), block.blank},     // nothing drawn on it: grey
+                                {QStringLiteral("hovered"), block.hovered}, // the pointer is over it
+                                {QStringLiteral("tint"), block.tint.name()},
+                                {QStringLiteral("strength"), block.strength},
+                                {QStringLiteral("label"), drawingBlockLabel(block)}});
+    return list;
+}
+
+QAbstractButton *AnimaticTimeline::newDrawingButtonForTest() const
+{
+    return m_newDrawingButton;
 }
 
 QString AnimaticTimeline::layerRowLabel() const
@@ -1088,8 +1570,16 @@ QVector<AnimaticTimeline::LayerSegment> AnimaticTimeline::layerSegments(const QV
         s.x0 = a.x + kKeyHalf + 1.0;
         s.x1 = b.x - kKeyHalf - 1.0;
         s.dashed = shotcam::Ease(a.ease) == shotcam::Ease::Hold;
-        s.glyph = s.x1 - s.x0 >= kGlyphMinSegment;
-        s.smallMark = !s.glyph && s.x1 - s.x0 >= kSmallMarkMinSegment;
+        // The mark clear of the other layers' keys on the row (placeEaseMark): their small
+        // hollow diamonds, kKeyHalf - 2 a side and their line.
+        QVector<QPointF> others;
+        for (const LayerMark &m : marks)
+            if (!m.own && m.x > s.x0 - kGlyphW && m.x < s.x1 + kGlyphW)
+                others.append(QPointF(m.x + 0.5, kKeyHalf - 1.0));
+        const EaseMarkPlace place = placeEaseMark(s.x0, s.x1, others);
+        s.glyph = place.glyph;
+        s.smallMark = place.smallMark;
+        s.markX = place.x;
         s.lineOnly = !s.glyph && !s.smallMark;
         s.greyed = a.greyed;
         if (s.x1 > s.x0)
@@ -1100,7 +1590,7 @@ QVector<AnimaticTimeline::LayerSegment> AnimaticTimeline::layerSegments(const QV
 
 QRectF AnimaticTimeline::layerEaseMarkRect(const LayerSegment &s) const
 {
-    const qreal cx = (s.x0 + s.x1) / 2.0, cy = layerTrackY() + kLayerRowH / 2.0;
+    const qreal cx = s.markX, cy = layerTrackY() + kLayerRowH / 2.0;
     if (s.glyph)
         return QRectF(cx - kGlyphW / 2.0, cy - kGlyphH / 2.0, kGlyphW, kGlyphH);
     if (s.smallMark)
@@ -1111,7 +1601,7 @@ QRectF AnimaticTimeline::layerEaseMarkRect(const LayerSegment &s) const
 bool AnimaticTimeline::inLayerRow(const QPoint &pos) const
 {
     return m_layerRowShown && pos.x() >= kLabelCol && pos.y() >= layerTrackY()
-        && pos.y() < layerTrackY() + kLayerRowH;
+        && pos.y() < layerTrackY() + layerRowH(); // with its drawings lane (batch I-2)
 }
 
 bool AnimaticTimeline::pressOnLayerRow(const QObject *receiver, const QPoint &globalPos) const
@@ -1175,11 +1665,29 @@ bool AnimaticTimeline::layerEaseMarkAt(const QPoint &pos, LayerSegment *segment,
     return false;
 }
 
+// A DRAWN ease mark under the point - the pill or the small mark, not a short move's line, and
+// not a greyed move's (Animate off: no mark is drawn). A press there is the mark's whatever
+// key reaches under it (the user's note 6, 2026-11-26).
+bool AnimaticTimeline::onLayerEaseMark(const QPoint &pos) const
+{
+    LayerSegment segment;
+    QRectF markRect;
+    return layerEaseMarkAt(pos, &segment, &markRect) && !segment.lineOnly && !segment.greyed;
+}
+
+bool AnimaticTimeline::onCameraEaseMark(const QPoint &pos) const
+{
+    CameraSegment segment;
+    QRectF markRect;
+    return m_tracks.cameraVisible && easeMarkAt(pos, &segment, &markRect) && !segment.lineOnly;
+}
+
 void AnimaticTimeline::paintLayerRow(QPainter &p)
 {
     using namespace SankoTimelineTheme;
     if (!m_layerRowShown || !m_canvas)
         return;
+    paintDrawingsLane(p); // under the keys' lane, the selected layer's drawings (batch I-2)
     const int y0 = layerTrackY();
     const qreal cy = y0 + kLayerRowH / 2.0;
     p.save();
@@ -1903,7 +2411,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     p.fillRect(QRect(0, cameraTrackY(), W, kCameraH), kCameraRowBg);
     p.fillRect(QRect(0, cameraTrackY(), W, 1), kHairline);
     if (m_layerRowShown) { // the LAYER row (batch I-1), as the CAMERA row is
-        p.fillRect(QRect(0, layerTrackY(), W, kLayerRowH), kCameraRowBg);
+        p.fillRect(QRect(0, layerTrackY(), W, layerRowH()), kCameraRowBg); // taller with a drawings lane
         p.fillRect(QRect(0, layerTrackY(), W, 1), kHairline);
     }
     p.fillRect(QRect(0, audioTrackY(), W, kAudioH),
@@ -2044,6 +2552,11 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // A hidden SHOTS track paints no clip (and, below, no loop overlay and
     // no drop indicator; a press on it finds nothing - canvasMousePress).
     if (m_tracks.shotsVisible) {
+        // EVERY ROW INSIDE ITS OWN BOUNDS (the user's note 5, 2026-11-26): whatever the track's
+        // height, nothing of a clip is drawn outside the SHOTS track.
+        p.save();
+        p.setClipRect(QRect(kLabelCol, kPanelY, qMax(0, contentRight - kLabelCol + 1), panelTrackH()),
+                      Qt::IntersectClip);
         p.setRenderHint(QPainter::Antialiasing, true);
         QFont nameFont = font();
         nameFont.setPixelSize(11);
@@ -2169,27 +2682,17 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                     p.fillRect(L.thumb, Qt::black);
                     shotcam::drawShot(p, pix, stage, shotCamera, QRectF(L.thumb), true);
                 } else if (!pix.isNull() && L.thumb.width() > pix.width()) {
-                    // WIDER THAN ITS PICTURE (batch C: a clip at 1600 % is thousands of
-                    // px wide): the same crop to fill, drawn straight from the 512 px
-                    // picture - no copy as wide as the clip made on every repaint, and
-                    // only what the clip's visible part covers is drawn.
-                    const double s = qMax(double(L.thumb.width()) / pix.width(),
-                                          double(L.thumb.height()) / pix.height());
-                    const QSizeF src(L.thumb.width() / s, L.thumb.height() / s);
+                    // LARGER THAN ITS PICTURE (a tall SHOTS track): drawn straight from the
+                    // 512 px picture, whole - the thumbnail's rect has the picture's shape
+                    // (clipLayout, 2026-11-26), so nothing is cropped and nothing stretched.
                     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                    p.drawPixmap(QRectF(L.thumb), pix,
-                                 QRectF(QPointF((pix.width() - src.width()) / 2.0,
-                                                (pix.height() - src.height()) / 2.0), src));
+                    p.drawPixmap(QRectF(L.thumb), pix, QRectF(pix.rect()));
                 } else if (!pix.isNull()) {
-                    // Crop to fill, centred (one setting; "fit with bars" is
-                    // the other, not built - the user's choice 2026-10-18).
-                    const QPixmap scaled = pix.scaled(
-                        L.thumb.size(), Qt::KeepAspectRatioByExpanding,
-                        Qt::SmoothTransformation);
-                    const int sx = (scaled.width() - L.thumb.width()) / 2;
-                    const int sy = (scaled.height() - L.thumb.height()) / 2;
-                    p.drawPixmap(L.thumb, scaled,
-                                 QRect(sx, sy, L.thumb.width(), L.thumb.height()));
+                    // The whole picture, reduced to the thumbnail's rect - which has its
+                    // shape. (It was cropped to fill a strip across the clip: the user's
+                    // choice of 2026-10-18, changed by their note 5 of 2026-11-26.)
+                    p.drawPixmap(L.thumb.topLeft(),
+                                 pix.scaled(L.thumb.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
                 } else {
                     p.fillRect(L.thumb, kThumbPlaceholder);
                 }
@@ -2266,6 +2769,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             p.setPen(QPen(kClipSelectedBorder, 1, Qt::DashLine));
             p.drawLine(x, kPanelY + 2, x, kPanelY + panelTrackH() - 3);
         }
+        p.restore(); // the SHOTS track's clip
     }
 
     // ----- Loop region overlay (on the panel track) -----
@@ -2494,9 +2998,21 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         // THE LAYER ROW (batch I-1): "LAYER · Boat", the selected layer's name, elided to
         // the column.
         if (m_layerRowShown) {
-            const QRect r(8, layerTrackY(), kLabelColW - 15 - 8, kLayerRowH);
+            // (Without a drawings lane the + - New Drawing, batch I-2 - sits at the row's
+            // left, and the name gives it its 20 px; with one, the + is beside the lane.)
+            const bool plusInRow = m_newDrawingButton && m_newDrawingButton->isVisible() && !m_layerRowRun;
+            const int left = plusInRow ? 28 : 8;
+            const QRect r(left, layerTrackY(), kLabelColW - 15 - left, kLayerRowH);
             p.drawText(r, Qt::AlignVCenter | Qt::AlignRight,
                        QFontMetrics(f).elidedText(layerRowLabel(), Qt::ElideRight, r.width()));
+            // The drawings lane's own small label, under the layer's name.
+            if (m_layerRowRun) {
+                p.setPen(QColor(0x8a, 0x8c, 0x99));
+                // (After the + and Zoom to Frames: 4 + 20 + 3 + 20, and 3 px.)
+                p.drawText(QRect(50, layerTrackY() + kDrawingsLaneY, kLabelColW - 15 - 50, kDrawingsLaneH),
+                           Qt::AlignVCenter | Qt::AlignRight, QStringLiteral("drawings"));
+                p.setPen(kTrackLabel);
+            }
         }
 
         // The lock / speaker / eye controls are real buttons over this
@@ -2573,6 +3089,24 @@ QRect AnimaticTimeline::sceneBlockRect(int sceneIndex) const
     return QRect(span.left() + startIn, span.top(), qMax(1, span.width() - startIn - endIn), span.height());
 }
 
+// The shape of what a clip's thumbnail shows: the panel's FRAME - what the camera sees at its
+// base framing, and what every picture the clip draws is cut to (the frame's own mip, the shot
+// through the camera). 16:9 for a clip with no panel behind it.
+QSizeF AnimaticTimeline::clipPictureSize(int flatIndex) const
+{
+    if (flatIndex >= 0 && flatIndex < m_blocks.size()) {
+        const Block &b = m_blocks.at(flatIndex);
+        const Panel *panel = b.sceneIndex < m_scenes.size() ? m_scenes.at(b.sceneIndex)->panels.value(b.panelIndex)
+                                                             : nullptr;
+        if (panel) {
+            const QSize frame = shotcam::panelStage(*panel, m_stageMargin).frameRect().size();
+            if (frame.width() > 0 && frame.height() > 0)
+                return QSizeF(frame);
+        }
+    }
+    return QSizeF(16.0, 9.0);
+}
+
 // The design's clip layout for clip flatIndex drawn in rect r (see the constants at the
 // top): the body is r less its scene's gaps (SCENES + SHOTS: a clip inside its scene
 // keeps its whole span).
@@ -2588,10 +3122,21 @@ AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(int flatIndex, const Q
     // A clip's own corners: round only at its scene's ends, no wider than it is.
     const bool both = L.edges.first && L.edges.last;
     L.edges.radius = (L.edges.first || L.edges.last) ? qMin(L.edges.radius, both ? bw / 2.0 : double(bw)) : 0.0;
-    L.thumbShown = bw >= kThumbMinBody;
-    L.thumb = QRect(L.body.left() + kThumbInset, L.body.top() + kThumbInset,
-                    bw - 2 * kThumbInset, kThumbH);
-    L.number = QRect(L.body.left() + 10, L.body.top() + 9, qMax(1, bw - 14), 12);
+    // THE THUMBNAIL (see kNameStripH): its picture's shape, fitted whole into the room it has -
+    // the body less the insets across, and down either the storey over the name's strip or,
+    // on a body too short for two storeys, the body's height less a small inset.
+    const int bh = L.body.height();
+    const QSizeF picture = clipPictureSize(flatIndex);
+    const int roomW = bw - 2 * kThumbInset;
+    const bool storeys = bh >= kThumbInset + kStoreyMinThumbH + kNameStripH;
+    const int roomH = storeys ? bh - kThumbInset - kNameStripH : bh - 2 * kShortInset;
+    const double fit = roomW > 0 && roomH > 0
+        ? qMin(roomW / picture.width(), roomH / picture.height()) : 0.0;
+    const int tw = qMin(roomW, qRound(picture.width() * fit)), th = qMin(roomH, qRound(picture.height() * fit));
+    L.thumbShown = bw >= kThumbMinBody && th >= kThumbMinH && tw > 0;
+    L.thumb = QRect(L.body.left() + kThumbInset, L.body.top() + (storeys ? kThumbInset : (bh - th) / 2),
+                    qMax(0, tw), qMax(0, th));
+    L.number = QRect(L.body.left() + 10, L.body.top() + qMin(9, qMax(1, bh - 13)), qMax(1, bw - 14), 12);
     // The pill fits its text (2026-11-06): 28 px for "3s", wider for
     // "1s 12f"; shown while the body has room for it and 14 px more.
     int pillW = kPillW;
@@ -2600,12 +3145,17 @@ AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(int flatIndex, const Q
         mono.setPixelSize(10);
         pillW = qMax(kPillW, QFontMetrics(mono).horizontalAdvance(pillText) + 10);
     }
-    L.pillShown = bw >= qMax(kPillMinBody, pillW + 14);
-    L.pill = QRect(L.body.right() - pillW - 5, L.body.bottom() - kPillH - 4, pillW, kPillH);
+    // (On a body shorter than the pill and its 4 px, the pill keeps to the body: centred in it.)
+    L.pillShown = bw >= qMax(kPillMinBody, pillW + 14) && bh >= kPillH;
+    L.pill = QRect(L.body.right() - pillW - 5,
+                   bh >= kPillH + 8 ? L.body.bottom() - kPillH - 4 : L.body.top() + (bh - kPillH) / 2, pillW, kPillH);
     const int nameRight = L.pillShown ? L.pill.left() - 4 : L.body.right() - 8;
-    L.name = QRect(L.body.left() + 8, L.body.bottom() - 20,
-                   qMax(0, nameRight - (L.body.left() + 8)), 15);
-    L.nameShown = bw >= kNameMinBody && L.name.width() > 0;
+    // The name: under the picture on a body with two storeys; beside it on a shorter one.
+    const int nameLeft = storeys || !L.thumbShown ? L.body.left() + 8 : L.thumb.right() + 7;
+    L.name = QRect(nameLeft, bh >= 23 ? L.body.bottom() - 20 : L.body.top() + qMax(0, (bh - 15) / 2),
+                   qMax(0, nameRight - nameLeft), qMin(15, bh));
+    L.nameShown = bw >= kNameMinBody && L.name.width() > 0
+        && (storeys || !L.thumbShown || L.name.width() >= kShortNameMinW);
     return L;
 }
 
@@ -3196,6 +3746,7 @@ AnimaticTimeline::cameraSegments(const QVector<CameraMark> &marks) const
     QVector<CameraSegment> segments;
     int selScene = -1, selKey = -1;
     const bool hasSel = selectedCameraKey(&selScene, &selKey);
+    const QVector<CameraMark> stranded = marks.size() > 1 ? strandedMarks() : QVector<CameraMark>();
     for (int i = 0; i + 1 < marks.size(); ++i) {
         const CameraMark &a = marks.at(i);
         const CameraMark &b = marks.at(i + 1);
@@ -3209,8 +3760,16 @@ AnimaticTimeline::cameraSegments(const QVector<CameraMark> &marks) const
         s.x0 = a.x + kKeyHalf + 1.0;
         s.x1 = b.x - kKeyHalf - 1.0;
         s.dashed = shotcam::Ease(a.ease) == shotcam::Ease::Hold;
-        s.glyph = s.x1 - s.x0 >= kGlyphMinSegment;
-        s.smallMark = !s.glyph && s.x1 - s.x0 >= kSmallMarkMinSegment;
+        // The mark clear of every key on the row (placeEaseMark, 2026-11-26): between two live
+        // keys only a stranded key (Phase 2E) can be in its way.
+        QVector<QPointF> others;
+        for (const CameraMark &m : stranded)
+            if (m.x > s.x0 - kGlyphW && m.x < s.x1 + kGlyphW)
+                others.append(QPointF(m.x + 0.5, kKeyHalf));
+        const EaseMarkPlace place = placeEaseMark(s.x0, s.x1, others);
+        s.glyph = place.glyph;
+        s.smallMark = place.smallMark;
+        s.markX = place.x;
         s.lineOnly = !s.glyph && !s.smallMark;
         s.accent = hasSel && a.sceneIndex == selScene && a.keyIndex == selKey;
         if (s.x1 > s.x0)
@@ -3223,7 +3782,7 @@ AnimaticTimeline::cameraSegments(const QVector<CameraMark> &marks) const
 // on a move of 16 to 40 px, and under 16 px the line itself, a little taller than drawn.
 QRectF AnimaticTimeline::easeMarkRect(const CameraSegment &s) const
 {
-    const qreal cx = (s.x0 + s.x1) / 2.0, cy = cameraTrackY() + kCameraH / 2.0;
+    const qreal cx = s.markX, cy = cameraTrackY() + kCameraH / 2.0;
     if (s.glyph)
         return QRectF(cx - kGlyphW / 2.0, cy - kGlyphH / 2.0, kGlyphW, kGlyphH);
     if (s.smallMark)
@@ -3872,7 +4431,9 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     // A hidden row takes no press of its own.
     if (inCameraRow(pos) && m_tracks.cameraVisible) {
         CameraMark mark;
-        if (cameraKeyAt(pos, &mark)) {
+        // (A drawn ease mark is asked first - onCameraEaseMark, 2026-11-26: a press on it never
+        // takes a key whose 16 px reach it is in.)
+        if (!onCameraEaseMark(pos) && cameraKeyAt(pos, &mark)) {
             if (mark.stranded) // Phase 2E: no selection, no drag; its menu is the right button's
                 return;
             m_camSelScene = mark.sceneIndex;
@@ -3889,7 +4450,8 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
             return;
         }
         // A MOVE'S EASE MARK (batch E, Figma E-1): a tap asks for the five eases of that
-        // move; under 16 px, where no mark is drawn, the line itself does. A key wins (above).
+        // move; under 16 px, where no mark is drawn, the line itself does. A key wins over
+        // the line (above); a drawn mark wins over a key (the user's note 6, 2026-11-26).
         CameraSegment segment;
         QRectF markRect;
         if (easeMarkAt(pos, &segment, &markRect)) {
@@ -3916,8 +4478,44 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
             m_camSelScene = m_camSelKey = -1;
             m_canvas->update();
         }
+        // THE DRAWINGS LANE (batch I-2): the pointer's lane decides what a press takes. Here a
+        // cut between two blocks may become a drag (the press alone is a tap on the drawing
+        // that starts there); else the block pressed takes the playhead to its first frame and
+        // is the selected thing on the row. The row is the last thing pressed either way.
+        if (inDrawingsLane(pos)) {
+            int layerIndex = -1;
+            if (runLayer(&layerIndex)) {
+                emit layerRowPressed(-1, -1, -1);
+                const int cut = drawingCutAt(pos);
+                if (cut >= 1) {
+                    m_drag = Drag::DrawingCut;
+                    m_cutDragDrawing = cut;
+                    m_cutDragLayer = layerIndex;
+                    m_cutDragFrom = 0;
+                    for (const DrawingBlock &block : drawingBlocks())
+                        if (block.index == cut)
+                            m_cutDragFrom = block.start;
+                    m_cutDragFrame = m_cutDragFrom;
+                    m_cutDragAlone = e->modifiers().testFlag(Qt::AltModifier);
+                    m_cutDragActive = false;
+                    m_layerPress = pos;
+                    e->accept();
+                    return;
+                }
+                const int block = drawingBlockAt(pos);
+                if (block >= 0)
+                    emit drawingBlockPressed(layerIndex, block);
+            }
+            e->accept();
+            return;
+        }
         LayerMark mark;
-        const bool onKey = layerKeyAt(pos, &mark);
+        // THE EASE MARK BEFORE THE KEY (the user's note 6 after hand test I2-1, 2026-11-26: a
+        // press on a mark that sat on another layer's key took that key - and with it the
+        // layer - four times before the eases opened). A press on a drawn mark always opens
+        // the eases and never selects or moves a key; the mark is drawn clear of every key
+        // (placeEaseMark), so each key keeps its own place to be pressed.
+        const bool onKey = !onLayerEaseMark(pos) && layerKeyAt(pos, &mark);
         emit layerRowPressed(onKey ? mark.flat : -1, onKey ? mark.layer : -1, onKey ? mark.key : -1);
         if (onKey) {
             emit layerKeyActivated(mark.flat, mark.layer, mark.key);
@@ -4107,7 +4705,7 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
     if (inCameraRow(pos)) {
         if (m_tracks.cameraVisible) {
             CameraMark mark;
-            if (cameraKeyAt(pos, &mark)) {
+            if (!onCameraEaseMark(pos) && cameraKeyAt(pos, &mark)) { // (a mark takes no key)
                 if (!mark.stranded) { // a stranded key (Phase 2E) is not selected
                     m_camSelScene = mark.sceneIndex;
                     m_camSelKey = mark.keyIndex;
@@ -4132,8 +4730,23 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
             m_camSelScene = m_camSelKey = -1;
             m_canvas->update();
         }
+        // THE DRAWINGS LANE (batch I-2): its own menu - New Drawing, New Drawing from This
+        // One, Delete Drawing - the block under the pointer chosen first. The keys' lane keeps
+        // the keys' menus, as built.
+        if (inDrawingsLane(pos)) {
+            int layerIndex = -1;
+            if (runLayer(&layerIndex)) {
+                const int block = drawingBlockAt(pos);
+                emit layerRowPressed(-1, -1, -1);
+                if (block >= 0)
+                    emit drawingBlockPressed(layerIndex, block);
+                emit drawingsLaneContextMenuRequested(layerIndex, block, e->globalPos());
+            }
+            e->accept();
+            return;
+        }
         LayerMark mark;
-        if (layerKeyAt(pos, &mark)) {
+        if (!onLayerEaseMark(pos) && layerKeyAt(pos, &mark)) { // (a mark takes no key)
             emit layerRowPressed(mark.flat, mark.layer, mark.key);
             emit layerKeyActivated(mark.flat, mark.layer, mark.key);
             emit layerKeyContextMenuRequested(mark.flat, mark.layer, mark.key, e->globalPos());
@@ -4286,6 +4899,64 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         return;
     }
 
+    // A CUT OF THE DRAWINGS LANE dragged (batch I-2; the user's answer 4): a frame at a time,
+    // never onto the drawing before it; the later drawings move with it, and with Alt - held
+    // or let go as the drag goes - the cut alone, never onto the drawing after it. With Snap
+    // on it takes the playhead and this layer's keys, as a dragged key takes its targets.
+    if (m_drag == Drag::DrawingCut) {
+        if (!(e->buttons() & Qt::LeftButton)) {
+            m_drag = Drag::None; // the release went elsewhere
+            m_cutDragActive = false;
+            m_canvas->update();
+            return;
+        }
+        if (!m_cutDragActive) {
+            if ((pos - m_layerPress).manhattanLength() < kKeyDragThreshold)
+                return;
+            m_cutDragActive = true;
+            m_canvas->setCursor(Qt::SizeHorCursor);
+        }
+        const Layer *layer = runLayer();
+        if (!layer || m_selected < 0 || m_selected >= m_blocks.size() || m_cutDragDrawing < 1
+            || m_cutDragDrawing >= layer->drawings.size())
+            return;
+        const Block &b = m_blocks.at(m_selected);
+        m_cutDragAlone = e->modifiers().testFlag(Qt::AltModifier);
+        Layer counted = *layer;
+        counted.countRunAt(m_fps);
+        const int least = counted.drawingStart(m_cutDragDrawing - 1) + 1;
+        const int most = qMax(least, m_cutDragAlone && m_cutDragDrawing + 1 < counted.drawings.size()
+                                         ? counted.drawingStart(m_cutDragDrawing + 1) - 1
+                                         : b.frames - 1);
+        int frame = qBound(least, frameAtScreenX(pos.x()) - b.startFrame, most);
+        if (m_snap) {
+            QVector<int> targets;
+            targets << playheadFrame() - b.startFrame;
+            for (const shotcam::LayerKey &key : layer->keys)
+                targets << layerKeyFrame(key, b.frames);
+            int best = kKeySnapPx + 1;
+            for (int t : targets) {
+                if (t < least || t > most)
+                    continue;
+                const int d = qAbs(contentXToScreen((b.startFrame + t) * pxPerFrame()) - pos.x());
+                if (d < best) {
+                    best = d;
+                    frame = t;
+                }
+            }
+        }
+        if (frame != m_cutDragFrame) {
+            m_cutDragFrame = frame;
+            m_canvas->update();
+        }
+        // The chip: the drawing the cut ends, and how long it is shown now.
+        const int length = m_cutDragFrame - counted.drawingStart(m_cutDragDrawing - 1);
+        followChip(e->globalPosition().toPoint(),
+                   QStringLiteral("drawing %1  ").arg(m_cutDragDrawing) + QChar(0x00B7)
+                       + (length == 1 ? QStringLiteral("  1 frame") : QStringLiteral("  %1 frames").arg(length)));
+        return;
+    }
+
     // A LAYER KEY dragged in time (batch I-1): within its own panel, from its first frame to
     // its end.
     if (m_drag == Drag::LayerKey) {
@@ -4412,8 +5083,21 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
                 }
             }
         }
+    } else if (inDrawingsLane(pos)) {
+        // The drawings lane (batch I-2): over a cut the clip edge's cursor, over a block the
+        // hand a clip shows.
+        cursor = drawingCutAt(pos) >= 1 ? Qt::SizeHorCursor
+                                        : (drawingBlockAt(pos) >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     } else if (pos.y() < kRulerY + kRulerH) {
         cursor = Qt::PointingHandCursor;
+    }
+    // The block of the drawings lane under the pointer: a little lighter (2026-11-26).
+    {
+        const int hoverDrawing = inDrawingsLane(pos) ? drawingBlockAt(pos) : -1;
+        if (hoverDrawing != m_hoverDrawing) {
+            m_hoverDrawing = hoverDrawing;
+            m_canvas->update();
+        }
     }
     // THE SCENES ROW (batch F1): the scene under the pointer - its lock shows, faint, on
     // an unlocked one - and whether the pointer is on that lock (the hand: a click
@@ -4430,7 +5114,7 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
     // and named in a tooltip (Figma 1C-1).
     int camScene = -1, camKey = -1;
     CameraMark mark;
-    if (m_tracks.cameraVisible && cameraKeyAt(pos, &mark)) {
+    if (m_tracks.cameraVisible && !onCameraEaseMark(pos) && cameraKeyAt(pos, &mark)) {
         camScene = mark.sceneIndex;
         camKey = mark.keyIndex;
         cursor = Qt::PointingHandCursor;
@@ -4516,7 +5200,7 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
 QString AnimaticTimeline::hoverTipAt(const QPoint &pos) const
 {
     CameraMark mark;
-    if (m_tracks.cameraVisible && cameraKeyAt(pos, &mark))
+    if (m_tracks.cameraVisible && !onCameraEaseMark(pos) && cameraKeyAt(pos, &mark))
         return cameraKeyTip(mark);
     const int chip = artExitChipAt(pos);
     if (chip >= 0)
@@ -4551,6 +5235,15 @@ void AnimaticTimeline::canvasMouseDoubleClick(QMouseEvent *e)
                 return;
             }
         }
+    }
+    // A DOUBLE-CLICK ON THE DRAWINGS LANE - its blocks or its label - is Zoom to Frames (the
+    // user's note 7, 2026-11-26). The first click has already put the playhead on the block
+    // under it, so the view is centred there; the second starts no drag of a cut.
+    if (!panPress(e) && e->button() == Qt::LeftButton && m_layerRowShown && m_layerRowRun
+        && pos.y() >= layerTrackY() + kKeysLaneH && pos.y() < layerTrackY() + layerRowH()) {
+        zoomToFrames();
+        e->accept();
+        return;
     }
     canvasMousePress(e);
 }
@@ -4643,6 +5336,23 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
             emit cameraKeyMoveRequested(scene, key, sceneFrame);
         return;
     }
+    if (m_drag == Drag::DrawingCut) { // batch I-2: one request on release, the workspace's step
+        const bool moved = m_cutDragActive && m_cutDragFrame != m_cutDragFrom;
+        const bool tapped = !m_cutDragActive;
+        const int layer = m_cutDragLayer, drawing = m_cutDragDrawing, frame = m_cutDragFrame;
+        const bool alone = m_cutDragAlone;
+        m_drag = Drag::None;
+        m_cutDragActive = false;
+        m_cutDragDrawing = m_cutDragLayer = -1;
+        m_canvas->setCursor(Qt::ArrowCursor);
+        m_canvas->update();
+        hideChip();
+        if (moved)
+            emit drawingCutMoveRequested(layer, drawing, frame, alone);
+        else if (tapped)
+            emit drawingBlockPressed(layer, drawing); // a tap on a cut: the drawing that starts there
+        return;
+    }
     if (m_drag == Drag::LayerKey) { // batch I-1: one request on release, the workspace's step
         const bool moved = m_layerDragActive && m_layerDragFrame != m_layerDragFromFrame;
         const int flat = m_layerDragFlat, layer = m_layerDragLayer, key = m_layerDragKey;
@@ -4683,8 +5393,9 @@ void AnimaticTimeline::canvasLeave()
         sankoHideTipSoon();
     m_chipHover = -1; // its tooltip goes with the pointer's next crossing, as any tooltip
     if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_easeHoverKey != -1 || m_audioHover
-        || m_sceneHover != -1) {
+        || m_sceneHover != -1 || m_hoverDrawing != -1) {
         m_hoverIndex = -1;
+        m_hoverDrawing = -1; // the drawings lane's lit block goes out
         m_camHoverScene = m_camHoverKey = -1;
         m_easeHoverScene = m_easeHoverKey = -1; // a lit ease mark goes out (batch E)
         m_sceneHover = -1; // an unlocked scene's faint lock goes (batch F1)

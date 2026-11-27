@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QElapsedTimer>
 #include <QHash>
 #include <functional>
@@ -16,6 +17,7 @@
 #include "camera/CameraModel.h"
 
 class AnimaticPage;
+class QAbstractButton;
 class TimelineCanvas; // inner painted surface, defined in the .cpp
 class QContextMenuEvent;
 class QIcon;
@@ -27,6 +29,8 @@ class QLabel;
 class QLineEdit;
 class QSlider;
 class QToolButton;
+struct Layer;
+struct LayerPixels;
 struct Panel;
 struct Scene;
 
@@ -292,6 +296,41 @@ public:
     QVariantList layerKeysForTest() const;
     QVariantList layerSegmentsForTest() const;
 
+    // THE DRAWINGS LANE (batch I-2, 2026-11-26; Figma I-2 727:757, approved: "two lanes in a
+    // 46 px row, keys above, drawings below"). While the selected layer has a run of drawings
+    // the LAYER row is 46 px: the keys' lane above, exactly as built, and under it the
+    // drawings as BLOCKS, each as long as it is shown - the last to the panel's end - in the
+    // layer keys' colour, quietly (a tint, the cuts a little stronger, the block under the
+    // playhead the strong one; with the onion skin on, the blocks it ghosts in its two
+    // colours). The pointer's lane decides what a press takes: in the drawings' lane a block
+    // (the playhead to its first frame; it is then the selected thing on the row, for Del),
+    // or a cut between two blocks - dragged, the later drawings move with it; with Alt, the
+    // cut alone - and a right-click asks for the lane's menu. The + at the row's left is New
+    // Drawing. The edits are the workspace's (StoryboardPage), one request on release. The
+    // SHOTS track gives the row its 18 px (never under 30 px itself).
+    void setSelectedDrawing(int drawingIndex); // the block drawn as selected; -1 none
+    void setOnionSkinShown(bool on);
+    QRect drawingsLaneForTest() const;
+    // Each block as drawn: "index", "start", "end" (frames of the panel; end exclusive),
+    // "x0", "x1", "shown" (under the playhead), "selected", "tint" ("#rrggbb" its colour),
+    // "strength" (its fill's opacity), "label".
+    QVariantList drawingBlocksForTest() const;
+    QAbstractButton *newDrawingButtonForTest() const;
+    // SINCE HAND TEST I2-1 (2026-11-26, the user's notes 5 and 7). The lane is 41 px (the row
+    // 71), its bands 3 px, to the user's Figma "Proposal drawing size" (737:872); a block with
+    // nothing drawn on it is grey ("blank") until something is; the block under the pointer is
+    // a little lighter ("hovered"). ZOOM TO FRAMES - the small button beside the +, and a
+    // double-click on the lane - zooms so the lane's shortest drawing is 32 px wide (never
+    // past 1600 %, 16 px a frame; never out), with the playhead in the middle of the view.
+    // And every row inside its bounds: the canvas is never shorter than its rows (rowsMinH),
+    // and a SHOTS clip's thumbnail keeps its picture's shape inside the clip.
+    void zoomToFrames();
+    QAbstractButton *zoomToFramesButtonForTest() const;
+    int rowsMinimumForTest() const { return rowsMinH(); }
+    // Each row as laid out, "y,h": "timecode", "scenes", "shots", "camera", "layer", "audio";
+    // and "canvas", the painted surface's height.
+    QVariantMap rowsForTest() const;
+
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
     void setCurrentPanel(int flatIndex);  // the panel under the PLAYHEAD
@@ -356,6 +395,16 @@ signals:
     // row's own menu (Paste Key at the Playhead).
     void layerRowPressed(int flatPanelIndex, int layerIndex, int keyIndex);
     void layerRowContextMenuRequested(const QPoint &globalPos);
+    // THE DRAWINGS LANE (batch I-2; see setSelectedDrawing): the + pressed; a block pressed;
+    // a cut dragged to a frame of the panel (`alone`: Alt was down), on release; a right-click
+    // on a block (its index) - each of the selected layer of the panel on the canvas.
+    void newDrawingRequested();
+    // The rows need another least height (a LAYER row came or went, or its drawings lane):
+    // whoever sizes the timeline's section gives it the room (2026-11-26).
+    void rowsMinimumChanged();
+    void drawingBlockPressed(int layerIndex, int drawingIndex);
+    void drawingCutMoveRequested(int layerIndex, int drawingIndex, int startFrameInPanel, bool alone);
+    void drawingsLaneContextMenuRequested(int layerIndex, int drawingIndex, const QPoint &globalPos);
     // Right-click on the SCENES track (Phase 1D): that scene's menu.
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos);
     // A press on a scene's lock on the SCENES row (batch F1): lock or unlock its length.
@@ -407,6 +456,8 @@ private:
     // Track geometry: the shots track is whatever the canvas height leaves
     // after the ruler, the scene track and the audio track.
     int tracksH() const;
+    int rowsMinH() const;       // the least the rows need (2026-11-26)
+    void syncMinimumHeight();   // the canvas's minimum follows them
     int panelTrackH() const;
     int cameraTrackY() const;
     int audioTrackY() const;
@@ -436,6 +487,7 @@ private:
         int fromKey = 0, toKey = 0; // key indices; the ease is fromKey's
         int ease = 0;
         qreal x0 = 0, x1 = 0;       // the bar, between the diamonds
+        qreal markX = 0;            // the ease mark's centre (2026-11-26: clear of every key)
         bool dashed = false;        // Hold
         bool glyph = false;         // long enough for the ease pill (40 px or more)
         bool smallMark = false;     // 16 to 40 px: the small mark (batch E, Figma E-1; not
@@ -474,8 +526,56 @@ private:
     void paintPinLines(QPainter &p); // the pinned keys' dotted lines through the AUDIO row
     // THE LAYER ROW (batch I-1).
     int layerTrackY() const;
-    int layerRowH() const { return m_layerRowShown ? kLayerRowH : 0; }
+    int layerRowH() const { return m_layerRowShown ? (m_layerRowRun ? kLayerRowRunH : kLayerRowH) : 0; }
     static constexpr int kLayerRowH = 28;
+    // THE DRAWINGS LANE (batch I-2): the row's height with it, the blocks' top and height
+    // inside the row, where the keys' lane ends for the pointer, and the SHOTS track's floor
+    // while the row is that tall.
+    // (THE LANE'S SIZE since hand test I2-1, 2026-11-26 - the user's Figma "Proposal drawing
+    // size", node 737:872: 41 px high, so the row is 71; it was 16 and 46. Its bands 3 px - the
+    // proposal's 2.56 on whole pixels - where they were 1.)
+    static constexpr int kLayerRowRunH = 71;
+    static constexpr int kDrawingsLaneY = 25;
+    static constexpr int kDrawingsLaneH = 41;
+    static constexpr int kDrawingsBandH = 3;
+    static constexpr int kKeysLaneH = 24;
+    static constexpr int kPanelRunMinH = 30;
+    struct DrawingBlock
+    {
+        int index = 0;
+        int start = 0, end = 0; // frames of the panel, the project's rate; end exclusive
+        qreal x0 = 0, x1 = 0;
+        bool shown = false, selected = false, last = false;
+        bool blank = false;   // nothing drawn on it yet: grey until something is
+        bool hovered = false; // the pointer is over it
+        QColor tint;
+        qreal strength = 0.22;
+    };
+    // The selected layer of the panel on the canvas, when it has a run: its place and block.
+    const Layer *runLayer(int *layerIndex = nullptr, int *flat = nullptr) const;
+    // The run's starts in the project's frames, with a dragged cut where the drag has it.
+    QVector<int> runStarts(const Layer &layer) const;
+    QVector<DrawingBlock> drawingBlocks() const;
+    QRect drawingsLaneRect() const; // on the canvas; empty without a run
+    bool inDrawingsLane(const QPoint &pos) const;
+    int drawingBlockAt(const QPoint &pos) const; // -1: none
+    int drawingCutAt(const QPoint &pos) const;   // the drawing that STARTS at the cut under the pointer; -1
+    QString drawingBlockLabel(const DrawingBlock &block) const;
+    void paintDrawingsLane(QPainter &p);
+    void layoutNewDrawingButton();
+    // NOTHING DRAWN ON IT (2026-11-26, the user's note 7): asked of the drawing's pixels once
+    // for each state of them and kept by their identity (the timeline repaints often).
+    bool drawingBlank(const LayerPixels &px) const;
+    mutable QHash<qint64, bool> m_blankByKey;
+    int m_hoverDrawing = -1; // the block under the pointer, -1: none
+    QToolButton *m_zoomFramesButton = nullptr;
+    bool m_layerRowRun = false;
+    bool m_onionShown = false;
+    int m_selectedDrawing = -1;
+    int m_cutDragDrawing = -1, m_cutDragLayer = -1;
+    int m_cutDragFrom = 0, m_cutDragFrame = 0; // frames of the panel
+    bool m_cutDragAlone = false, m_cutDragActive = false;
+    QToolButton *m_newDrawingButton = nullptr;
     struct LayerMark
     {
         int flat = 0, layer = 0, key = 0;
@@ -489,6 +589,7 @@ private:
     {
         int flat = 0, layer = 0, fromKey = 0, toKey = 0, ease = 0;
         qreal x0 = 0, x1 = 0;
+        qreal markX = 0; // the ease mark's centre: the move's, or beside a key that is in the way
         bool dashed = false, glyph = false, smallMark = false, lineOnly = false, greyed = false;
     };
     QVector<LayerMark> layerMarks() const;
@@ -497,6 +598,10 @@ private:
     bool inLayerRow(const QPoint &pos) const;
     bool layerKeyAt(const QPoint &pos, LayerMark *mark) const;
     bool layerEaseMarkAt(const QPoint &pos, LayerSegment *segment, QRectF *markRect) const;
+    // A drawn ease mark (the pill or the small mark) is under the point: a press there opens
+    // the eases and takes no key (2026-11-26). The LAYER row's, and the CAMERA row's.
+    bool onLayerEaseMark(const QPoint &pos) const;
+    bool onCameraEaseMark(const QPoint &pos) const;
     QString layerRowLabel() const;
     void paintLayerRow(QPainter &p);
     bool computeLayerRowShown() const;
@@ -619,6 +724,8 @@ private:
     // its pill sized to its text: the design's 28 px, wider when its text ("1s 12f",
     // "120f") needs it (2026-11-06).
     ClipLayout clipLayout(int flatIndex, const QRect &r) const;
+    // The shape its thumbnail keeps (2026-11-26): the panel's frame.
+    QSizeF clipPictureSize(int flatIndex) const;
     // A scene's block on the SCENES row as drawn: its span less its share of the gaps.
     QRect sceneBlockRect(int sceneIndex) const;
 
@@ -721,7 +828,7 @@ private:
 
     // Interaction.
     int m_hoverIndex = -1;
-    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey, LayerKey, Pan };
+    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey, LayerKey, Pan, DrawingCut };
     // PANNING (batch I-1b, the user's note 8): Ctrl + a left drag (mouse or pen) or a middle
     // drag, anywhere on the rows or the ruler, moves the view left and right with the
     // pointer - through the scrollbar, as the user's scroll - and nothing else.

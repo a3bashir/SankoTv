@@ -717,11 +717,12 @@ void MovieExportJob::pumpVideo()
         while (panel < m_endFrame.size() - 1 && m_frame >= m_endFrame.at(panel))
             ++panel;
         const ExportPanel &row = m_request.panels.at(panel);
-        if (row.panel && row.panel->hasMotion()) {
+        if (row.panel && row.panel->changesOverTime()) {
             // LAYER MOTION (batch I-1): a panel with a layer that moves, drawn layer by
             // layer at every one of its frames - each layer posed at the frame, then
             // placed for its depth and the camera there: the one paint the preview, the
-            // canvas and the stills draw.
+            // canvas and the stills draw. A RUN OF DRAWINGS (batch I-2) the same way: at
+            // every frame the drawing exposed there.
             const int start = panel > 0 ? m_endFrame.at(panel - 1) : 0;
             m_image = renderMovieFrameAt(row, m_frame - start, m_request.frameSize);
             m_panelOfImage = panel;

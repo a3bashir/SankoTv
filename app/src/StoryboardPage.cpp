@@ -9,6 +9,7 @@
 #include "SankoIcons.h"
 #include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "SankoNoteStyle.h" // sankoGreyWithReason
+#include "SankoOnionSkin.h" // the onion skin's counts, colours and opacities (batch I-2)
 #include "SankoScrollBarStyle.h"
 #include "SankoTip.h"       // the Brush bar's tip look, shared by every tooltip
 #include "SankoTimelineTheme.h"
@@ -1595,6 +1596,40 @@ protected:
     }
 };
 
+// THE DRAWINGS MARK (batch I-2, Figma I-2 section 3): two sheets, one behind the other, and
+// how many drawings the layer's run has.
+class LayerDrawingsMark : public QWidget
+{
+public:
+    explicit LayerDrawingsMark(int count) : m_text(QString::number(count))
+    {
+        QFont f(QStringLiteral("Inter"));
+        f.setPixelSize(10);
+        setFont(f);
+        setFixedSize(18 + QFontMetrics(f).horizontalAdvance(m_text), 14);
+        setToolTip(count == 1 ? QStringLiteral("1 drawing") : QStringLiteral("%1 drawings").arg(count));
+    }
+    QString text() const { return m_text; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        const QColor ink(0xb1, 0xb2, 0xbf);
+        p.setPen(QPen(ink, 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(0.5, 0.5, 8, 10));  // the sheet behind
+        p.setBrush(QColor(0x1f, 0x20, 0x30)); // the row's ground, so the front sheet covers it
+        p.drawRect(QRectF(3.5, 3.5, 8, 10));  // the sheet in front
+        p.setPen(ink);
+        p.drawText(QRect(16, 0, width() - 16, height()), Qt::AlignVCenter | Qt::AlignLeft, m_text);
+    }
+
+private:
+    QString m_text;
+};
+
 // THE ANIMATE DIAMOND (batch I-1, Figma I-1 693:755; the user's answers 4 and d): on each
 // layer's row between the eye and the thumbnail. Grey outline: Animate off (its keys, if
 // any, kept and unused). Purple outline: on. Solid purple: on, with a key at the playhead.
@@ -2934,6 +2969,14 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         shortcut->setAutoRepeat(false);
         connect(shortcut, &QShortcut::activated, this, std::move(act));
     };
+    // NEW DRAWING and NEW LAYER (batch I-2; the user's answer 2 of 2026-11-26: "Key: N for New
+    // Drawing. Also Ctrl+Shift+N for New Layer, as in Photoshop." Both were free: no shortcut,
+    // menu entry or key handler of SankoTV had either). Not while the film is up.
+    pageKey(QKeySequence(Qt::Key_N), [this] { newDrawing(false); });
+    pageKey(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), [this] {
+        if (currentPanel() && (!m_animatic || !m_animatic->previewVisible()))
+            layerAdd();
+    });
     pageKey(QKeySequence(Qt::Key_B), [this] { toolKey(DrawingCanvas::Brush); });
     pageKey(QKeySequence(Qt::Key_E), [this] { toolKey(DrawingCanvas::Eraser); });
     pageKey(QKeySequence(Qt::Key_G), [this] { toolKey(DrawingCanvas::Fill); });
@@ -8283,6 +8326,14 @@ bool StoryboardPage::deleteSelectedCameraKey()
 void StoryboardPage::timelineDelete()
 {
     if (m_layerKeyFocus.row) {
+        // A block of the drawings lane is the selected thing (batch I-2): Del deletes that
+        // drawing - one step, no box - and the row stays chosen.
+        if (m_layerKeyFocus.drawing >= 0) {
+            const int li = m_layerKeyFocus.layer, di = m_layerKeyFocus.drawing;
+            deleteDrawing(li, di);
+            setLayerKeyFocus(true);
+            return;
+        }
         Panel *panel = nullptr;
         int flat = -1, li = -1, ki = -1;
         if (focusedLayerKey(&panel, &flat, &li, &ki)) {
@@ -9695,7 +9746,24 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     connect(m_animatic, &AnimaticPage::previewShownChanged, this, [this] {
         if (m_syncCameraBar)
             m_syncCameraBar();
+        // Back in the workspace (batch I-2): the canvas shows the drawing where the film stopped.
+        if (!m_animatic->previewVisible())
+            refreshLayerMotionUi();
     });
+    // An undo or redo of a stroke on a drawing the layer does not show (batch I-2): the
+    // playhead goes to that drawing, so the step lands where it is seen.
+    connect(m_canvas, &DrawingCanvas::drawingNeededForUndo, this,
+            [this](Panel *panel, const QString &layerId, const QString &drawingId) {
+                if (!panel || panel != currentPanel())
+                    return;
+                for (int i = 0; i < panel->layers.size(); ++i)
+                    if (panel->layers.at(i).id == layerId) {
+                        const int d = panel->layers.at(i).drawingIndexOf(drawingId);
+                        if (d >= 0)
+                            goToDrawing(i, d);
+                        return;
+                    }
+            });
     // The timeline's and the transport's notes are said in the same place (batch I-1b, answer
     // 1: the status bar since round 1) - a lock's refusal in amber.
     m_animatic->setNoteSink([this](const QString &text, bool warning) {
@@ -9781,6 +9849,20 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     connect(m_animatic, &AnimaticPage::layerRowPressed, this,
             [this](int flat, int layer, int key) { setLayerKeyFocus(true, flat, layer, key); });
     connect(m_animatic, &AnimaticPage::layerRowContextMenuRequested, this, &StoryboardPage::onLayerRowMenu);
+    // THE DRAWINGS LANE (batch I-2): the +; a block tapped - the playhead to its first frame,
+    // and it is the selected thing on the row (Del deletes it) until a press anywhere else; a
+    // cut dragged; the lane's menu. Each edit is made here, as the keys' are.
+    connect(m_animatic, &AnimaticPage::newDrawingRequested, this, [this] { newDrawing(false); });
+    connect(m_animatic, &AnimaticPage::drawingBlockPressed, this, [this](int layer, int drawing) {
+        goToDrawing(layer, drawing);
+        setLayerKeyFocus(true, currentFlatIndex(), layer, -1, drawing);
+    });
+    connect(m_animatic, &AnimaticPage::drawingCutMoveRequested, this,
+            [this](int layer, int drawing, int startFrame, bool alone) {
+                moveDrawingCut(layer, drawing, startFrame, alone);
+            });
+    connect(m_animatic, &AnimaticPage::drawingsLaneContextMenuRequested, this,
+            &StoryboardPage::onDrawingsLaneMenu);
     // A clip's amber chip (batch 6d): the one thing to do about it.
     connect(m_animatic, &AnimaticPage::artExitChipClicked, this, [this](int flat, const QPoint &at) {
         int si = -1, pi = -1;
@@ -9825,6 +9907,29 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     connect(m_workSplitter, &QSplitter::splitterMoved, this, [this] {
         if (m_animatic && !m_animatic->isCollapsed())
             m_timelineHeight = m_animatic->height();
+    });
+    // THE TIMELINE'S ROWS NEED ANOTHER LEAST HEIGHT (2026-11-26, the user's note 5: every row
+    // inside its bounds): a LAYER row came or went, or its drawings lane. The section gets the
+    // height the artist gave it (m_timelineHeight - their last drag of the splitter, which this
+    // never changes), or the rows' least when that is more; so the room a lane took comes back
+    // when it goes.
+    connect(m_animatic, &AnimaticPage::rowsMinimumChanged, this, [this] {
+        if (!m_workSplitter || !m_animatic || m_animatic->isCollapsed() || m_animatic->isCompact())
+            return; // (a fixed height holds the section then; its least is asked again as it opens)
+        // The section's own least height is set, not asked of its layout - see where the
+        // splitter is built - so it is set again here: without this the splitter could still
+        // drag the section shorter than its rows.
+        const int minimum = m_animatic->minimumExpandedHeight();
+        m_animatic->setMinimumHeight(minimum);
+        if (m_timelineHeightPending || !m_workSplitter->isVisible())
+            return; // not laid out yet: applyTimelineHeight sizes it, within the same least
+        const int total = m_workSplitter->height();
+        const int handle = m_workSplitter->handleWidth();
+        const int wanted = m_timelineHeight > 0 ? m_timelineHeight : m_animatic->defaultExpandedHeight();
+        const int canvasMin = qMax(120, m_workSplitter->widget(0)->minimumSizeHint().height());
+        const int height = qBound(minimum, wanted, qMax(minimum, total - handle - canvasMin));
+        if (height != m_animatic->height())
+            m_workSplitter->setSizes({total - handle - height, height});
     });
 
     // Where the pointer is decides whose keys these are (see eventFilter).
@@ -11530,6 +11635,9 @@ void StoryboardPage::selectPanel(int index)
     ++m_selectPanelCalls;
     flushThumbRefresh(); // finalize the OLD panel's debounced thumbnail
     m_currentPanel = index;
+    // A run of drawings (batch I-2): each layer shows the drawing under the playhead before
+    // its images are unfolded, so only that one is.
+    settleDrawingsAtPlayhead(scene->panels.at(index));
     // THE PANELS AT REST (batch 6b-V): the panel entered gets its full images,
     // its layers unfolded in parallel; the panel left is folded on workers.
     m_layerFolder->open(scene->panels.at(index));
@@ -11565,14 +11673,27 @@ void StoryboardPage::updateOnionGhost()
     if (!m_canvas)
         return;
     Scene *scene = currentScene();
+    // THE PREVIOUS PANEL'S GHOST (the onion skin as it was before I-2) shows for a layer with
+    // one drawing, and on the FIRST drawing of a run - where no drawing is before it (the
+    // user's answer 5: "On a run's first drawing: the previous panel's drawing as a ghost, as
+    // today"). On a run's later drawings the ghosts are that layer's drawings before and after
+    // (updateDrawingGhosts). It is the "before" side: none when Preferences shows 0 before.
     const bool show = m_canvas->isOnionSkinEnabled() && scene
-        && m_currentPanel > 0 && m_currentPanel < scene->panels.size();
-    if (show)
-        m_canvas->setPreviousPixmap(scene->panels.at(m_currentPanel - 1)->flattenedPixmap(),
-                                    neighbourOnStage(scene->panels.at(m_currentPanel),
-                                                     scene->panels.at(m_currentPanel - 1)));
-    else
+        && m_currentPanel > 0 && m_currentPanel < scene->panels.size() && panelGhostWanted();
+    m_panelGhostShown = panelGhostWanted();
+    updateDrawingGhosts();
+    if (m_animatic) // the LAYER row's blocks take the onion skin's colours while it is on
+        m_animatic->setOnionSkinShown(m_canvas->isOnionSkinEnabled());
+    if (show) {
+        // ITS LAST FRAME (the user's answer 2 to hand test I2-1, 2026-11-26): what was on screen
+        // just before the cut - each run's last exposed drawing, each moving layer where its keys
+        // leave it - not the panel's first frame, which the strip and the SHOTS clips show.
+        const Panel *previous = scene->panels.at(m_currentPanel - 1);
+        m_canvas->setPreviousPixmap(previous->flattenedPixmap(lastPlaceOf(previous)),
+                                    neighbourOnStage(scene->panels.at(m_currentPanel), previous));
+    } else {
         m_canvas->setPreviousPixmap(QPixmap()); // clears the ghost
+    }
 }
 
 // --- App-wide undo plumbing ---------------------------------------------------
@@ -11694,6 +11815,12 @@ void StoryboardPage::applyPanelDurationForUndo(Panel *panel, int frames, int rat
             pinnedHere = pinnedHere || key.pinned;
     if (scene && ((scene->panels.contains(panel) && !scene->camera.isEmpty()) || pinnedHere))
         refreshCameraViews(scene);
+    // The onion skin's ghost is the panel before's LAST frame (2026-11-26): a new length
+    // exposes another drawing there, a run's drawings keeping their frames.
+    if (scene && m_canvas && m_canvas->isOnionSkinEnabled() && m_currentPanel > 0
+        && m_currentPanel < scene->panels.size() && scene->panels.at(m_currentPanel - 1) == panel
+        && panel->changesOverTime())
+        updateOnionGhost();
 }
 
 void StoryboardPage::addPanelToScene(int sceneIndex)
@@ -13763,6 +13890,15 @@ void StoryboardPage::rebuildLayerPanel()
             .arg(layer.visible ? QStringLiteral("#cccccc") : QStringLiteral("#666666")));
         rowLayout->addWidget(name, 1, Qt::AlignVCenter);
 
+        // THE DRAWINGS MARK (batch I-2, Figma I-2 section 3): a layer with a run of drawings
+        // carries a small mark with their number, after its name. No layer without a run has
+        // one, so no other row changes.
+        if (panel->layerHasRun(layer)) {
+            auto *mark = new LayerDrawingsMark(layer.drawingCount());
+            mark->setObjectName(QStringLiteral("layerDrawingsMark"));
+            rowLayout->addWidget(mark, 0, Qt::AlignVCenter);
+        }
+
         // THE DEPTH BADGE (Phase 2B, Figma 2B-1, Q1): before the lock, only
         // on a layer off the picture plane. A folder's member shows its
         // folder's value dimmed and cannot change it alone (Q6); the paper
@@ -13896,6 +14032,7 @@ void StoryboardPage::updateLayerSelectionUi()
     m_updatingLayerUi = false;
     if (m_animatic)
         m_animatic->refreshLayerRow(); // the LAYER row shows the selected layer (batch I-1)
+    refreshOnionForDrawing(); // the onion skin is the selected layer's (batch I-2)
 
     const QVector<int> sel = selectedLayers();
     if (m_layerDeleteButton)
@@ -14108,6 +14245,28 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
     connect(depth, &QAction::triggered, this, [this, index, depthAt] {
         QTimer::singleShot(0, this, [this, index, depthAt] { layerOpenDepth(index, depthAt); });
     });
+
+    // NEW DRAWING, here too (batch I-2): the LAYER row and its + are there only once a layer
+    // has motion or a run, so a project's first run can be started with the pointer as well as
+    // with N. On this row's layer, at the playhead.
+    if (!isGroupLayer(panel->layers.at(index)) && panel->layers.at(index).type != QLatin1String("background")) {
+        auto onThisLayer = [this, index](bool fromThisOne) {
+            Panel *p = currentPanel();
+            if (!p || index < 0 || index >= p->layers.size())
+                return;
+            if (p->activeLayerIndex != index)
+                setActiveLayer(index);
+            newDrawing(fromThisOne);
+        };
+        // (The entries' names since the user's note 8, 2026-11-26: New Frame, Duplicate Frame.)
+        QAction *freshDrawing = menu.addAction(QStringLiteral("New Frame\tN"));
+        freshDrawing->setObjectName(QStringLiteral("layerMenuNewDrawing"));
+        connect(freshDrawing, &QAction::triggered, this, [onThisLayer] { onThisLayer(false); });
+        QAction *copyDrawing = menu.addAction(QStringLiteral("Duplicate Frame"));
+        copyDrawing->setObjectName(QStringLiteral("layerMenuNewDrawingFrom"));
+        connect(copyDrawing, &QAction::triggered, this, [onThisLayer] { onThisLayer(true); });
+        menu.addSeparator();
+    }
 
     QAction *duplicate = menu.addAction(QStringLiteral("Duplicate Layer"));
     connect(duplicate, &QAction::triggered, this,
@@ -14608,6 +14767,18 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
             return;
         }
     }
+    // A RUN OF DRAWINGS (batch I-2): a merge flattens one picture, and a run is several - so a
+    // layer with more than one drawing is not merged; the note says which. Nothing changes.
+    for (int idx : indices) {
+        const Layer &layer = panel->layers.at(idx);
+        if (panel->layerHasRun(layer)) {
+            sayWarning(QStringLiteral("Merge Layers: “%1” has %2 drawings, and a merge would keep only one. "
+                                   "Keep the layers apart.")
+                        .arg(layer.name)
+                        .arg(layer.drawingCount()));
+            return;
+        }
+    }
     m_canvas->commitQuickShape();
     // An in-flight Move drag lands in the pre-merge layers BEFORE the merge
     // snapshot; the session left lifted here goes stale below and is dropped.
@@ -14956,6 +15127,9 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
     panel->layers = layers;
     panel->activeLayerIndex =
         qBound(0, activeIndex, qMax(0, panel->layers.size() - 1));
+    // A run of drawings (batch I-2): the step's layers show the drawing they showed when it
+    // was made; the canvas shows the one under the playhead.
+    settleDrawingsAtPlayhead(panel);
     const bool animateChanged =
         panel == currentPanel() && (panel->activeLayer() && panel->activeLayer()->animate) != animateBefore;
     if (panel == currentPanel())
@@ -15004,7 +15178,8 @@ DrawingCanvas::MotionView StoryboardPage::motionView() const
         return v;
     const Panel *panel = scene->panels.at(pi);
     v.valid = true;
-    v.frames = qMax(1, shotcam::panelFrames(*panel, cameraFps()));
+    v.fps = cameraFps();
+    v.frames = qMax(1, shotcam::panelFrames(*panel, v.fps));
     v.frame = qBound(0, frame, v.frames - 1);
     v.at = shotcam::panelAt(v.frame, v.frames);
     return v;
@@ -15172,6 +15347,10 @@ void StoryboardPage::refreshMoveBar()
 
 void StoryboardPage::refreshLayerMotionUi()
 {
+    // The drawing under the playhead onto each layer with a run (batch I-2): the playhead
+    // moved, a step was undone, another panel. Nothing where no layer has one.
+    if (!m_animatic || !m_animatic->previewVisible())
+        showDrawingsAtPlayhead();
     refreshMoveBar(); // Animate switched, a key undone, another panel (batch I-1b)
     Panel *panel = currentPanel();
     for (QWidget *row : m_layerRows)
@@ -15343,18 +15522,23 @@ void StoryboardPage::onLayerRowMenu(const QPoint &globalPos)
     menu.exec(globalPos);
 }
 
-void StoryboardPage::setLayerKeyFocus(bool row, int flat, int layer, int key)
+void StoryboardPage::setLayerKeyFocus(bool row, int flat, int layer, int key, int drawing)
 {
     const bool wasReady = layerKeyPasteReady();
+    const int wasDrawing = m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1;
     m_layerKeyFocus = LayerKeyFocus();
     if (row) {
         m_layerKeyFocus.row = true;
         m_layerKeyFocus.flat = flat;
         m_layerKeyFocus.layer = layer;
         m_layerKeyFocus.key = key;
+        m_layerKeyFocus.drawing = drawing; // a block of the drawings lane (batch I-2)
     }
     if (layerKeyPasteReady() != wasReady)
         emit layerKeyPasteChanged();
+    // The selected block is drawn so on the row (batch I-2).
+    if (m_animatic && wasDrawing != (m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1))
+        m_animatic->setSelectedDrawing(m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1);
 }
 
 bool StoryboardPage::focusedLayerKey(Panel **panel, int *flat, int *layer, int *key) const
@@ -15407,8 +15591,9 @@ void StoryboardPage::noteLayerRowPress(QObject *receiver, QEvent *event)
         // drag on the timecode row is how the place for a paste is chosen, so the LAYER row stays
         // the last thing pressed and Ctrl+V pastes the copied key there. No key is the selected
         // one any more - the playhead has left it, and nothing on the row marks it - so Ctrl+C,
-        // Ctrl+X and Del have no key to take until one is tapped again.
-        if (m_layerKeyFocus.key >= 0)
+        // Ctrl+X and Del have no key to take until one is tapped again. (A selected block of
+        // the drawings lane the same way, batch I-2: Del never takes a drawing the playhead left.)
+        if (m_layerKeyFocus.key >= 0 || m_layerKeyFocus.drawing >= 0)
             setLayerKeyFocus(true);
         return;
     }
@@ -15566,6 +15751,454 @@ QVector<int> StoryboardPage::expandGroupBlocks(const QVector<int> &indices) cons
     QVector<int> sorted(out.begin(), out.end());
     std::sort(sorted.begin(), sorted.end());
     return sorted;
+}
+
+// --- FRAME-BY-FRAME DRAWINGS (batch I-2, 2026-11-26; Figma I-2 727:757, approved) -----------
+// See StoryboardPage.h. The model is Layer::drawings (StoryboardModel.h): the layer's own
+// pixels are the drawing it shows, so the canvas, the tools and the history work on the
+// drawing under the playhead with the code that has always worked on a layer.
+
+double StoryboardPage::placeInPanel(const Panel *panel) const
+{
+    if (!panel || !m_animatic || m_animatic->playheadPanel() != panel)
+        return 0.0;
+    const int frames = qMax(1, shotcam::panelFrames(*panel, cameraFps()));
+    return shotcam::panelAt(qBound(0, m_animatic->playheadFrameInPanel(), frames - 1), frames);
+}
+
+bool StoryboardPage::thumbRefreshPendingForTest() const
+{
+    return m_thumbTimer && m_thumbTimer->isActive();
+}
+
+// The place of a panel's last frame (the onion skin's ghost of the panel before).
+double StoryboardPage::lastPlaceOf(const Panel *panel) const
+{
+    if (!panel)
+        return 0.0;
+    const int frames = qMax(1, shotcam::panelFrames(*panel, cameraFps()));
+    return shotcam::panelAt(frames - 1, frames);
+}
+
+void StoryboardPage::settleDrawingsAtPlayhead(Panel *panel)
+{
+    if (panel && panel->hasRuns())
+        panel->showDrawingsAtPlace(placeInPanel(panel));
+}
+
+bool StoryboardPage::showDrawingsAtPlayhead()
+{
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !panel->hasRuns())
+        return false;
+    const double at = placeInPanel(panel);
+    bool needed = false;
+    for (const Layer &layer : std::as_const(panel->layers))
+        if (panel->layerHasRun(layer) && panel->drawingAtPlace(layer, at) != layer.shown)
+            needed = true;
+    if (!needed)
+        return false;
+    // Whatever is live lands first, on the drawing it was made on: a stroke on its way from
+    // the engine, a shape, a floating selection, a Move under way.
+    m_canvas->settleForLayerChange();
+    panel->showDrawingsAtPlace(at);
+    panel->unfoldNow();      // the drawings now shown, as full images for the tools
+    m_layerFolder->sweep();  // the ones left fold at rest, on workers
+    m_canvas->invalidateComposite();
+    m_canvas->refreshTransformBox(); // the Move box holds the drawing under the playhead
+    m_canvas->update();
+    refreshLayerThumbs();
+    refreshOnionForDrawing();
+    m_canvas->refreshNoteBar(); // "Seagull · drawing 3 of 10 · 2 frames"
+    return true;
+}
+
+void StoryboardPage::refreshLayerThumbs()
+{
+    Panel *panel = currentPanel();
+    if (!panel)
+        return;
+    for (QWidget *row : m_layerRows) {
+        const int idx = row->property("layerIndex").toInt();
+        if (idx < 0 || idx >= panel->layers.size() || !panel->layerHasRun(panel->layers.at(idx)))
+            continue;
+        if (QLabel *thumb = row->findChild<QLabel *>(QStringLiteral("layerThumb")))
+            thumb->setPixmap(layerThumb(panel->layers.at(idx)));
+    }
+}
+
+bool StoryboardPage::panelGhostWanted() const
+{
+    if (SankoOnionSkin::choice(SankoOnionSkin::Side::Before).count < 1)
+        return false;
+    const Panel *panel = currentPanel();
+    const Layer *layer = panel ? panel->activeLayer() : nullptr;
+    return !layer || !panel->layerHasRun(*layer) || layer->shown == 0;
+}
+
+void StoryboardPage::refreshOnionForDrawing()
+{
+    if (!m_canvas)
+        return;
+    if (panelGhostWanted() != m_panelGhostShown)
+        updateOnionGhost(); // the previous panel's ghost comes or goes; the drawings' with it
+    else
+        updateDrawingGhosts();
+}
+
+QPixmap StoryboardPage::drawingGhostFor(const LayerPixels &px, const QColor &tint)
+{
+    const qint64 key = px.contentKey();
+    for (GhostEntry &entry : m_ghostCache)
+        if (entry.key == key && entry.tint == tint.rgb()) {
+            entry.used = ++m_ghostClock;
+            return entry.pixmap;
+        }
+    GhostEntry made;
+    made.key = key;
+    made.tint = tint.rgb();
+    made.pixmap = DrawingCanvas::drawingGhost(px.pixels(), tint);
+    made.used = ++m_ghostClock;
+    m_ghostCache.append(made);
+    // A few stage-sized pictures at most (a 4K one is 32 MB): what is shown now - up to the two
+    // sides' three each - and never fewer than four, so a step back finds the ghosts it just had.
+    const int kKept = qMax(4, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).count
+                                  + SankoOnionSkin::choice(SankoOnionSkin::Side::After).count);
+    while (m_ghostCache.size() > kKept) {
+        int oldest = 0;
+        for (int i = 1; i < m_ghostCache.size(); ++i)
+            if (m_ghostCache.at(i).used < m_ghostCache.at(oldest).used)
+                oldest = i;
+        m_ghostCache.removeAt(oldest);
+    }
+    return made.pixmap;
+}
+
+// THE DRAWINGS BEFORE AND AFTER (the user's answer 5): on the selected layer's run, as many
+// as Preferences > Onion Skin shows on each side, each side in its colour - the nearest at the
+// opacity set, each one further at 60 % of the one before it. The farthest first and the
+// drawing before last, so the one the artist is working from is on top. On the run's first
+// drawing there is none before (the previous panel's ghost stands in, updateOnionGhost); on
+// its last none after. My reading of "first": the drawings AFTER show there too.
+void StoryboardPage::updateDrawingGhosts()
+{
+    if (!m_canvas)
+        return;
+    QVector<DrawingCanvas::OnionGhost> ghosts;
+    const Panel *panel = currentPanel();
+    const Layer *layer = panel ? panel->activeLayer() : nullptr;
+    if (m_canvas->isOnionSkinEnabled() && layer && panel->layerHasRun(*layer)
+        && panel->layerEffectivelyVisible(*layer)) {
+        using SankoOnionSkin::Side;
+        const int shown = layer->shown, count = int(layer->drawings.size());
+        for (Side side : {Side::After, Side::Before}) {
+            const SankoOnionSkin::Choice choice = SankoOnionSkin::choice(side);
+            for (int distance = choice.count; distance >= 1; --distance) {
+                const int index = side == Side::Before ? shown - distance : shown + distance;
+                if (index < 0 || index >= count)
+                    continue;
+                DrawingCanvas::OnionGhost ghost;
+                ghost.pixmap = drawingGhostFor(layer->pixelsOf(index), choice.color);
+                ghost.opacity = SankoOnionSkin::opacityAt(side, distance);
+                ghost.drawing = index;
+                ghost.before = side == Side::Before;
+                ghosts.append(ghost);
+            }
+        }
+    }
+    m_canvas->setDrawingGhosts(ghosts);
+}
+
+void StoryboardPage::onionSkinSettingsChanged()
+{
+    m_ghostCache.clear();
+    if (m_canvas)
+        m_canvas->refreshOnionColors();
+    updateOnionGhost();
+}
+
+void StoryboardPage::reportLayerDrawing(const QString &what, const Panel *panel, int layerIndex)
+{
+    if (!panel || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return;
+    const Layer &layer = panel->layers.at(layerIndex);
+    int flat = 0;
+    for (const Scene *s : m_scenes) {
+        const int at = s->panels.indexOf(const_cast<Panel *>(panel));
+        if (at >= 0) {
+            flat += at;
+            break;
+        }
+        flat += s->panels.size();
+    }
+    QStringList starts;
+    for (const LayerDrawing &drawing : layer.drawings)
+        starts << QString::number(drawing.start);
+    const DrawingCanvas::MotionView v = motionView();
+    emit layerDrawingEdited({{QStringLiteral("what"), what},
+                             {QStringLiteral("layer"), layer.name},
+                             {QStringLiteral("panel"), flat},
+                             {QStringLiteral("frame"), panel == currentPanel() && v.valid ? v.frame : -1},
+                             {QStringLiteral("frames"), shotcam::panelFrames(*panel, cameraFps())},
+                             {QStringLiteral("drawings"), layer.drawingCount()},
+                             {QStringLiteral("shown"), layer.hasRun() ? layer.shown + 1 : 1},
+                             {QStringLiteral("starts"), starts.join(QStringLiteral(", "))}});
+}
+
+bool StoryboardPage::newDrawing(bool fromThisOne)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_undoStack || (m_animatic && m_animatic->previewVisible()))
+        return false;
+    const int index = panel->activeLayerIndex;
+    if (index < 0 || index >= panel->layers.size())
+        return false;
+    // THE ENTRIES' NAMES (the user's note 8, 2026-11-26): New Frame, Duplicate Frame, Delete Frame -
+    // in the menus, the +'s tooltip, the undo step and the notes that begin with the name.
+    const QString what = fromThisOne ? QStringLiteral("Duplicate Frame") : QStringLiteral("New Frame");
+    {
+        const Layer &target = panel->layers.at(index);
+        if (isGroupLayer(target)) {
+            sayWarning(what + QStringLiteral(": choose a layer, not a folder."));
+            return false;
+        }
+        if (target.type == QLatin1String("background")) {
+            sayWarning(what + QStringLiteral(": the Background has one drawing. Choose a layer."));
+            return false;
+        }
+        if (target.locked) {
+            sayEditRefused(QStringLiteral("%1 is locked").arg(target.name), QCursor::pos());
+            return false;
+        }
+    }
+    const int fps = cameraFps();
+    const DrawingCanvas::MotionView v = motionView();
+    const int frames = v.valid ? v.frames : qMax(1, shotcam::panelFrames(*panel, fps));
+    const int playhead = v.valid ? v.frame : 0;
+
+    // Where it would go, on a copy counted in the project's frames: nothing changes until it fits.
+    Layer probe = panel->layers.at(index);
+    probe.countRunAt(fps);
+    const int count = probe.drawingCount();
+    const int cur = probe.hasRun() ? probe.drawingAt(playhead) : 0;
+    const int curStart = probe.drawingStart(cur);
+    // ON 2S: at the playhead, never sooner than two frames after the drawing under it starts.
+    const int start = qMax(playhead, curStart + 2);
+    const bool last = cur + 1 >= count;
+    // IN THE MIDDLE OF A RUN the drawing under the playhead is split and nothing later moves;
+    // with no room left in it, the later drawings move on to make two frames.
+    const int shift = !last && start >= probe.drawingStart(cur + 1) ? start + 2 - probe.drawingStart(cur + 1) : 0;
+    if (start > frames - 1) {
+        sayWarning(what + QStringLiteral(": no frame is left for it before the panel's end. Make the panel longer, "
+                                         "or put the playhead earlier."));
+        return false;
+    }
+    if (!last && probe.drawingStart(count - 1) + shift > frames - 1) {
+        sayWarning(what + QStringLiteral(": no room here - the later drawings would pass the panel's end. Make the "
+                                         "panel longer first."));
+        return false;
+    }
+
+    m_canvas->settleForLayerChange(); // whatever is live lands on the drawing it was made on
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[index];
+    if (!layer.hasRun()) {
+        // A layer with one drawing becomes a run: that drawing is its first.
+        layer.drawings.clear();
+        LayerDrawing first;
+        first.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        layer.drawings.append(first);
+        layer.shown = 0;
+        layer.runRate = fps;
+    } else {
+        layer.countRunAt(fps);
+    }
+    for (int i = cur + 1; i < layer.drawings.size(); ++i)
+        layer.drawings[i].start += shift;
+    LayerDrawing made;
+    made.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    made.start = start;
+    if (fromThisOne) {
+        // A copy of the drawing under the playhead: its pixels shared until one is drawn on.
+        made.px = cur == layer.shown ? static_cast<const LayerPixels &>(layer) : layer.drawings.at(cur).px;
+    } else {
+        made.px.image = makeLayerImage(panel->canvasSize());
+        made.px.stageRect = QRect(-panel->frameAt(), panel->canvasSize());
+    }
+    layer.drawings.insert(cur + 1, made);
+    if (layer.shown > cur)
+        ++layer.shown;
+
+    // The playhead steps onto it, and it is the drawing on the canvas.
+    if (m_animatic && playhead != start)
+        m_animatic->setPlayheadFrameInPanel(currentFlatIndex(), start);
+    settleDrawingsAtPlayhead(panel);
+    panel->unfoldNow();
+    pushLayerCommand(panel, before, beforeActive, what);
+    m_layerFolder->sweep();
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+    refreshLayerMotionUi();
+    refreshOnionForDrawing();
+    m_canvas->refreshNoteBar();
+    reportLayerDrawing(what, panel, index);
+    return true;
+}
+
+bool StoryboardPage::deleteDrawing(int layerIndex, int drawingIndex)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_undoStack || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return false;
+    {
+        const Layer &target = panel->layers.at(layerIndex);
+        if (!panel->layerHasRun(target)) {
+            sayWarning(QStringLiteral("Delete Frame: this is the layer's only drawing. Clear Layer empties it."));
+            return false;
+        }
+        if (drawingIndex < 0 || drawingIndex >= target.drawings.size())
+            return false;
+        if (target.locked) {
+            sayEditRefused(QStringLiteral("%1 is locked").arg(target.name), QCursor::pos());
+            return false;
+        }
+    }
+    m_canvas->settleForLayerChange();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[layerIndex];
+    layer.countRunAt(cameraFps());
+    // The one before it holds over its frames; the first one's go to the one after.
+    if (drawingIndex == layer.shown)
+        layer.show(drawingIndex > 0 ? drawingIndex - 1 : 1);
+    layer.drawings.removeAt(drawingIndex);
+    if (layer.shown > drawingIndex)
+        --layer.shown;
+    layer.drawings[0].start = 0;
+    if (layer.drawings.size() == 1) {
+        // One drawing left: a layer as any other, that drawing its own pixels.
+        layer.drawings.clear();
+        layer.shown = 0;
+    }
+    settleDrawingsAtPlayhead(panel);
+    panel->unfoldNow();
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Delete Frame"));
+    m_layerFolder->sweep();
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+    refreshLayerMotionUi();
+    refreshOnionForDrawing();
+    m_canvas->refreshNoteBar();
+    reportLayerDrawing(QStringLiteral("Delete Frame"), panel, layerIndex);
+    return true;
+}
+
+bool StoryboardPage::moveDrawingCut(int layerIndex, int drawingIndex, int startFrame, bool alone)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_undoStack || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return false;
+    const int fps = cameraFps();
+    Layer probe = panel->layers.at(layerIndex);
+    if (!panel->layerHasRun(probe) || drawingIndex < 1 || drawingIndex >= probe.drawings.size())
+        return false; // the first drawing starts the panel: it has no cut to drag
+    if (probe.locked) {
+        sayEditRefused(QStringLiteral("%1 is locked").arg(probe.name), QCursor::pos());
+        return false;
+    }
+    probe.countRunAt(fps);
+    const int frames = qMax(1, shotcam::panelFrames(*panel, fps));
+    // Never onto the drawing before it (a drawing is at least one frame). Alone, never onto
+    // the one after it either; with the later drawings, the dragged cut stays in the panel -
+    // what it pushes past the end is kept, unseen, as a shorter panel keeps it.
+    const int least = probe.drawingStart(drawingIndex - 1) + 1;
+    const int most = alone && drawingIndex + 1 < probe.drawings.size() ? probe.drawingStart(drawingIndex + 1) - 1
+                                                                      : frames - 1;
+    const int start = qBound(least, startFrame, qMax(least, most));
+    const int delta = start - probe.drawingStart(drawingIndex);
+    if (delta == 0)
+        return false;
+    m_canvas->settleForLayerChange();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[layerIndex];
+    layer.countRunAt(fps);
+    if (alone) {
+        layer.drawings[drawingIndex].start = start;
+    } else {
+        for (int i = drawingIndex; i < layer.drawings.size(); ++i)
+            layer.drawings[i].start += delta;
+    }
+    const QString what = alone ? QStringLiteral("Move Drawing Cut") : QStringLiteral("Change Drawing Length");
+    settleDrawingsAtPlayhead(panel);
+    panel->unfoldNow();
+    pushLayerCommand(panel, before, beforeActive, what);
+    m_layerFolder->sweep();
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    refreshLayerThumbs();
+    refreshLayerMotionUi();
+    refreshOnionForDrawing();
+    m_canvas->refreshNoteBar();
+    reportLayerDrawing(what, panel, layerIndex);
+    return true;
+}
+
+void StoryboardPage::goToDrawing(int layerIndex, int drawingIndex)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !m_animatic || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return;
+    Layer probe = panel->layers.at(layerIndex);
+    if (!panel->layerHasRun(probe) || drawingIndex < 0 || drawingIndex >= probe.drawings.size())
+        return;
+    const int fps = cameraFps();
+    probe.countRunAt(fps);
+    const int frames = qMax(1, shotcam::panelFrames(*panel, fps));
+    if (probe.drawingStart(drawingIndex) > frames - 1) {
+        sayNote(QStringLiteral("Drawing %1 starts after the panel's end. Make the panel longer to see it.")
+                    .arg(drawingIndex + 1));
+        return;
+    }
+    if (panel->activeLayerIndex != layerIndex)
+        setActiveLayer(layerIndex);
+    m_animatic->setPlayheadFrameInPanel(currentFlatIndex(), probe.drawingStart(drawingIndex));
+    refreshLayerMotionUi();
+}
+
+// The drawings lane's menu (Figma I-2 section 2): New Frame, Duplicate Frame - at the playhead,
+// on the selected layer - and Delete Frame, the block under the pointer's. (They were "New
+// Drawing", "New Drawing from This One", "Delete Drawing" until the user's note 8, 2026-11-26.)
+void StoryboardPage::onDrawingsLaneMenu(int layerIndex, int drawingIndex, const QPoint &globalPos)
+{
+    Panel *panel = currentPanel();
+    if (!panel || layerIndex < 0 || layerIndex >= panel->layers.size())
+        return;
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("layerDrawingMenu"));
+    menu.setStyleSheet(layerKeyMenuSheet());
+    QAction *fresh = menu.addAction(QStringLiteral("New Frame\tN"));
+    fresh->setObjectName(QStringLiteral("layerDrawingNew"));
+    connect(fresh, &QAction::triggered, this, [this] { newDrawing(false); });
+    QAction *copy = menu.addAction(QStringLiteral("Duplicate Frame"));
+    copy->setObjectName(QStringLiteral("layerDrawingNewFrom"));
+    connect(copy, &QAction::triggered, this, [this] { newDrawing(true); });
+    menu.addSeparator();
+    QAction *del = menu.addAction(QStringLiteral("Delete Frame\tDel"));
+    del->setObjectName(QStringLiteral("layerDrawingDelete"));
+    del->setEnabled(panel->layerHasRun(panel->layers.at(layerIndex)) && drawingIndex >= 0);
+    connect(del, &QAction::triggered, this, [this, layerIndex, drawingIndex] {
+        deleteDrawing(layerIndex, drawingIndex);
+        setLayerKeyFocus(true);
+    });
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
 }
 
 

@@ -104,7 +104,35 @@ public:
     // Pass the previous panel's flattened pixmap (or null to clear the ghost).
     // `onStage` (batch 6c): the picture's place on this panel's stage, so panels with
     // different stages overlay by the frame. Empty: the whole stage, as ever.
+    // Its colour and opacity are the onion skin's "before" (SankoOnionSkin.h; the blue at
+    // 30 % it always was, unless Preferences > Onion Skin says another).
     void setPreviousPixmap(const QPixmap &previous, const QRect &onStage = QRect());
+    // THE DRAWINGS BEFORE AND AFTER (batch I-2, the user's answer 5): on a layer with a run,
+    // the ghosts of its neighbouring drawings, each already in its colour, painted in the
+    // order given with its opacity, over the picture as the previous panel's ghost is. Not
+    // painted while the Move tool poses an animated layer (the box is the layer's pose then,
+    // and the drawings are not what is being worked on).
+    struct OnionGhost
+    {
+        QPixmap pixmap;       // stage-sized, tinted (drawingGhost)
+        double opacity = 0.3;
+        int drawing = -1;     // which drawing of the run it is (the checks')
+        bool before = true;
+    };
+    void setDrawingGhosts(const QVector<OnionGhost> &ghosts);
+    const QVector<OnionGhost> &drawingGhostsForTest() const { return m_drawingGhosts; }
+    bool previousGhostShownForTest() const { return m_onionSkin && !m_ghost.isNull(); }
+    // A drawing's own pixels as a ghost: `tint` wherever it has anything, as opaque as it is.
+    static QPixmap drawingGhost(const QImage &pixels, const QColor &tint);
+    // The onion skin's settings changed: the previous panel's ghost is tinted again.
+    void refreshOnionColors();
+    // A layer of `panel` shows this drawing of its run ("" when it has none): what a pixel
+    // step remembers, so that undo and redo land on the drawing they were made on.
+    QString shownDrawingIdOf(const Panel *panel, const QString &layerId) const;
+    void showDrawingForUndo(Panel *panel, const QString &layerId, const QString &drawingId);
+    // "Seagull · drawing 3 of 10 · 2 frames": the active layer's drawing under the playhead,
+    // for the status bar; empty for a layer without a run.
+    QString runNoteText() const;
 
     // Light table: fuller onion skin showing neighbouring panels behind the
     // current drawing — previous tinted red, next tinted green. Display-only
@@ -321,6 +349,9 @@ public:
     void showNote(const QString &text, int ms = kNoteMs, bool warning = false);
     enum class NoteKind { Tool, Said, Warning };
     QString noteBarText() const { return m_noteBarText; } // what the bar says now ("" nothing)
+    // What the bar says is worked out again after this event (the drawing under the playhead
+    // changed, batch I-2: no tool and no paint need have).
+    void refreshNoteBar() { queueNoteBarSync(); }
     NoteKind noteBarKind() const { return m_noteBarKind; }
     QString noteBarTip() const { return m_noteBarTip; }   // more than the words: the passed layers
     int noteBarAmberFrom() const { return m_noteBarAmberFrom; }
@@ -844,6 +875,7 @@ public:
         double at = 0.0; // the place in the panel, 0 .. 1 (shotcam::panelAt)
         int frame = 0;   // the playhead's frame in the panel
         int frames = 1;  // the panel's length
+        int fps = 24;    // the project's rate, what `frame` and `frames` are counted at (batch I-2)
     };
     void setMotionProvider(std::function<MotionView()> provider);
     void refreshMotion() { update(); }
@@ -885,6 +917,9 @@ signals:
     // An undo/redo command rewrote this panel's layer data; the page
     // regenerates that panel's thumbnail from the committed model.
     void panelEdited(Panel *panel);
+    // An undo or redo is about to change a drawing of a run that the layer does not show
+    // (batch I-2): the page puts the playhead on it, so the step lands where it is seen.
+    void drawingNeededForUndo(Panel *panel, const QString &layerId, const QString &drawingId);
     // The active tool switched (the per-tool Size CTL sliders re-sync).
     void toolChanged(int tool);
     // A library preset replaced the working brush (sliders re-sync).
@@ -1439,7 +1474,9 @@ private:
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
+    QPixmap m_ghostSource;   // the flatten it was made from: tinted again when the colour changes
     QRect m_ghostRect;       // its place on this stage when it is not the whole of it
+    QVector<OnionGhost> m_drawingGhosts; // the run's drawings before and after (batch I-2)
     QRect m_ltPrevRect;
     QRect m_ltNextRect;
 

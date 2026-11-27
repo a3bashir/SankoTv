@@ -142,7 +142,7 @@ public:
         if (m_at == at)
             return;
         m_at = at;
-        if (m_panel && m_panel->hasMotion())
+        if (m_panel && m_panel->changesOverTime()) // motion, or a run of drawings (batch I-2)
             update();
     }
     double atForTest() const { return m_at; }
@@ -234,7 +234,8 @@ protected:
         const QRect area = pictureArea(); // the widget, or its share while the stage is clear
         // A panel with a layer that moves (batch I-1) is drawn layer by layer at the
         // playhead's frame, whatever the camera does - neutral, at its base framing.
-        const bool moving = !m_pixmap.isNull() && m_panel && m_panel->hasMotion();
+        // A run of drawings (batch I-2) the same way: the drawing exposed at that frame.
+        const bool moving = !m_pixmap.isNull() && m_panel && m_panel->changesOverTime();
         if (moving || (!m_pixmap.isNull() && !m_neutral && m_panel
                        && shotcam::layeredShot(*m_panel, m_camera, m_stage))) {
             shotcam::drawShot(painter, *m_panel, m_stage, m_neutral ? shotcam::neutral(m_stage) : m_camera,
@@ -715,6 +716,18 @@ void AnimaticPage::refreshLayerRow()
         m_timeline->refreshLayerRow();
     if (m_display && m_previewShown)
         m_display->update(); // a key changed under the preview (batch I-1)
+}
+
+void AnimaticPage::setSelectedDrawing(int drawingIndex)
+{
+    if (m_timeline)
+        m_timeline->setSelectedDrawing(drawingIndex);
+}
+
+void AnimaticPage::setOnionSkinShown(bool on)
+{
+    if (m_timeline)
+        m_timeline->setOnionSkinShown(on);
 }
 
 double AnimaticPage::previewAtForTest() const
@@ -1371,6 +1384,14 @@ QWidget *AnimaticPage::createTimingStrip()
     connect(m_timeline, &AnimaticTimeline::layerRowPressed, this, &AnimaticPage::layerRowPressed);
     connect(m_timeline, &AnimaticTimeline::layerRowContextMenuRequested, this,
             &AnimaticPage::layerRowContextMenuRequested);
+    // The drawings lane (batch I-2).
+    connect(m_timeline, &AnimaticTimeline::newDrawingRequested, this, &AnimaticPage::newDrawingRequested);
+    connect(m_timeline, &AnimaticTimeline::rowsMinimumChanged, this, &AnimaticPage::rowsMinimumChanged);
+    connect(m_timeline, &AnimaticTimeline::drawingBlockPressed, this, &AnimaticPage::drawingBlockPressed);
+    connect(m_timeline, &AnimaticTimeline::drawingCutMoveRequested, this,
+            &AnimaticPage::drawingCutMoveRequested);
+    connect(m_timeline, &AnimaticTimeline::drawingsLaneContextMenuRequested, this,
+            &AnimaticPage::drawingsLaneContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::artExitChipClicked,
             this, &AnimaticPage::artExitChipClicked);
     connect(m_timeline, &AnimaticTimeline::cameraAnimateToggled,

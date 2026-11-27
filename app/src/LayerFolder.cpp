@@ -84,48 +84,58 @@ void LayerFolder::sweep()
         if (!scene)
             continue;
         for (Panel *panel : scene->panels) {
-            if (!panel || panel == m_open)
+            if (!panel)
                 continue;
             for (Layer &layer : panel->layers) {
-                if (isGroupLayer(layer) || layer.image.isNull())
+                if (isGroupLayer(layer))
                     continue;
-                if (layer.tilesCurrent()) { // left as it was: nothing to fold
-                    layer.image = QImage();
-                    continue;
-                }
-                if (!layertiles::foldable(layer.image))
-                    continue; // stays a full image
-                const QString flight = QStringLiteral("%1/%2/%3")
-                                           .arg(quintptr(panel))
-                                           .arg(layer.id)
-                                           .arg(layer.image.cacheKey());
-                if (m_flying.contains(flight))
-                    continue;
-                m_flying.insert(flight);
-                // Handed to the worker: the image (a shared copy, so an edit
-                // detaches away from it) and the tiles so far.
-                const QImage image = layer.image;
-                const QPoint frameAt = panel->frameAt();
-                const bool paper = layer.type == QLatin1String("background");
-                const layertiles::TilesPtr before = layer.tiles;
-                const int generation = m_generation;
-                const QString layerId = layer.id;
-                auto job = [this, image, frameAt, paper, before, generation, panel, layerId, flight] {
-                    Result r;
-                    r.generation = generation;
-                    r.panel = panel;
-                    r.layerId = layerId;
-                    r.imageKey = image.cacheKey();
-                    r.stage = QRect(-frameAt, image.size());
-                    r.flight = flight;
-                    const quint32 fill = paper ? layertiles::paperFill(image, before) : 0u;
-                    r.tiles = layertiles::fold(image, frameAt, fill, before);
-                    QMetaObject::invokeMethod(this, [this, r] { land(r); }, Qt::QueuedConnection);
-                };
-                if (m_serialForTest)
-                    job();
-                else
-                    m_foldPool.start(job);
+                // A RUN OF DRAWINGS (batch I-2): every drawing rests as a layer does. On the
+                // panel on the canvas only the drawing each layer shows keeps its full image
+                // (the layer's own pixels); the others fold as soon as the playhead leaves them.
+                const LayerPixels *const own = &layer;
+                layer.forEachPixels([&](LayerPixels &px) {
+                    if (panel == m_open && &px == own)
+                        return;
+                    if (px.image.isNull())
+                        return;
+                    if (px.tilesCurrent()) { // left as it was: nothing to fold
+                        px.image = QImage();
+                        return;
+                    }
+                    if (!layertiles::foldable(px.image))
+                        return; // stays a full image
+                    const QString flight = QStringLiteral("%1/%2/%3")
+                                               .arg(quintptr(panel))
+                                               .arg(layer.id)
+                                               .arg(px.image.cacheKey());
+                    if (m_flying.contains(flight))
+                        return;
+                    m_flying.insert(flight);
+                    // Handed to the worker: the image (a shared copy, so an edit
+                    // detaches away from it) and the tiles so far.
+                    const QImage image = px.image;
+                    const QPoint frameAt = panel->frameAt();
+                    const bool paper = layer.type == QLatin1String("background");
+                    const layertiles::TilesPtr before = px.tiles;
+                    const int generation = m_generation;
+                    const QString layerId = layer.id;
+                    auto job = [this, image, frameAt, paper, before, generation, panel, layerId, flight] {
+                        Result r;
+                        r.generation = generation;
+                        r.panel = panel;
+                        r.layerId = layerId;
+                        r.imageKey = image.cacheKey();
+                        r.stage = QRect(-frameAt, image.size());
+                        r.flight = flight;
+                        const quint32 fill = paper ? layertiles::paperFill(image, before) : 0u;
+                        r.tiles = layertiles::fold(image, frameAt, fill, before);
+                        QMetaObject::invokeMethod(this, [this, r] { land(r); }, Qt::QueuedConnection);
+                    };
+                    if (m_serialForTest)
+                        job();
+                    else
+                        m_foldPool.start(job);
+                });
             }
         }
     }
@@ -139,16 +149,30 @@ void LayerFolder::land(const Result &r)
         return;
     }
     if (panelLive(r.panel))
-        for (Layer &layer : r.panel->layers)
-            if (layer.id == r.layerId && !layer.image.isNull() && layer.image.cacheKey() == r.imageKey) {
-                layer.tiles = r.tiles;
-                layer.stageRect = r.stage;
-                layer.tilesOf = r.imageKey;
-                if (r.panel != m_open)
-                    layer.image = QImage();
+        for (Layer &layer : r.panel->layers) {
+            if (layer.id != r.layerId)
+                continue;
+            // The layer's own pixels, or one of its run's other drawings (batch I-2): whichever
+            // still holds the image this was made from - every one that does (a drawing made
+            // "from this one" shares its image with the one it was made from until either is
+            // drawn on).
+            bool landed = false;
+            const LayerPixels *const own = &layer;
+            layer.forEachPixels([&](LayerPixels &px) {
+                if (px.image.isNull() || px.image.cacheKey() != r.imageKey)
+                    return;
+                px.tiles = r.tiles;
+                px.stageRect = r.stage;
+                px.tilesOf = r.imageKey;
+                if (r.panel != m_open || &px != own)
+                    px.image = QImage();
+                landed = true;
+            });
+            if (landed) {
                 ++m_foldsDone;
                 return;
             }
+        }
     // The layer moved on while this was made: an edit, an undo, the panel gone.
     ++m_foldsDropped;
     if (m_flying.isEmpty())
@@ -177,14 +201,17 @@ LayerFolder::Held LayerFolder::held() const
             for (const Layer &layer : panel->layers) {
                 if (isGroupLayer(layer))
                     continue;
-                if (!layer.image.isNull()) {
-                    h.denseBytes += layer.image.sizeInBytes();
-                    ++h.denseLayers;
-                } else if (layer.tiles) {
-                    ++h.foldedLayers;
-                }
-                if (layer.tiles)
-                    h.tileBytes += layer.tiles->bytes();
+                // Every drawing of a run counts as a layer does (batch I-2).
+                layer.forEachPixels([&h](const LayerPixels &px) {
+                    if (!px.image.isNull()) {
+                        h.denseBytes += px.image.sizeInBytes();
+                        ++h.denseLayers;
+                    } else if (px.tiles) {
+                        ++h.foldedLayers;
+                    }
+                    if (px.tiles)
+                        h.tileBytes += px.tiles->bytes();
+                });
             }
         }
     }

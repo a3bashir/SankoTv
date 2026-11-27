@@ -158,6 +158,12 @@ struct PanelNames
     QHash<QString, QString> layers; // layer id -> file name
 };
 
+// A drawing of a run's key in PanelNames::layers (batch I-2): no id holds a '/'.
+QString drawingNameKey(const QString &layerId, const QString &drawingId)
+{
+    return layerId + QLatin1Char('/') + drawingId;
+}
+
 QVector<PanelNames> namesFor(const QVector<Scene *> &scenes)
 {
     QVector<PanelNames> out;
@@ -183,6 +189,18 @@ QVector<PanelNames> namesFor(const QVector<Scene *> &scenes)
                     lstem = fullIdHex(layer.id);
                 used.insert(QStringLiteral("p_%1_l_%2").arg(stem, lstem));
                 names.layers.insert(layer.id, QStringLiteral("p_%1_l_%2.png").arg(stem, lstem));
+                // A RUN OF DRAWINGS (batch I-2): a file to each drawing, by its own id after the
+                // layer's ("..._d_<12 hex>.png"), under the key drawingNameKey gives.
+                if (layer.hasRun())
+                    for (const LayerDrawing &drawing : layer.drawings) {
+                        QString dstem = imageIdStem(drawing.id);
+                        if (dstem.isEmpty()
+                            || used.contains(QStringLiteral("p_%1_l_%2_d_%3").arg(stem, lstem, dstem)))
+                            dstem = fullIdHex(drawing.id);
+                        used.insert(QStringLiteral("p_%1_l_%2_d_%3").arg(stem, lstem, dstem));
+                        names.layers.insert(drawingNameKey(layer.id, drawing.id),
+                                            QStringLiteral("p_%1_l_%2_d_%3.png").arg(stem, lstem, dstem));
+                    }
             }
             out.append(names);
         }
@@ -207,7 +225,7 @@ bool isIdImageName(const QString &fileName)
     // "~<n>" before ".png": the same image written again by a later save (the safe save,
     // 2026-11-23 - a save never writes over a file; see imageNameVariant).
     static const QRegularExpression rx(
-        QStringLiteral("^p_[0-9a-f]{12,32}(_l_[0-9a-f]{12,32})?(~[0-9]+)?\\.png$"),
+        QStringLiteral("^p_[0-9a-f]{12,32}(_l_[0-9a-f]{12,32}(_d_[0-9a-f]{12,32})?)?(~[0-9]+)?\\.png$"),
         QRegularExpression::CaseInsensitiveOption);
     return rx.match(fileName).hasMatch();
 }
@@ -264,7 +282,9 @@ QByteArray flattenContent(const Panel &panel)
     QDataStream s(&id, QIODevice::WriteOnly);
     s << quint8('F') << panel.frameAt();
     for (const Layer &layer : panel.layers) {
-        s << layer.contentKey() << layer.pixelSize() << layer.opacity << layer.visible
+        // (A run of drawings, batch I-2: the flatten is the panel's first frame, so its
+        // FIRST drawing's pixels, whichever the layer shows. Without a run: the layer's own.)
+        s << layer.pixelsOf(0).contentKey() << layer.pixelsOf(0).pixelSize() << layer.opacity << layer.visible
           << layer.type << layer.groupId;
         // A layer's motion (batch I-1): the flatten is its first frame, so a key moved is
         // another flatten. Nothing for a layer without motion, whose id reads as before.
@@ -574,6 +594,22 @@ NamedImages namedImages(const QJsonObject &root)
             for (const QJsonValue &lv : p.value(QStringLiteral("layers")).toArray()) {
                 const QJsonObject l = lv.toObject();
                 const QString lid = l.value(QStringLiteral("id")).toString();
+                // A run of drawings (version 7): each drawing's file, "D:<panel id>:<layer
+                // id>:<drawing id>"; the layer's own imageFile is then its first drawing's
+                // and has no key of its own.
+                const QJsonArray drawings = l.value(QStringLiteral("drawings")).toArray();
+                if (!drawings.isEmpty()) {
+                    for (const QJsonValue &dv : drawings) {
+                        const QJsonObject d = dv.toObject();
+                        const QString did = d.value(QStringLiteral("id")).toString();
+                        add(pid.isEmpty() || lid.isEmpty() || did.isEmpty()
+                                ? QString()
+                                : QStringLiteral("D:%1:%2:%3").arg(pid, lid, did),
+                            d.value(QStringLiteral("imageFile")).toString());
+                    }
+                    add(QString(), l.value(QStringLiteral("imageFile")).toString());
+                    continue;
+                }
                 add(pid.isEmpty() || lid.isEmpty() ? QString() : QStringLiteral("L:%1:%2").arg(pid, lid),
                     l.value(QStringLiteral("imageFile")).toString());
             }
@@ -642,11 +678,13 @@ public:
 
     // Where the layer about to be given to layer() stands in the project file's arrays
     // (saving step 2: a layer reduced where the plan runs has its place written there).
-    void at(int scene, int panel, int layer)
+    // `drawing`: the layer's drawing of that index (a run, batch I-2); -1 the layer itself.
+    void at(int scene, int panel, int layer, int drawing = -1)
     {
         m_scene = scene;
         m_panel = panel;
         m_layer = layer;
+        m_drawing = drawing;
     }
 
     // A layer's file (version 3): only what is drawn when the tiles say what the
@@ -696,6 +734,7 @@ public:
                 job.scene = m_scene;
                 job.panel = m_panel;
                 job.layer = m_layer;
+                job.drawing = m_drawing;
                 m_plan->jobs.append(std::move(job));
                 (*layerObj)[QStringLiteral("origin")] = QJsonArray{-frameAt.x(), -frameAt.y()};
                 (*layerObj)[QStringLiteral("size")] =
@@ -1040,6 +1079,7 @@ private:
     QSet<QString> m_bases;   // the base file names of this save's images, lower-cased
     QSet<QString> m_claimed; // the files this save's images are in, lower-cased absolute paths
     int m_scene = -1, m_panel = -1, m_layer = -1; // see at()
+    int m_drawing = -1;
     int m_next = 0;
     std::atomic<bool> m_failed{false};
     std::atomic<bool> m_stopped{false}; // a check stopped the writer (stepDone)
@@ -1132,9 +1172,22 @@ void sayLayerPlace(QJsonObject *root, const ImageJob &job)
     if (job.layer < 0 || job.layer >= layers.size())
         return;
     QJsonObject layer = layers.at(job.layer).toObject();
-    layer[QStringLiteral("origin")] = QJsonArray{job.origin.x(), job.origin.y()};
-    if (job.paper)
-        layer[QStringLiteral("fill")] = QStringLiteral("%1").arg(job.fill, 8, 16, QLatin1Char('0'));
+    if (job.drawing >= 0) {
+        // A drawing of a run (batch I-2): its own entry says where it lies.
+        QJsonArray drawings = layer.value(QStringLiteral("drawings")).toArray();
+        if (job.drawing >= drawings.size())
+            return;
+        QJsonObject drawing = drawings.at(job.drawing).toObject();
+        drawing[QStringLiteral("origin")] = QJsonArray{job.origin.x(), job.origin.y()};
+        if (job.paper)
+            drawing[QStringLiteral("fill")] = QStringLiteral("%1").arg(job.fill, 8, 16, QLatin1Char('0'));
+        drawings[job.drawing] = drawing;
+        layer[QStringLiteral("drawings")] = drawings;
+    } else {
+        layer[QStringLiteral("origin")] = QJsonArray{job.origin.x(), job.origin.y()};
+        if (job.paper)
+            layer[QStringLiteral("fill")] = QStringLiteral("%1").arg(job.fill, 8, 16, QLatin1Char('0'));
+    }
     layers[job.layer] = layer;
     panel[QStringLiteral("layers")] = layers;
     panels[job.panel] = panel;
@@ -1379,6 +1432,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     bool anyOwnMargin = false;
     bool anyLocked = false;
     bool anyMotion = false; // a layer with motion kept (batch I-1): version 6
+    bool anyRun = false;    // a layer with a run of drawings (batch I-2): version 7
 
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
@@ -1447,7 +1501,34 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                     anyMotion = true;
                 }
 
-                if (layer.type != QLatin1String("group")) { // folders own no pixels
+                if (layer.type != QLatin1String("group") && layer.hasRun()) {
+                    // A RUN OF DRAWINGS (batch I-2; version 7): each drawing a file of its own,
+                    // written as a layer's is - skipped when its file holds it already, so a
+                    // stroke on one drawing writes that one. Each entry says its drawing's
+                    // place; the layer's own "imageFile" is its first drawing's.
+                    const QPoint frameAt = panel->ownMargin ? panel->frameAt()
+                                                            : QPoint(projectMargin.left(), projectMargin.top());
+                    QJsonArray drawingsArray;
+                    for (int d = 0; d < layer.drawings.size() && !saver.failed(); ++d) {
+                        const LayerDrawing &drawing = layer.drawings.at(d);
+                        QJsonObject drawingObj;
+                        drawingObj[QStringLiteral("id")] = drawing.id;
+                        drawingObj[QStringLiteral("start")] = drawing.start;
+                        saver.at(int(scenesArray.size()), int(panelsArray.size()), int(layersArray.size()), d);
+                        const QString drawingPng =
+                            saver.layer(layer.asDrawing(d), frameAt,
+                                        rel + panelNames.layers.value(drawingNameKey(layer.id, drawing.id)),
+                                        &drawingObj);
+                        drawingObj[QStringLiteral("imageFile")] = drawingPng;
+                        drawingsArray.append(drawingObj);
+                    }
+                    layerObj[QStringLiteral("drawings")] = drawingsArray;
+                    layerObj[QStringLiteral("runRate")] = layer.runRate;
+                    if (!drawingsArray.isEmpty())
+                        layerObj[QStringLiteral("imageFile")] =
+                            drawingsArray.first().toObject().value(QStringLiteral("imageFile"));
+                    anyRun = true;
+                } else if (layer.type != QLatin1String("group")) { // folders own no pixels
                     saver.at(int(scenesArray.size()), int(panelsArray.size()), int(layersArray.size()));
                     const QString layerPng =
                         saver.layer(layer,
@@ -1551,8 +1632,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     QJsonObject root;
     root[QStringLiteral("version")] = g_writeVersion2ForTest.load()
         ? 2
-        : (anyMotion ? kFileVersionLayerMotion
-                     : (anyLocked ? kFileVersionLockedScene : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin)));
+        : (anyRun ? kFileVersionLayerDrawings
+                  : (anyMotion ? kFileVersionLayerMotion
+                               : (anyLocked ? kFileVersionLockedScene
+                                            : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin))));
     root[QStringLiteral("projectName")] = data.projectName;
     // fps drives the animatic; canvasWidth/Height are the project's real
     // canvas resolution, reconciled to the pixels on load — what is written
@@ -2001,8 +2084,12 @@ public:
                 const QJsonObject panel = pv.toObject();
                 const QJsonArray layers = panel.value(QStringLiteral("layers")).toArray();
                 if (!layers.isEmpty())
-                    for (const QJsonValue &lv : layers)
+                    for (const QJsonValue &lv : layers) {
                         want(lv.toObject().value(QStringLiteral("imageFile")).toString());
+                        // ...and each drawing's of a run (version 7; batch I-2).
+                        for (const QJsonValue &dv : lv.toObject().value(QStringLiteral("drawings")).toArray())
+                            want(dv.toObject().value(QStringLiteral("imageFile")).toString());
+                    }
                 else
                     want(panel.value(QStringLiteral("pixmapFile")).toString());
             }
@@ -2112,6 +2199,24 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         quint32 fill = 0;
     };
     QVector<PlacedLayer> placed;
+    // A RUN'S FURTHER DRAWINGS (version 7; batch I-2), each read into a stand-in layer after
+    // its own: which layer's which drawing a stand-in is; the file's active layer for a panel
+    // with any; and such a panel's flatten, said to the ledger once the stand-ins have gone.
+    struct RunStandIn
+    {
+        Panel *panel = nullptr;
+        QString ownerId;
+        int drawing = 0;
+        QString standInId;
+    };
+    QVector<RunStandIn> runStandIns;
+    QHash<Panel *, int> runActive;
+    struct RunFlatten
+    {
+        QString file;
+        Panel *panel = nullptr;
+    };
+    QVector<RunFlatten> runFlattens;
     // The files read whole (versions 1 and 2): their place is the stage's, known
     // only once the panels' margins are.
     struct ReadWhole
@@ -2292,6 +2397,52 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                         out.motionKeysDropped +=
                             layerMotionFromJson(layerObj.value(QStringLiteral("motion")).toObject(), &layer);
 
+                    // A RUN OF DRAWINGS (version 7; batch I-2): "drawings", two or more. Each
+                    // drawing's pixels are read exactly as a layer's are - by the code below, run
+                    // once per drawing: the first into the layer itself (a layer shows its first
+                    // drawing when the project opens), each further one into a STAND-IN layer put
+                    // after it, which is placed and folded with the rest and at the end of the
+                    // load handed to the layer as that drawing's pixels (runStandIns). A start
+                    // that does not rise is moved on to the frame after the one before it; a file
+                    // that cannot be read is a blank drawing, as a layer's is a blank layer.
+                    QVector<QJsonObject> pixelEntries{layerObj};
+                    if (fileVersion >= kFileVersionLayerDrawings && layer.type != QLatin1String("group")) {
+                        const QJsonArray drawingsArray = layerObj.value(QStringLiteral("drawings")).toArray();
+                        if (!drawingsArray.isEmpty()) {
+                            pixelEntries.clear();
+                            for (const QJsonValue &dv : drawingsArray)
+                                pixelEntries.append(dv.toObject());
+                        }
+                        if (drawingsArray.size() >= 2) {
+                            layer.runRate = qMax(1, layerObj.value(QStringLiteral("runRate")).toInt(24));
+                            for (const QJsonObject &drawingObj : std::as_const(pixelEntries)) {
+                                LayerDrawing drawing;
+                                drawing.id = drawingObj.value(QStringLiteral("id")).toString();
+                                if (drawing.id.isEmpty())
+                                    drawing.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                                drawing.start = layer.drawings.isEmpty()
+                                    ? 0
+                                    : qMax(layer.drawings.last().start + 1,
+                                           drawingObj.value(QStringLiteral("start")).toInt(0));
+                                layer.drawings.append(drawing);
+                            }
+                        }
+                    }
+                    const Layer asRead = layer; // every field but the pixels
+                    for (int entry = 0; entry < pixelEntries.size(); ++entry) {
+                    // (The two names below hide the layer's own ON PURPOSE: what follows is the
+                    // code that has always read a layer's pixels, now run once per drawing, and
+                    // left where it was.)
+                    const QJsonObject layerObj = pixelEntries.at(entry);
+                    Layer layer = asRead;
+                    if (entry > 0) {
+                        layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                        layer.drawings.clear();
+                        layer.keys.clear();
+                        layer.animate = false;
+                        runStandIns.append({panel, asRead.id, entry, layer.id});
+                    }
+
                     QImage img;
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
                     if (!layerPng.isEmpty())
@@ -2364,6 +2515,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                             || QFileInfo(file).lastModified() > manifestTime)
                             readNewerThanManifest = true;
                     }
+                    } // each drawing of a run; once for a layer without one
                 }
             } else {
                 // BACKWARD COMPAT: old single-PNG project -> one raster layer.
@@ -2422,6 +2574,11 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
             panel->activeLayerIndex =
                 qBound(0, panelObj.value(QStringLiteral("activeLayerIndex")).toInt(0),
                        panel->layers.size() - 1);
+            // (With a run's stand-ins among the layers the file's index is not this list's:
+            // it is set again once they have gone - runActive.)
+            const bool panelHasStandIns = !runStandIns.isEmpty() && runStandIns.last().panel == panel;
+            if (panelHasStandIns)
+                runActive.insert(panel, panelObj.value(QStringLiteral("activeLayerIndex")).toInt(0));
             // Ensure a locked white Background beneath transparent art layers.
             // Idempotent: files already saved in the new format are untouched;
             // legacy opaque-white canvases are migrated without losing art.
@@ -2439,7 +2596,11 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                 for (const Layer &layer : panel->layers)
                     if (!isGroupLayer(layer) && !readKeys.contains(layer.contentKey()))
                         allRead = false;
-                if (allRead)
+                // (A panel with a run: said once its stand-ins have gone, when the panel's
+                // layers are its own again - runFlattens.)
+                if (allRead && panelHasStandIns)
+                    runFlattens.append({flatFile, panel});
+                else if (allRead)
                     out.images.record(flatFile, flattenContent(*panel));
             }
 
@@ -2697,6 +2858,28 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
             pool.waitForDone();
         }
     }
+    // THE RUNS' DRAWINGS GO HOME (batch I-2): each stand-in's pixels - read, placed and folded
+    // as a layer's - become its drawing's, and the stand-in goes. The panel's layers are then
+    // the file's, so its active layer and its flatten are said now.
+    for (const RunStandIn &s : std::as_const(runStandIns)) {
+        int owner = -1, standIn = -1;
+        for (int i = 0; i < s.panel->layers.size(); ++i) {
+            if (s.panel->layers.at(i).id == s.ownerId)
+                owner = i;
+            else if (s.panel->layers.at(i).id == s.standInId)
+                standIn = i;
+        }
+        if (standIn < 0)
+            continue;
+        if (owner >= 0 && s.drawing < s.panel->layers.at(owner).drawings.size())
+            s.panel->layers[owner].drawings[s.drawing].px =
+                static_cast<const LayerPixels &>(s.panel->layers.at(standIn));
+        s.panel->layers.removeAt(standIn);
+    }
+    for (auto it = runActive.cbegin(); it != runActive.cend(); ++it)
+        it.key()->activeLayerIndex = qBound(0, it.value(), int(it.key()->layers.size()) - 1);
+    for (const RunFlatten &f : std::as_const(runFlattens))
+        out.images.record(f.file, flattenContent(*f.panel));
     return out;
 }
 

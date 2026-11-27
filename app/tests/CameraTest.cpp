@@ -257,10 +257,19 @@ const Pin kPins[] = {
     // 1920x1080 bd93c17d4a94a8c7..., 2048x1080 0a6e1eee1051b4aa..., 3840x2160 19dd058ff9b61d8d...,
     // 1001x777 a1af50e90fe2fcd1... The clips whose thumbnail kept its width - a scene's first
     // after a cut, its body 2 px in - still render the bytes pinned before it ((mp) / (mq) p1).
-    {"clip.1920x1080", "7235850401e82dde8397d17c5aecfbc6d042b3f4fb5762a27951ceae16f5821f"},
-    {"clip.2048x1080", "454d5f1ec4e932149c96195ff5683b52684f3e47a24790018c8c9b6a6ef24b49"},
-    {"clip.3840x2160", "55fc1f3c13954cfdc35c63c547b1cc44f09b0b441f1b3b3c4e49342dd279df9a"},
-    {"clip.1001x777", "32aaf32841aff7bfd6a764f9258190537d0bce44893a167c18ba1613023850f9"},
+    // THE CLIPS RE-PINNED AGAIN (2026-11-26, the user's note 5 after hand test I2-1): a clip's
+    // thumbnail keeps its picture's shape - the whole frame, fitted at the clip's left over the
+    // name's strip - where it was a strip across the clip, cropped to fill. Other pixels, so other
+    // bytes: the two controls after the pins ((c1p) control, twice) say what the new ones are - the
+    // frame's shape at the body's left, and the panel's whole picture reduced. Before (2026-11-18):
+    // 1920x1080 7235850401e82dde8397d17c5aecfbc6d042b3f4fb5762a27951ceae16f5821f,
+    // 2048x1080 454d5f1ec4e932149c96195ff5683b52684f3e47a24790018c8c9b6a6ef24b49,
+    // 3840x2160 55fc1f3c13954cfdc35c63c547b1cc44f09b0b441f1b3b3c4e49342dd279df9a,
+    // 1001x777 32aaf32841aff7bfd6a764f9258190537d0bce44893a167c18ba1613023850f9.
+    {"clip.1920x1080", "d93c8f77a7aa8357f216a46158296b3d10aa16e36541bf54014f09f6a2646b66"},
+    {"clip.2048x1080", "033e24172d5289d9edc77c4c3344d3cb2d84911dd412ff6c3e9cec05ac080114"},
+    {"clip.3840x2160", "3ab71f247bebb02160f61f4642251be38608a023844c82a6505c81ce139a9bed"},
+    {"clip.1001x777", "8f8d7130fdffa0261c0ebf36a6f46bac40b5c343f048ef0318fb95ee0370e72f"},
 };
 
 QString pinned(const QString &name)
@@ -274,9 +283,11 @@ QString pinned(const QString &name)
 void checkPin(const QString &name, const QString &sha)
 {
     const QString want = pinned(name);
+    // (A pin that fails says the whole value it rendered - 2026-11-26; it said the first 16.)
     check(QStringLiteral("(c1p) %1 renders its pinned bytes").arg(name),
           !want.isEmpty() && sha == want,
-          want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha) : sha.left(16));
+          want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha)
+                         : (sha == want ? sha.left(16) : QStringLiteral("rendered %1").arg(sha)));
 }
 
 // THE MOVING PINS (mp): recorded on 32763eb6b, before Phase 2A's stage
@@ -289,14 +300,24 @@ const Pin kMovingPins[] = {
     // 1920x1080.p1 152733aa11048019..., 1920x1080.p2 11241632deac9b25..., 2048x1080.p2
     // faa8fa41434e3177..., 3840x2160.p2 5ea62a720bfb6a8f... The other p1s - a scene's first
     // clip after a cut, the thumbnail its old width - keep the bytes recorded on 32763eb6b.
-    {"clip.1001x777.p1", "2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348"},
-    {"clip.1001x777.p2", "d1c3688323541f8c7cdc73c032e3c315f5f7968c395b0356d8aca24b4e2d8bf8"},
-    {"clip.1920x1080.p1", "b085ca7a77f3564ce41483ec95330e7005e38a1df2804d577d06c819c7d05f25"},
-    {"clip.1920x1080.p2", "6d5dc5fbb949acf41b585322ac13fb51071361df67b64450f7bad7ec7caac175"},
-    {"clip.2048x1080.p1", "865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c"},
-    {"clip.2048x1080.p2", "0717614fdcadf2268d7b9f71dfcf9df969a003c1c29bca8f9891c7d71bcb8615"},
-    {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
-    {"clip.3840x2160.p2", "c4a8722a739cd8be5ed364de17e16269944df3a0061be205f9bbd6e5748da7af"},
+    // RE-PINNED 2026-11-26, all eight (the user's note 5 after hand test I2-1: a thumbnail keeps
+    // its picture's shape - see kPins and the (c1p) controls). Before:
+    // 1001x777.p1 2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348,
+    // 1001x777.p2 d1c3688323541f8c7cdc73c032e3c315f5f7968c395b0356d8aca24b4e2d8bf8,
+    // 1920x1080.p1 b085ca7a77f3564ce41483ec95330e7005e38a1df2804d577d06c819c7d05f25,
+    // 1920x1080.p2 6d5dc5fbb949acf41b585322ac13fb51071361df67b64450f7bad7ec7caac175,
+    // 2048x1080.p1 865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c,
+    // 2048x1080.p2 0717614fdcadf2268d7b9f71dfcf9df969a003c1c29bca8f9891c7d71bcb8615,
+    // 3840x2160.p1 f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5,
+    // 3840x2160.p2 c4a8722a739cd8be5ed364de17e16269944df3a0061be205f9bbd6e5748da7af.
+    {"clip.1001x777.p1", "9e54200a066b1cb8627997344c960c94bd1dc19ccd9e729ebf8b44c14bef0469"},
+    {"clip.1001x777.p2", "e131463264b7d7eadc47883b439e7271364aea59c8eb8260368bc979609af617"},
+    {"clip.1920x1080.p1", "a7ec8471c99f4ec2f37e38d54f05d98753faef00a6c43132ec28855d4508aa8e"},
+    {"clip.1920x1080.p2", "e63e5143cd672ff7006ae7c0fe4c4158a48d37ad2d39fd01557cdd91e52b3898"},
+    {"clip.2048x1080.p1", "a3d2678220ef3d3126a9d8afaed462cd395ed11f0095cb1f90a49dd84b0d5124"},
+    {"clip.2048x1080.p2", "431a98c3440a2a854a70df046b5bfb2401d8acd557f3afe82f6f2bbb83d0c457"},
+    {"clip.3840x2160.p1", "bcf0cf46fcebfd0dd273eb7e29de368d730653340a9133c246399fe0300f2da8"},
+    {"clip.3840x2160.p2", "91b6efc05e3aa8ce8ef954a98ba07f8d7993ef3ced46e4e060ff8159e6ddf2fe"},
     {"geometry", "7491456e39c08683270894b0e979b30f0f88e9d9c21a0469ca41fc55815323c6"},
     // CHANGED 2026-11-07, the mp4 lines of the two sizes not 16:9, by the user's
     // request (the film shows only the shot): the old values pinned the art in the
@@ -373,7 +394,7 @@ void checkMovingPin(const QString &name, const QString &sha)
     check(QStringLiteral("(mp) %1 renders its pinned bytes").arg(name),
           !want.isEmpty() && sha == want,
           want.isEmpty() ? QStringLiteral("RECORD {\"%1\", \"%2\"},").arg(name, sha)
-                         : sha.left(16));
+                         : (sha == want ? sha.left(16) : QStringLiteral("rendered %1").arg(sha)));
 }
 
 // THE MARGIN PINS (mq): recorded on 35ea9ab05, before Phase 2B's depth (the
@@ -387,14 +408,25 @@ const QMap<QString, QString> kMarginPins = {
     // Re-pinned 2026-11-18 (SCENES + SHOTS, as kMovingPins): 1001x777.p2 was 4c601adadcffa1ac...,
     // 1920x1080.p1 152733aa11048019..., 1920x1080.p2 326402d420a05a7c..., 2048x1080.p2
     // 9294042f04f9f754..., 3840x2160.p2 39d701b46b7fb791...; the other p1s keep 35ea9ab05's.
-    {"clip.1001x777.p1", "2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348"},
-    {"clip.1001x777.p2", "bf8d0952286f89eca4c345dcb834e988b184622c6e8a7a90962f657ad856fbb3"},
-    {"clip.1920x1080.p1", "b085ca7a77f3564ce41483ec95330e7005e38a1df2804d577d06c819c7d05f25"},
-    {"clip.1920x1080.p2", "4889ec4dd5af1232135322c88fea2a2463c61e5e90bbcc0e6993ff2d88eacf77"},
-    {"clip.2048x1080.p1", "865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c"},
-    {"clip.2048x1080.p2", "6cb0c3802622296fcad011d8ab6c636c8fd56054732a2b9ccb1de885335afed1"},
-    {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
-    {"clip.3840x2160.p2", "50fe3da67214619c0f06c7c917b83980082b38ed302bf50e7b1d7b6a6067fc06"},
+    // RE-PINNED 2026-11-26, all eight (as kMovingPins: a thumbnail keeps its picture's shape).
+    // The p1s are still the moving pins' p1s, byte for byte - a margin changes nothing of a
+    // scene's first clip. Before:
+    // 1001x777.p1 2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348,
+    // 1001x777.p2 bf8d0952286f89eca4c345dcb834e988b184622c6e8a7a90962f657ad856fbb3,
+    // 1920x1080.p1 b085ca7a77f3564ce41483ec95330e7005e38a1df2804d577d06c819c7d05f25,
+    // 1920x1080.p2 4889ec4dd5af1232135322c88fea2a2463c61e5e90bbcc0e6993ff2d88eacf77,
+    // 2048x1080.p1 865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c,
+    // 2048x1080.p2 6cb0c3802622296fcad011d8ab6c636c8fd56054732a2b9ccb1de885335afed1,
+    // 3840x2160.p1 f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5,
+    // 3840x2160.p2 50fe3da67214619c0f06c7c917b83980082b38ed302bf50e7b1d7b6a6067fc06.
+    {"clip.1001x777.p1", "9e54200a066b1cb8627997344c960c94bd1dc19ccd9e729ebf8b44c14bef0469"},
+    {"clip.1001x777.p2", "1f4f2a546a0a842b8e0e7dfbe9af8f57bb3ae38239b46258b436688f222a5f55"},
+    {"clip.1920x1080.p1", "a7ec8471c99f4ec2f37e38d54f05d98753faef00a6c43132ec28855d4508aa8e"},
+    {"clip.1920x1080.p2", "db243bf5e9197a0df0c72ef24f84897e0cba92ea6413c1120a2493a107ea2bda"},
+    {"clip.2048x1080.p1", "a3d2678220ef3d3126a9d8afaed462cd395ed11f0095cb1f90a49dd84b0d5124"},
+    {"clip.2048x1080.p2", "3e6c0d811c836a7b676a81a61444c67c4a0212874323af138fcfb09162ff2b21"},
+    {"clip.3840x2160.p1", "bcf0cf46fcebfd0dd273eb7e29de368d730653340a9133c246399fe0300f2da8"},
+    {"clip.3840x2160.p2", "72d6c32b63534610a28e99071264db222340b173193a1db366092efc81a50492"},
     {"geometry", "94c6580cedecbf1882cd30b5ad84ce346726a87ae0d5f8e0a6e966b9d2a51fa2"},
     // CHANGED 2026-11-07, as in kMovingPins and for the same reason.
     {"mp4.1001x777.f102", "8bed895881128b484f061128763dede98e5c7ac39f78c562c613d7023fe9ab98"},
@@ -480,7 +512,7 @@ void checkMarginPin(const QString &name, const QString &sha)
     check(QStringLiteral("(mq) %1 renders its pinned bytes").arg(name),
           !want.isEmpty() && sha == want,
           want.isEmpty() ? QStringLiteral("RECORD {\"%1\", \"%2\"},").arg(name, sha)
-                         : sha.left(16));
+                         : (sha == want ? sha.left(16) : QStringLiteral("rendered %1").arg(sha)));
 }
 
 // Stands in front of the real encoder and keeps the SHA of the frames the
@@ -704,9 +736,12 @@ int main(int argc, char **argv)
                      shown && thumb.isValid() ? shaOf(surface.copy(thumb))
                                               : QStringLiteral("no thumb"));
         }
-        // Control of the re-pin (2026-11-18, SCENES + SHOTS): the four clips are one scene, so
-        // each body is its whole span and its thumbnail the body less 6 px each side - the 2 px
-        // the pinned thumbnails grew by, and nothing else.
+        // Control of the re-pin (2026-11-26, the user's note 5 after hand test I2-1: a thumbnail
+        // keeps its picture's shape; it was a strip across the clip, cropped to fill): the four
+        // clips are one scene, so each body is its whole span; each thumbnail is 6 px in at the
+        // body's left and top, as high as the body less that and the 28 px strip of the name and
+        // the pill, and as wide as its own frame's shape makes that height. (Until then: "its
+        // thumbnail the body less 6 px each side" - 2026-11-18, SCENES + SHOTS.)
         {
             QStringList sizes;
             bool spanBodies = true;
@@ -714,13 +749,49 @@ int main(int argc, char **argv)
                 const QVariantMap parts = tl->clipPartsForTest(i);
                 const QRect body = rectOf(parts.value(QStringLiteral("body")).toString());
                 const QRect thumb = rectOf(parts.value(QStringLiteral("thumb")).toString());
+                const int room = body.height() - 6 - 28;
+                const double shape = double(kSizes[i].width()) / kSizes[i].height();
                 spanBodies = spanBodies && body == tl->clipRectForTest(i) && thumb.left() == body.left() + 6
-                    && thumb.width() == body.width() - 12;
-                sizes << QStringLiteral("%1: body %2, thumbnail %3").arg(i).arg(body.width()).arg(thumb.width());
+                    && thumb.top() == body.top() + 6 && thumb.height() == room
+                    && qAbs(thumb.width() - room * shape) <= 1.0 && body.contains(thumb);
+                sizes << QStringLiteral("%1: body %2x%3, thumbnail %4x%5 (its frame %6 : 1)")
+                             .arg(i).arg(body.width()).arg(body.height()).arg(thumb.width()).arg(thumb.height())
+                             .arg(shape, 0, 'f', 3);
             }
             check(QStringLiteral("(c1p) control: the pinned clips are one scene - each body its whole span (a "
-                                 "scene's clips touch) and its thumbnail the body less 6 px each side"),
+                                 "scene's clips touch) and its thumbnail 6 px in at the body's left and top, "
+                                 "as high as the body's room over the name's strip and in its frame's shape"),
                   spanBodies, sizes.join(QStringLiteral("; ")));
+            // ...and the picture in it is the whole frame, reduced - not a strip of it: against the
+            // panel's own flatten brought to the thumbnail's size, away from the number over its
+            // corner and its rounded edge.
+            double worst = 0.0;
+            QStringList means;
+            for (int i = 0; i < 4; ++i) {
+                const QRect thumb = rectOf(tl->clipPartsForTest(i).value(QStringLiteral("thumb")).toString());
+                if (!thumb.isValid() || thumb.width() < 40 || thumb.height() < 40) {
+                    worst = 255.0;
+                    continue;
+                }
+                const QImage want = scene->panels.at(i)->flattenedImage()
+                                        .scaled(thumb.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                                        .convertToFormat(QImage::Format_ARGB32);
+                const QImage got = surface.copy(thumb).convertToFormat(QImage::Format_ARGB32);
+                qint64 sum = 0;
+                int n = 0;
+                for (int y = 20; y < thumb.height() - 4; ++y)
+                    for (int x = 4; x < thumb.width() - 4; ++x) {
+                        sum += qAbs(qGray(want.pixel(x, y)) - qGray(got.pixel(x, y)));
+                        ++n;
+                    }
+                const double mean = n ? double(sum) / n : 255.0;
+                worst = qMax(worst, mean);
+                means << QString::number(mean, 'f', 2);
+            }
+            check(QStringLiteral("(c1p) control: each pinned thumbnail is its panel's whole picture reduced to the "
+                                 "thumbnail's size - the mean difference from the panel's own flatten, so reduced, "
+                                 "is under 6 grey levels of 255"),
+                  worst < 6.0, QStringLiteral("mean differences %1").arg(means.join(QStringLiteral(", "))));
         }
         for (int i = 0; i < 4; ++i) {
             const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())
@@ -4602,6 +4673,120 @@ int main(int argc, char **argv)
               }());
         delete off;
         delete bare;
+    }
+
+    // ---- A RUN OF DRAWINGS IN THE FILM (batch I-2, 2026-11-26; Figma I-2 727:757) ---------------------------------
+    // One 960 x 540 panel of 24 frames with NOTHING MOVING and no camera: the paper, and a layer whose run is three
+    // drawings on 2s - a red 20 px square at x 200, then 400, then 600. So what the film shows at a frame is the run's
+    // doing alone (the lifecycle family's first try at this used a panel with a moving layer, and could not fail).
+    {
+        ts << "--- (dw) batch I-2: a run of drawings in the film ---\n";
+        const QSize size(960, 540);
+        auto squareAt = [&size](int x) {
+            QImage img = makeLayerImage(size);
+            QPainter p(&img);
+            p.fillRect(QRectF(x - 10, 190, 20, 20), kLmBoat);
+            p.end();
+            return img;
+        };
+        Scene *runScene = new Scene;
+        runScene->number = 1;
+        Panel *runPanel = makeBlankPanel(size);
+        runPanel->setLength(24, 24);
+        {
+            Layer &layer = runPanel->layers[1];
+            layer.image = squareAt(200);
+            layer.runRate = 24;
+            for (int i = 0; i < 3; ++i) {
+                LayerDrawing d;
+                d.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                d.start = i * 2;
+                if (i > 0) {
+                    d.px.image = squareAt(200 + 200 * i);
+                    d.px.stageRect = QRect(QPoint(0, 0), size);
+                }
+                layer.drawings.append(d);
+            }
+            layer.shown = 0;
+        }
+        runScene->panels.append(runPanel);
+        const QVector<sankoexport::ExportPanel> runRows = sankoexport::collectPanels({runScene}, 24);
+        auto squareX = [&](int frame, int *count) {
+            return centroidOf(sankoexport::renderMovieFrameAt(runRows.first(), frame, size), kLmBoat, 60, count).x();
+        };
+        QString seen;
+        bool right = true;
+        const int frames[] = {0, 1, 2, 3, 4, 20};
+        const int wanted[] = {200, 200, 400, 400, 600, 600};
+        for (int i = 0; i < 6; ++i) {
+            int n = 0;
+            const double x = squareX(frames[i], &n);
+            right = right && n > 300 && qAbs(x - wanted[i]) <= 1.0;
+            seen += QStringLiteral(" f%1 x %2 (want %3, %4 px)").arg(frames[i]).arg(x, 0, 'f', 1).arg(wanted[i]).arg(n);
+        }
+        check(QStringLiteral("(dw1) A RUN OF DRAWINGS IN THE FILM: three drawings on 2s - the square at x 200, 400, "
+                             "600 - and the MP4's frames 0 and 1 show the first, 2 and 3 the second, 4 and 20 the "
+                             "third, which holds to the panel's end"),
+              right, seen);
+        // Control: the film does not follow the drawing the layer shows on the canvas; nor does the flatten.
+        runPanel->layers[1].show(2);
+        int nShown = 0, nFlat = 0;
+        const double filmFirst = squareX(0, &nShown);
+        const double flatFirst = centroidOf(runPanel->flattenedImage(), kLmBoat, 60, &nFlat).x();
+        const qint64 firstKey = runPanel->layers.at(1).pixelsOf(0).contentKey();
+        check(QStringLiteral("(dw1) control: with the layer showing its third drawing - the canvas's state - frame 0 of "
+                             "the film is still the first drawing, and so is the panel's flatten (the strip, the SHOTS "
+                             "clip, the still)"),
+              runPanel->layers.at(1).shown == 2 && nShown > 300 && qAbs(filmFirst - 200) <= 1.0 && nFlat > 300
+                  && qAbs(flatFirst - 200) <= 1.0 && quint64(firstKey) == runPanel->flattenFingerprint().at(3),
+              QStringLiteral("film x %1, flatten x %2").arg(filmFirst, 0, 'f', 1).arg(flatFirst, 0, 'f', 1));
+        runPanel->layers[1].show(0);
+
+        // (dw2) A RUN ALONE MAKES THE PANEL ONE THAT CHANGES OVER ITS TIME, drawn layer by layer; a run whose second
+        // drawing starts past the panel's end does not, and nor does a panel with no run.
+        const shotcam::Stage runStage(size);
+        const shotcam::CameraState still = shotcam::neutral(runStage);
+        Panel *plainPanel = makeBlankPanel(size);
+        const bool live = runPanel->changesOverTime() && !runPanel->hasMotion() && shotcam::layeredPaint(*runPanel, still, runStage);
+        runPanel->setLength(2, 24); // shorter than the run: only the first drawing is ever shown
+        const bool cut = !runPanel->changesOverTime() && !shotcam::layeredPaint(*runPanel, still, runStage);
+        runPanel->setLength(24, 24);
+        check(QStringLiteral("(dw2) A RUN ALONE MAKES THE PANEL CHANGE OVER ITS TIME: no layer moves, and the panel is "
+                             "drawn layer by layer; cut to two frames - shorter than the run - it is one picture "
+                             "again; a panel with no run never was"),
+              live && cut && !plainPanel->changesOverTime() && !shotcam::layeredPaint(*plainPanel, still, runStage),
+              QStringLiteral("live %1, cut short %2").arg(live).arg(cut));
+        delete plainPanel;
+
+        // (dw3) THE MP4 THE REAL EXPORT JOB WROTE: frames 0, 2 and 4 are that rendering, each its own drawing.
+        {
+            sankoexport::MovieRequest request;
+            request.outPath = scratch + QStringLiteral("/drawings.mp4");
+            request.panels = runRows;
+            request.fps = 24;
+            auto *encoder = new CaptureEncoder({0, 2, 4});
+            sankoexport::MovieExportJob job(request, encoder);
+            job.start();
+            QElapsedTimer guard;
+            guard.start();
+            while (!job.isDone() && guard.elapsed() < 120000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            bool same = job.result().ok;
+            QString why = job.result().ok ? QString() : job.result().error;
+            for (int f : {0, 2, 4})
+                if (encoder->shas.value(f)
+                    != shaOf(sankoexport::renderMovieFrameAt(runRows.first(), f, sankoexport::kMovieFrameSize))) {
+                    same = false;
+                    why += QStringLiteral(" frame %1").arg(f);
+                }
+            check(QStringLiteral("(dw3) THE MP4 THE REAL EXPORT JOB WROTE: its frames 0, 2 and 4 of the panel with the "
+                                 "run are the rendering of those frames, each its own drawing"),
+                  same, why);
+            const QSet<QString> distinct(encoder->shas.cbegin(), encoder->shas.cend());
+            check(QStringLiteral("(dw3) control: the three frames differ - three drawings"), distinct.size() == 3,
+                  QString::number(distinct.size()));
+        }
+        delete runScene;
     }
 
     delete scene;

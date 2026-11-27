@@ -53,6 +53,7 @@ class QMenu;
 class QShortcut;
 class QSplitter;
 
+struct LayerPixels;
 struct Panel;
 struct Scene;
 struct ConsistencyEntry;
@@ -320,6 +321,9 @@ public:
     void applyPanelMargin(Panel *panel, const QMargins &margin);
     QWidget *stageBarForTest() const { return m_stagePanel; }
     void updateOnionGhostForTest() { updateOnionGhost(); }
+    // The panel thumbnail's refresh after an edit is still waiting to run (its 120 ms timer): a
+    // check waits for this to end, not for a length of time (2026-11-26).
+    bool thumbRefreshPendingForTest() const;
     void addPanelForTest() { addPanelAfterSelected(); }
     QWidget *moveModToolbarForTest() const { return m_moveModToolbar; } // batch F1's chip check
     // The floating bar at the top centre (Layers, Perspective, Scenes, ...): batch I-1b's note
@@ -631,6 +635,44 @@ public:
     void noteLayerRowPress(QObject *receiver, QEvent *event);
     // The keys' colours changed (Edit > Preferences > Keyframes): everything that shows a key.
     void keyColorsChanged();
+
+    // --- FRAME-BY-FRAME DRAWINGS (batch I-2, 2026-11-26; Figma I-2 727:757, approved with the
+    // user's eight answers) ---------------------------------------------------------------
+    // A layer holds a run of drawings (Layer::drawings); the canvas draws on the one under
+    // the playhead, which showDrawingsAtPlayhead puts on the layer whenever the playhead, the
+    // panel or the history moves. Every edit below works on the panel on the canvas, counts
+    // the run in the project's frames first (Layer::countRunAt), is one undo step (a
+    // layer-stack step, so undo puts the drawings and their frames back together) and is said
+    // to the Dev Recorder (layerDrawingEdited). A refusal is an amber note in the bar and
+    // changes nothing.
+    //
+    // NEW DRAWING (the N key, the + on the LAYER row, the drawings lane's menu): a blank
+    // drawing on the selected layer, or - `fromThisOne` - a copy of the one under the
+    // playhead. ON 2S (answer 2 of 2026-11-24's six): it starts at the playhead, never sooner
+    // than two frames after the start of the drawing under it, and the playhead steps onto
+    // it - so draw, N, draw, N gives a run on 2s. IN THE MIDDLE OF A RUN (answer 3) the
+    // drawing under the playhead is split there and nothing later moves; where it has no room
+    // (it is two frames or less) the later drawings move on to make two frames; past the
+    // panel's end: refused.
+    bool newDrawing(bool fromThisOne = false);
+    // DELETE DRAWING (Del on a selected block, the lane's menu; answer 7): the one before it
+    // holds over its frames - the first one's go to the one after - and nothing else moves. A
+    // layer's only drawing is not deleted (Clear Layer empties it).
+    bool deleteDrawing(int layerIndex, int drawingIndex);
+    // A DRAGGED CUT (answer 4): the cut where drawing `drawingIndex` starts, to `startFrame`
+    // of the panel. The later drawings move with it; `alone` (Alt): the cut alone, between
+    // its two drawings. A drawing is never shorter than one frame.
+    bool moveDrawingCut(int layerIndex, int drawingIndex, int startFrame, bool alone);
+    // A block tapped: the playhead to its first frame; it is then the selected thing on the
+    // LAYER row (Del deletes it) until a press anywhere else.
+    void goToDrawing(int layerIndex, int drawingIndex);
+    void onDrawingsLaneMenu(int layerIndex, int drawingIndex, const QPoint &globalPos);
+    int selectedDrawingForTest() const { return m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1; }
+    // The drawing under the playhead onto every layer with a run of the panel on the canvas:
+    // true when a layer changed drawing. Nothing is copied; the drawings left fold at rest.
+    bool showDrawingsAtPlayhead();
+    // Edit > Preferences > Onion Skin changed: the ghosts are made again.
+    void onionSkinSettingsChanged();
     // Everything that shows a layer's motion, after a key or the playhead moved.
     void refreshLayerMotionUi();
     // The Dev Recorder's layerMotion event for a step just made on `layerIndex` of `panel`.
@@ -685,6 +727,10 @@ signals:
     // A layer's motion was changed (batch I-1): one step - its name, the layer, the panel, the
     // playhead's frame, Animate, and every key (the Dev Recorder's layerMotion event).
     void layerMotionEdited(const QVariantMap &event);
+    // A layer's run of drawings was changed (batch I-2): one step - its name, the layer, the
+    // panel, the playhead's frame, the drawing shown and every drawing's first frame (the Dev
+    // Recorder's layerDrawing event).
+    void layerDrawingEdited(const QVariantMap &event);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -885,9 +931,39 @@ private:
     {
         bool row = false;
         int flat = -1, layer = -1, key = -1;
+        // A block of the drawings lane tapped (batch I-2): that drawing of the selected layer
+        // is the selected thing on the row, and Del is its. -1: none.
+        int drawing = -1;
     };
     LayerKeyFocus m_layerKeyFocus;
-    void setLayerKeyFocus(bool row, int flat = -1, int layer = -1, int key = -1);
+    void setLayerKeyFocus(bool row, int flat = -1, int layer = -1, int key = -1, int drawing = -1);
+    // FRAME-BY-FRAME DRAWINGS (batch I-2): the playhead's place in `panel` (0 when it is on
+    // another); every layer's drawing there, without any pixel work or refresh (a panel
+    // about to go on the canvas, a history step's layers); the Layers panel's thumbnails
+    // after a change of drawing; the Dev Recorder's line; the onion skin's ghosts kept by the
+    // pixels they were made from.
+    double placeInPanel(const Panel *panel) const;
+    double lastPlaceOf(const Panel *panel) const; // its last frame: the previous panel's ghost
+    void settleDrawingsAtPlayhead(Panel *panel);
+    void refreshLayerThumbs();
+    void reportLayerDrawing(const QString &what, const Panel *panel, int layerIndex);
+    void updateDrawingGhosts();
+    // The previous panel's ghost is the onion skin's here: the selected layer has one drawing,
+    // or is on its run's first. After the selected layer or its drawing changed: whichever
+    // ghosts that needs.
+    bool panelGhostWanted() const;
+    bool m_panelGhostShown = true;
+    void refreshOnionForDrawing();
+    struct GhostEntry
+    {
+        qint64 key = 0;
+        QRgb tint = 0;
+        QPixmap pixmap;
+        quint64 used = 0;
+    };
+    QVector<GhostEntry> m_ghostCache;
+    quint64 m_ghostClock = 0;
+    QPixmap drawingGhostFor(const LayerPixels &px, const QColor &tint);
     // The selected key, if it is still there.
     bool focusedLayerKey(Panel **panel, int *flat, int *layer, int *key) const;
     // The copied key: as it was (its time is not used), and where its move put the art's centre
