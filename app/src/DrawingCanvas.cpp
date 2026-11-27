@@ -439,6 +439,11 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         qBound(0, settings.value(QStringLiteral("camera/actionSafeOpacity"), 50).toInt(), 100);
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
+    // ...and their lines' thickness (2026-11-27).
+    m_actionSafeLinePx =
+        qBound(1, settings.value(QStringLiteral("camera/actionSafeThickness"), 1).toInt(), kSafeLineMax);
+    m_titleSafeLinePx =
+        qBound(1, settings.value(QStringLiteral("camera/titleSafeThickness"), 1).toInt(), kSafeLineMax);
 
     // App-level stroke stabilization (Brush Settings studio > Smoothing).
     // 0 by default: the input path is byte-identical to the pre-studio app.
@@ -1130,6 +1135,8 @@ void DrawingCanvas::setOnionSkinEnabled(bool enabled)
 void DrawingCanvas::setPreviousPixmap(const QPixmap &previous, const QRect &onStage)
 {
     m_ghostSource = previous;
+    if (!previous.isNull())
+        ++m_ghostBuilds;
     m_ghost = buildGhost(previous, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color); // null pixmap -> empty ghost
     m_ghostRect = onStage;
     update();
@@ -1168,7 +1175,24 @@ QPixmap DrawingCanvas::drawingGhost(const QImage &pixels, const QColor &tint)
 
 void DrawingCanvas::refreshOnionColors()
 {
+    if (!m_ghostSource.isNull())
+        ++m_ghostBuilds;
     m_ghost = buildGhost(m_ghostSource, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color);
+    update();
+}
+
+void DrawingCanvas::recolourGhost(QPixmap &ghost, const QColor &tint)
+{
+    if (ghost.isNull())
+        return;
+    QPainter p(&ghost);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn); // the colour in, the alpha kept
+    p.fillRect(ghost.rect(), QColor(tint.rgb()));
+}
+
+void DrawingCanvas::recolourPreviousGhost()
+{
+    recolourGhost(m_ghost, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color);
     update();
 }
 
@@ -1217,16 +1241,18 @@ QString DrawingCanvas::runNoteText() const
     const int count = layer->drawingCount();
     const int shown = qBound(0, layer->shown, count - 1);
     const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
-    QString text = layer->name + dot + QStringLiteral("drawing %1 of %2").arg(shown + 1).arg(count);
+    // "Bird · frame 3 of 24 · held 2 frames" (the user's wording, 2026-11-27: "frame" everywhere;
+    // until then "Bird · drawing 3 of 24 · 2 frames" and "... · holds to the panel's end").
+    QString text = layer->name + dot + QStringLiteral("frame %1 of %2").arg(shown + 1).arg(count);
     if (shown + 1 < count) {
         // Its length in the project's frames (the run's are counted at its own rate).
         const MotionView v = motionView();
         const double perRunFrame = double(v.valid ? v.fps : layer->runRate) / qMax(1, layer->runRate);
         const int frames = qMax(1, int(std::lround((layer->drawingStart(shown + 1) - layer->drawingStart(shown))
                                                    * perRunFrame)));
-        text += dot + (frames == 1 ? QStringLiteral("1 frame") : QStringLiteral("%1 frames").arg(frames));
+        text += dot + (frames == 1 ? QStringLiteral("held 1 frame") : QStringLiteral("held %1 frames").arg(frames));
     } else {
-        text += dot + QStringLiteral("holds to the panel's end");
+        text += dot + QStringLiteral("held to the panel's end");
     }
     return text;
 }
@@ -1295,6 +1321,18 @@ void DrawingCanvas::setActionSafeMaskOpacity(int percent)
 void DrawingCanvas::setTitleSafeMaskOpacity(int percent)
 {
     m_titleSafeMaskPct = qBound(0, percent, 100);
+    update();
+}
+
+void DrawingCanvas::setActionSafeLineWidth(int px)
+{
+    m_actionSafeLinePx = qBound(1, px, kSafeLineMax);
+    update();
+}
+
+void DrawingCanvas::setTitleSafeLineWidth(int px)
+{
+    m_titleSafeLinePx = qBound(1, px, kSafeLineMax);
     update();
 }
 
@@ -2158,8 +2196,9 @@ void DrawingCanvas::shotCameraFinishDrag()
 void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const shotcam::Stage &stage,
                                           const shotcam::CameraState &s)
 {
-    auto cosmetic = [](const QColor &c) {
-        QPen p(c, 0.0);
+    // (`px`: the line in screen pixels; 1 is the hairline these guides always had.)
+    auto cosmetic = [](const QColor &c, int px = 1) {
+        QPen p(c, px <= 1 ? 0.0 : qreal(px));
         p.setCosmetic(true);
         return p;
     };
@@ -2175,15 +2214,17 @@ void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const shotcam::Stag
     painter.setFont(f);
     if (m_safeArea) {
         const QRectF r = frame.adjusted(fw * 0.05, fh * 0.05, -fw * 0.05, -fh * 0.05);
-        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
+        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100), m_actionSafeLinePx));
         painter.drawRect(r);
+        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
         painter.drawText(r.adjusted(4, 2, -4, -2), Qt::AlignTop | Qt::AlignLeft,
                          QStringLiteral("ACTION SAFE"));
     }
     if (m_titleSafe) {
         const QRectF r = frame.adjusted(fw * 0.10, fh * 0.10, -fw * 0.10, -fh * 0.10);
-        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
+        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100), m_titleSafeLinePx));
         painter.drawRect(r);
+        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
         painter.drawText(r.adjusted(4, 2, -4, -2), Qt::AlignTop | Qt::AlignLeft,
                          QStringLiteral("TITLE SAFE"));
     }
@@ -9330,8 +9371,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     if (m_safeArea && !guidesFromCamera) {
         const QRectF r = canvasR.adjusted(cs.width() * 0.05, cs.height() * 0.05,
                                           -cs.width() * 0.05, -cs.height() * 0.05);
-        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
+        // (The line as thick as Preferences > Camera says, 1 px unless set; the label as ever.)
+        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100),
+                                m_actionSafeLinePx <= 1 ? 0.0 : qreal(m_actionSafeLinePx)));
         painter.drawRect(r);
+        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
         QFont f = font();
         f.setPointSize(7);
         painter.setFont(f);
@@ -9343,8 +9387,10 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     if (m_titleSafe && !guidesFromCamera) {
         const QRectF r = canvasR.adjusted(cs.width() * 0.10, cs.height() * 0.10,
                                           -cs.width() * 0.10, -cs.height() * 0.10);
-        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
+        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100),
+                                m_titleSafeLinePx <= 1 ? 0.0 : qreal(m_titleSafeLinePx)));
         painter.drawRect(r);
+        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
         QFont f = font();
         f.setPointSize(7);
         painter.setFont(f);

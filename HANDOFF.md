@@ -1,5 +1,123 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-27 (14:1x): THE SLIDERS ROUND COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST SL - PREFERENCES > CAMERA'S GUIDES (OPACITY AND LINE THICKNESS), PREFERENCES > ONION SKIN'S HUE AND OPACITY SLIDERS WITH NO STALL, THE STANDARD SANKO SLIDER, "FRAME" EVERYWHERE, THE FRAMES LABEL; NEXT: OS-1 (LIGHT TABLE AND ONION SKIN, FIGMA 745:757) AS APPROVED, THE ZOOM TO FRAMES TIP'S QT WARNING, AND A PROPOSAL FOR LEFT / RIGHT
+THE USER'S WORD (pasted 2026-11-27, about 14:00): "Hand test SL done: all steps looked right. Read every Dev Recorder
+session made after 12:30 on 27 November, oldest first. Confirm from system.txt that it ran the Nov 27 2026 12:30:10 build
+(git 7ae7bc826+dirty) and that the title bar named "TEST COPY - small pirate, sliders", then report pass, fail or "not
+tested" per step of handtest_SL.md, step 0 included. If it ran the right build and nothing failed: 1. Commit and push the
+sliders round with its HANDOFF notes, matching its hash list, git status clean. 2. Then build Figma OS-1 (frame 745:757)
+as proposed, with my answers: 1. The Light Table shows both sides: the previous panel's last frame in red and the next
+panel's first frame in green. 2. Shift+L switches the Light Table; O stays the Onion Skin. 3. Yes to A, B and C: a
+Preferences > Light Table page with standard Sanko sliders and "Use the default"; a right-click on either button opens
+its page; both switches remembered after a restart, on this computer, never in the project. And D: neither turns the
+other off. 4. O on a layer with one frame: a grey note in the bar, such as "Bird has one frame: nothing for the onion
+skin". 5. The icons: implement my Figma design "LAYER row button: onion (on)", frame 749:892, exactly as drawn. It is
+drawn at four times the size; the real Onion Skin button stays 20 x 20, as in OS-1. Both the Light Table button and the
+Onion Skin button use this same Light Table icon, in white, with no coloured squares, no frames mark and nothing else
+added. Leave out the red/green squares and the three small frames from OS-1. The active state is shown only by the
+purple border and purple background, as in SankoTV's other switches. The ghost colours stay customizable in Preferences
+but never appear in the icons. The same line thickness, icon size and proportions as SankoTV's existing icons. The
+tooltips and the bottom bar's note tell the two apart, as in OS-1. Also in this round: fix the Qt warning when the Zoom
+to Frames tooltip opens. Checks with controls and red runs, none judged by the clock, quick check, full gate before
+stopping (every family green in both builds), a fresh TEST COPY, the exe stamp and a short hand-test list. Don't commit,
+and don't mark OS-1 BUILT in Figma, until my hand test passes. 3. Left/Right did nothing in I2-2. Tell me what they do
+today and propose what they should do (for example one frame back and one forward); don't build it yet. Don't use Figma
+or any other window while the quick check or the gate runs. If anything failed or the build is wrong, commit nothing and
+report. ALL DONE when finished, and send a notification."
+HAND TEST SL (read 2026-11-27; report, crops, the compact timeline and the live settings in
+Documents\SankoTV-Design\batch-SL-2026-11-27\handtest_SL\): ONE session, 20261127-135147 (13:51:47 to 14:03:30, 703.1
+s). Release, built Nov 27 2026 12:30:10, git 7ae7bc826+dirty; the title bar "SANKO TV — TEST COPY - small pirate,
+sliders". NO STEP FAILED: 0 PASS as far as it could be seen (the copy was opened at 13:50:23, the recording began 84 s
+later; its first screenshot shows the right-hand column about 287 px wide and the live sidebar/right is 0x11f = 287); 1,
+2 PASS; 3 PASS (Action Safe 4 px thick amber with the blue thin, 15 % faded, the values kept on reopening); 4 PASS; 5
+PASS (panel 2, panel 1's blue ghost following the before opacity 57-83-78 % and the colour green then purple; no gap over
+59 ms while dragging); 6 PASS (Bird frame 3, both ghosts following to 100 %, pink and green); 7 PASS; 8 PASS; 9 PASS
+("Bird · frame 3 of 24 · held 2 frames", "frame 24 of 24 · held to the panel's end"); 10 PASS for the drag's chip ("frame
+3 · held 6 frames") and Ctrl+Z ("Undo Change Frame Length") - the Undo button's hover and an Alt-drag NOT TESTED; 11 PASS;
+12 NOT TESTED AS WRITTEN (N on frame 46, Bird's held last frame, not on frame 82: new frames at 48 to 56, as the "on 2s"
+rule puts them, all undone); 13 PASS (1600 %, the playhead's block; near the panel's start the view stays at scroll 0).
+Outside the list: no Qt warning in this session (the Zoom to Frames tip opened five times at 500x42; I2-2 had it twice);
+Ctrl+X after the lane's menu refused in amber ("No layer key is selected: ..."); Ctrl+Z after Preferences "nothing to
+undo".
+THE COMMIT: the 11 files below, matching app/build/_probe/split/sha_SL_gate.txt, and this HANDOFF.
+THE ROUND AS BUILT (written before the hand test, kept as it was):
+WHAT CHANGED (the main tree, uncommitted; 11 files: app/CMakeLists.txt, AnimaticTimeline.cpp, DrawingCanvas.cpp / .h,
+MainWindow.cpp, SankoOnionSkin.h, StoryboardPage.cpp / .h, SankoStandardSlider.cpp / .h (new, LF),
+tests/ProjectLifecycleTest.cpp):
+1. THE STANDARD SANKO SLIDER (SankoStandardSlider, new): the Zoom Toolbar's Zoom / Rotate control as a widget, from the
+same numbers (ZoomToolbar.cpp; Figma 86:32): label 9 px Inter Semi Bold #cccccc at the top left, the value 8 px at the
+top right, the track 14 px below (10 px, #333, radius 2), the fill #4b4397 -> the Sanko purple under a 10 % white sheen
+to the dragger's middle, the dragger 20 x 10 #b3b3b3. Kind::Hue is the Perspective bar's "Hue Colors" track (the
+spectrum, no fill) with a swatch of the colour at the top right. Press or drag = x / width of the range. The Zoom
+Toolbar and the Perspective bar keep their own painting (their pictures are pinned); every new slider is this one. The
+older SankoSlider (round handle) is no longer in Preferences; it stays in the Shapes panel's Stroke.
+2. PREFERENCES > CAMERA: for Action Safe and Title Safe each an Opacity (0-100 %, as before) and a Line Thickness (1-6
+px, new, settings camera/actionSafeThickness, camera/titleSafeThickness, default 1) - standard sliders side by side.
+DrawingCanvas draws the guide's rectangle with a cosmetic pen of that width (1: the hairline it always had, width 0) on
+both paths (the canvas's guides and the camera frame's); the labels keep the hairline.
+3. PREFERENCES > ONION SKIN: "Frames before" / "Frames after", "Frames shown"; the colour is a hue slider (QColor::fromHsv
+(h, 255, 255), as the Perspective guides take theirs) where the eight diamonds and Custom... were; the opacity a
+standard slider. Opening the page changes nothing: the dragger is put on the colour's hue QUIETLY (a QSignalBlocker) -
+the default blue #4d9fff and orange #f27a3d are softer than their hues at full strength and stay exactly as they were
+until a slider is dragged; "Use the default" brings them back. SankoOnionSkin::presets() and the ...Custom key are gone.
+4. NO STALL WHILE DRAGGING (the user's answer 1 after I2-2; the cause found in I2-1: onionSkinSettingsChanged flattened
+the previous panel and tinted every ghost again at each step). StoryboardPage::onionSkinSettingsChanged(OnionChange):
+Opacity - nothing is built (the cached ghosts at their new opacities; the previous panel's ghost reads its opacity when
+painted); Color - the ghosts that are up are coloured again where they lie (DrawingCanvas::recolourGhost: one SourceIn
+fill, alpha kept; the canvas lets go of its copies first so nothing is copied), the cache entries carry their side;
+Everything - a count or the defaults, as before. Counters for the checks: onionFlattensForTest, onionBuildsForTest,
+onionRecoloursForTest, previousGhostBuildsForTest.
+5. "FRAME" EVERYWHERE (the user's answer 2): the lane's label FRAMES in the track labels' font, colour and right edge
+(it was a small dim "drawings"); the bar "Bird · frame 3 of 24 · held 2 frames" / "· held to the panel's end"; the
+cut's chip "frame N · held N frames"; the steps "Change Frame Length", "Move Frame Cut"; the Layers mark's tooltip "24
+frames"; the Zoom to Frames tip "each frame at least 32 px wide"; the notes "the Background has one frame", "the later
+frames would pass the panel's end", "this is the layer's only frame", "Frame N starts after the panel's end", the merge
+refusal "has N frames". The lane's 3 px bands stay (answer 3).
+CHECKS: the new slice sl (runSlidersPass), 14 checks: (sl1) the standard slider is the Zoom Toolbar's pixel for pixel
+along the track's middle row (gap 1 of 255) + control (the older slider, gap 195); (sl2) Preferences > Camera, the
+Action Safe pressed to 4 px measured 4.00 px on the canvas, the Title Safe 1.00, at 50 % 2.00 + control (1 px reads
+1.00); (sl3) Preferences > Onion Skin's page, opening changes nothing, the after hue pressed at 120 = #00ff00 + control
+(the Keyframes page's diamonds found); (sl7) eight standard sliders in Preferences, two hue, no SankoSlider / QSlider +
+control (a planted older slider found); (sl4) 98 value changes dragged: flattens 1 -> 1, the panel ghost built 1 -> 1,
+the drawings' ghosts built 3 -> 3, coloured again 0 -> 50, the canvas following (tint 53 -> 160, #00ff00, hue 300) +
+control (a count change flattens and builds); (sl5) the bar's and the tip's words + control; (sl6) FRAMES set as SCENES
+(right edge, height, colour #b1b2bf, centred) + control (AUDIO read as SCENES). Older checks changed (old and new text in
+Documents\SankoTV-Design\batch-SL-2026-11-27\changed_checks_sliders_old_new.md): (dr9), (dr11), (dr12), (dr15), (dr19).
+RED RUNS (Documents\SankoTV-Design\batch-SL-2026-11-27\red_runs\): A (dragger #c8c8c8, the Action Safe always 1 px,
+the old "drawings" label, the bar's "drawing") - (sl1), (sl2), (sl5), (sl6) failed; B (opacity and colour drags ask for
+Everything) - (sl4) failed: flattens 1 -> 25 -> 50, ghost builds 1 -> 49 -> 99; C (the hue dragger set without the
+blocker; an older slider left on the page) - (sl3), (sl7) and (sl7)'s control failed: my control asked for exactly one
+found and the red run had left one; corrected to "one more than before" and repeated as C2 - (sl3) (opening turned the
+blue to #0077ff and the orange to #ff5500, and saved them) and (sl7) failed, the controls passed. All markers out; the
+sources back at their pre-red hashes.
+QUICK CHECK (Release, 12:04-12:25): Camera 354/354; Lifecycle 1988 of 1991 - (lb1), (lb2), (ax) failed: "foreground
+handed to another program 1 time(s) [... - Figma]" - I was building the Figma proposal while it ran and the Figma window
+came forward; (ax)'s popup was placed right (34,38 10x128) but had no focus. Their slices alone, the same exes, nothing
+else running: libbox 14/14, batche 130/130. No code changed for it (memory: no Figma during checks).
+FULL GATE SL (12:28-13:29, 3702 s, mode normal, nothing else running; log batch-SL-2026-11-27\fullgate_SL.log): every
+family green in both builds - Release and Debug each: Lifecycle 1991/1991, Camera 354/354, BrushLibrary 187/187,
+CanvasSizeLock 170/170, CanvasEdgeLock 74/74, DevRecorder 46/46, QuickShapeGeometryLock 19/19, PaintPixelLock 13/13,
+CanvasBrushLock 3/3; FAMILIES FAILING 0 and 0. The 11 files match app/build/_probe/split/sha_SL_gate.txt after the
+gate. THE EXE: built Nov 27 2026 12:30:10, git 7ae7bc826+dirty (Release SankoTV.exe 12:30:31, sha256 eda2279b...;
+Debug 12:32:46, 617c0285...; batch-SL-2026-11-27\exe_hashes_SL.txt).
+MY MISTAKES: (1) two of my first readings in sl were wrong, not the app: the Camera opacity opens at its saved 50 % (I
+expected 100 before setting it), and "Frames shown" is painted by its row, not a QLabel; (2) the (sl7) control above;
+(3) Figma work during the quick check (above); (4) the first TEST COPY: I skipped make_motion_copy.py, so its paths still
+named the original's folder; MakeRunCopy said "something drawn 7" and exited 7, the sound's link was lost and pictures
+were renamed "~2". I removed that copy (my own, made minutes before) and made it again in the right order; (5) a
+`python -I -` heredoc in one command hung (the known trap); stopped, nothing written.
+THE TEST COPY: "TEST COPY - small pirate, sliders" (C:\SankoTV-TestCopies; 117 files, version 7; Bird 24 frames on 2s
+with two keys, the seagulls' three keys; every file it names present). The original's 94 files hashed before and after,
+unchanged (batch-SL-2026-11-27\pirate_original_hashes_*_sliders_copy.txt).
+HAND TEST SL: Documents\SankoTV-Design\handtest_SL.md (13 steps; step 0 is I2-2's docks step: the first start).
+FIGMA OS-1 (745:757, "PROPOSAL 2026-11-27 OS-1", below I-2's frames; the app's lighttable.svg imported beside it as
+746:757): the Light Table for panels, the Onion Skin for frames, each its own switch - the Onion Skin button on the
+LAYER row at x 50 (the bulb on three small frames; on: lit purple, its frames blue and orange), the Light Table's
+red/green squares when on; what each shows and both on; keys O and Shift+L (or Shift+O) and the View menu; my
+suggestion (a Preferences > Light Table page with hue and opacity sliders, a right-click to it, the switches
+remembered); four questions. Screenshot: batch-SL-2026-11-27\OS-1_proposal_light_table_and_onion_skin.png. NOTHING OF
+IT BUILT before the user's approval.
+
 ## 2026-11-27 (11:3x): BATCH I-2 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST I2-2 - FRAME-BY-FRAME DRAWINGS IN A LAYER, WITH THE USER'S NOTES 2 TO 8; NEXT: THE SLIDERS ROUND (PREFERENCES > ONION SKIN AND CAMERA, "FRAME" EVERYWHERE, THE FRAMES LABEL) AND A FIGMA PROPOSAL FOR LIGHT TABLE AGAINST ONION SKIN
 THE USER'S WORD (pasted 2026-11-27, about 11:20): "Hand test I2-2 done: all steps looked right. Read every Dev Recorder
 session made after 22:49 on 26 November, oldest first (two, because of the restart in the docks step). Confirm from

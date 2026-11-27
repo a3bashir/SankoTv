@@ -165,6 +165,9 @@ qt_add_executable(SankoTV
     src/docking/DockTitleBar.h
     src/SankoSlider.cpp
     src/SankoSlider.h
+    # The standard Sanko slider: the Zoom Toolbar's, as a widget (2026-11-27).
+    src/SankoStandardSlider.cpp
+    src/SankoStandardSlider.h
     src/ZoomToolbar.cpp
     src/ZoomToolbar.h
     src/ColorPanel.cpp

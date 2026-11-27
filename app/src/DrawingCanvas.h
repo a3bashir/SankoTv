@@ -124,6 +124,15 @@ public:
     bool previousGhostShownForTest() const { return m_onionSkin && !m_ghost.isNull(); }
     // A drawing's own pixels as a ghost: `tint` wherever it has anything, as opaque as it is.
     static QPixmap drawingGhost(const QImage &pixels, const QColor &tint);
+    // A ghost in another colour, made where it lies (2026-11-27): every pixel takes `tint`
+    // and keeps its alpha. One fill - no source picture is read - so a colour dragged in
+    // Preferences > Onion Skin costs no flatten and no tint loop.
+    static void recolourGhost(QPixmap &ghost, const QColor &tint);
+    // The previous panel's ghost in the onion skin's "before" colour as it is now, that way.
+    void recolourPreviousGhost();
+    // The checks': how many times the previous panel's ghost was built from a flatten.
+    int previousGhostBuildsForTest() const { return m_ghostBuilds; }
+    QImage previousGhostForTest() const { return m_ghost.toImage(); }
     // The onion skin's settings changed: the previous panel's ghost is tinted again.
     void refreshOnionColors();
     // A layer of `panel` shows this drawing of its run ("" when it has none): what a pixel
@@ -382,6 +391,15 @@ public:
     // are loaded from sankoSettings() in the constructor.
     void setActionSafeMaskOpacity(int percent); // action-safe amber
     void setTitleSafeMaskOpacity(int percent);  // title-safe blue
+    // ...and their lines' thickness in screen pixels, 1 to kSafeLineMax (Preferences > Camera,
+    // 2026-11-27; 1, the line they always had, unless set). The labels are not made heavier.
+    static constexpr int kSafeLineMax = 6;
+    void setActionSafeLineWidth(int px);
+    void setTitleSafeLineWidth(int px);
+    int actionSafeMaskOpacity() const { return m_actionSafeMaskPct; }
+    int titleSafeMaskOpacity() const { return m_titleSafeMaskPct; }
+    int actionSafeLineWidth() const { return m_actionSafeLinePx; }
+    int titleSafeLineWidth() const { return m_titleSafeLinePx; }
 
     // Canvas VIEW transforms (display only; never touch layer pixels/export).
     void setViewZoom(double zoom);        // 0.25..4, centred on the view
@@ -1475,6 +1493,7 @@ private:
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
     QPixmap m_ghostSource;   // the flatten it was made from: tinted again when the colour changes
+    int m_ghostBuilds = 0;   // (the checks': buildGhost calls on a picture)
     QRect m_ghostRect;       // its place on this stage when it is not the whole of it
     QVector<OnionGhost> m_drawingGhosts; // the run's drawings before and after (batch I-2)
     QRect m_ltPrevRect;
@@ -1695,6 +1714,8 @@ private:
     bool m_titleSafe = false;    // title safe, 10% inset
     int m_actionSafeMaskPct = 50; // guide opacity, percent (persisted)
     int m_titleSafeMaskPct = 50;
+    int m_actionSafeLinePx = 1;   // the guide's line, screen pixels (persisted)
+    int m_titleSafeLinePx = 1;
 
     // The shot camera's tool (Phase 1B; see setShotCameraProvider).
     std::function<ShotCameraView()> m_shotCamProvider;

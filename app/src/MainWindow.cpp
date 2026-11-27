@@ -54,7 +54,7 @@ this fence."
 #include "StoryboardModel.h"
 #include "camera/ShotCamera.h"
 #include "StoryboardPage.h"
-#include "SankoSlider.h"
+#include "SankoStandardSlider.h" // Preferences' sliders: the standard one, the Zoom Toolbar's
 #include "export/MovieEncoder.h"
 #include "export/ProjectExport.h"
 
@@ -1153,37 +1153,70 @@ void MainWindow::onPreferences()
     split->addWidget(pages, 1);
     connect(categories, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
 
+    const QString keyHeadStyle = QStringLiteral("QLabel { color: #e6e6e6; font-size: 11px; font-weight: 600; }");
+    const QString keyNoteStyle = QStringLiteral("QLabel { color: #8a8a90; font-size: 10px; }");
+
     // --- Camera page -------------------------------------------------------
+    // THE SAFE-AREA GUIDES (2026-11-27, the user's word: "Preferences > Camera: standard Sanko
+    // sliders for the Action Safe and Title Safe opacity, plus a line-thickness slider for
+    // each"). For the Action Safe and the Title Safe guide each: its opacity, 0 to 100 %, and
+    // its line's thickness in screen pixels, 1 to DrawingCanvas::kSafeLineMax - two standard
+    // Sanko sliders (the Zoom Toolbar's) side by side. A change is saved at once and shows at
+    // once on the canvas. (Until then: two rows of the older round-handled slider, opacity
+    // only.)
     QWidget *cameraPage = new QWidget;
     QVBoxLayout *cameraLayout = new QVBoxLayout(cameraPage);
-    cameraLayout->setContentsMargins(16, 16, 16, 12);
-    cameraLayout->setSpacing(6);
+    cameraLayout->setContentsMargins(16, 14, 16, 12);
+    cameraLayout->setSpacing(4);
 
     QSettings settings = sankoSettings();
 
-    // Each row: caption + SankoSlider (0-100, "%"), seeded from QSettings.
-    // Changes persist immediately and update the canvas overlays live.
-    auto addOpacityRow = [&](const QString &caption, const QString &key,
-                             void (StoryboardPage::*apply)(int)) {
-        QLabel *label = new QLabel(caption);
-        cameraLayout->addWidget(label);
-        SankoSlider *slider = new SankoSlider;
-        slider->setRange(0, 100);
-        slider->setValueSuffix(QStringLiteral("%"));
-        slider->setValue(qBound(0, settings.value(key, 50).toInt(), 100));
-        connect(slider, &SankoSlider::valueChanged, this, [this, key, apply](int v) {
-            sankoSettings().setValue(key, v);
+    auto addSafeGuide = [&](const QString &title, const QString &prefix, const QString &opacityKey,
+                            const QString &thicknessKey, void (StoryboardPage::*applyOpacity)(int),
+                            void (StoryboardPage::*applyThickness)(int)) {
+        QLabel *head = new QLabel(title);
+        head->setStyleSheet(keyHeadStyle);
+        cameraLayout->addWidget(head);
+        auto *line = new QHBoxLayout;
+        line->setSpacing(16);
+        auto *opacity = new SankoStandardSlider(QStringLiteral("Opacity"));
+        opacity->setObjectName(prefix + QStringLiteral("Opacity"));
+        opacity->setRange(0, 100);
+        opacity->setValueSuffix(QStringLiteral("%"));
+        opacity->setValue(qBound(0, settings.value(opacityKey, 50).toInt(), 100));
+        connect(opacity, &SankoStandardSlider::valueChanged, this, [this, opacityKey, applyOpacity](int v) {
+            sankoSettings().setValue(opacityKey, v);
             if (m_storyboard)
-                (m_storyboard->*apply)(v);
+                (m_storyboard->*applyOpacity)(v);
         });
-        cameraLayout->addWidget(slider);
+        line->addWidget(opacity, 1);
+        auto *thickness = new SankoStandardSlider(QStringLiteral("Line Thickness"));
+        thickness->setObjectName(prefix + QStringLiteral("Thickness"));
+        thickness->setRange(1, DrawingCanvas::kSafeLineMax);
+        thickness->setValueSuffix(QStringLiteral(" px"));
+        thickness->setValue(qBound(1, settings.value(thicknessKey, 1).toInt(), int(DrawingCanvas::kSafeLineMax)));
+        connect(thickness, &SankoStandardSlider::valueChanged, this, [this, thicknessKey, applyThickness](int v) {
+            sankoSettings().setValue(thicknessKey, v);
+            if (m_storyboard)
+                (m_storyboard->*applyThickness)(v);
+        });
+        line->addWidget(thickness, 1);
+        cameraLayout->addLayout(line);
     };
-    addOpacityRow(QStringLiteral("Action Safe Area Opacity"),
-                  QStringLiteral("camera/actionSafeOpacity"),
-                  &StoryboardPage::setActionSafeMaskOpacity);
-    addOpacityRow(QStringLiteral("Title Safe Area Opacity"),
-                  QStringLiteral("camera/titleSafeOpacity"),
-                  &StoryboardPage::setTitleSafeMaskOpacity);
+    addSafeGuide(QStringLiteral("Action Safe"), QStringLiteral("prefsActionSafe"),
+                 QStringLiteral("camera/actionSafeOpacity"), QStringLiteral("camera/actionSafeThickness"),
+                 &StoryboardPage::setActionSafeMaskOpacity, &StoryboardPage::setActionSafeLineWidth);
+    cameraLayout->addSpacing(10);
+    addSafeGuide(QStringLiteral("Title Safe"), QStringLiteral("prefsTitleSafe"),
+                 QStringLiteral("camera/titleSafeOpacity"), QStringLiteral("camera/titleSafeThickness"),
+                 &StoryboardPage::setTitleSafeMaskOpacity, &StoryboardPage::setTitleSafeLineWidth);
+    cameraLayout->addSpacing(8);
+    QLabel *cameraNote = new QLabel(QStringLiteral(
+        "The lines of the two safe-area guides. Shown at once on the canvas; the guides themselves "
+        "are switched on and off in the Camera tool's bar."));
+    cameraNote->setWordWrap(true);
+    cameraNote->setStyleSheet(keyNoteStyle);
+    cameraLayout->addWidget(cameraNote);
 
     cameraLayout->addStretch(1);
 
@@ -1221,8 +1254,6 @@ void MainWindow::onPreferences()
             m_storyboard->keyColorsChanged();
         refreshKeysPage();
     };
-    const QString keyHeadStyle = QStringLiteral("QLabel { color: #e6e6e6; font-size: 11px; font-weight: 600; }");
-    const QString keyNoteStyle = QStringLiteral("QLabel { color: #8a8a90; font-size: 10px; }");
     auto addKeyRow = [&](SankoKeyColors::Row row, const QString &title, const QString &caption,
                          const QString &prefix) {
         QLabel *head = new QLabel(title);
@@ -1314,15 +1345,26 @@ void MainWindow::onPreferences()
     // "In the style of the Keyframes page: the number of previous drawings and of next drawings
     // shown, and separate ghost colours and separate opacities for previous and next. Today's blue
     // stays the default for previous; choose a clear default for next. Remembered by the app."
-    // For the drawings before and for the drawings after, each on its own: how many are shown (0
-    // to 3), the ghost's colour (eight presets - the onion skin's own blue first - the side's
-    // custom colour as its own diamond once Custom... has picked one, and Custom..., the SankoTV
-    // colour picker) and its opacity. A choice shows at once on the canvas and in the preview; it
-    // is a setting of SankoTV on this computer, never in the project file (SankoOnionSkin.h).
+    // For the frames before and for the frames after, each on its own: how many are shown (0 to
+    // 3), the ghost's colour and its opacity. A choice shows at once on the canvas and in the
+    // preview; it is a setting of SankoTV on this computer, never in the project file
+    // (SankoOnionSkin.h).
+    // THE COLOUR AND THE OPACITY ARE TWO STANDARD SANKO SLIDERS, SIDE BY SIDE (2026-11-27, the
+    // user's word after hand tests I2-1 and I2-2: "hue sliders for the previous and next
+    // colours, as in the Perspective tool's guides, and standard Sanko sliders (the Zoom
+    // Toolbar's) for their opacity, with no stalls while I drag"). The colour is a hue slider:
+    // the spectrum, and the colour under its dragger - full strength, QColor::fromHsv(h, 255,
+    // 255), as the Perspective bar's "Hue Colors" gives a guide its colour. It stands where
+    // the eight preset diamonds and Custom... stood. The default blue and orange are softer
+    // than their hues at full strength: they stay exactly as they were until the slider is
+    // dragged, the dragger lying on their hue, and "Use the default" brings them back. The
+    // swatch above the track's right end is the colour as it is. While either slider is
+    // dragged nothing is flattened and no ghost is tinted from its pixels
+    // (StoryboardPage::OnionChange).
     QWidget *onionPage = new QWidget;
     QVBoxLayout *onionLayout = new QVBoxLayout(onionPage);
     onionLayout->setContentsMargins(16, 12, 16, 12);
-    onionLayout->setSpacing(3);
+    onionLayout->setSpacing(4);
     auto *onionPreview = new OnionPreview;
     QVector<std::function<void()>> onionSyncers;
     auto refreshOnionPage = [&onionSyncers, onionPreview] {
@@ -1330,100 +1372,68 @@ void MainWindow::onPreferences()
             sync();
         onionPreview->update();
     };
-    auto onionChanged = [this, &refreshOnionPage] {
+    auto onionChanged = [this, &refreshOnionPage](StoryboardPage::OnionChange what) {
         if (m_storyboard)
-            m_storyboard->onionSkinSettingsChanged();
+            m_storyboard->onionSkinSettingsChanged(what);
         refreshOnionPage();
     };
     auto addOnionSide = [&](SankoOnionSkin::Side side, const QString &title, const QString &prefix) {
         QLabel *head = new QLabel(title);
         head->setStyleSheet(keyHeadStyle);
         onionLayout->addWidget(head);
-        auto *count = new brushlib::StudioSegmentedRow(QStringLiteral("Drawings shown"),
+        auto *count = new brushlib::StudioSegmentedRow(QStringLiteral("Frames shown"),
                                              {QStringLiteral("0"), QStringLiteral("1"), QStringLiteral("2"),
                                               QStringLiteral("3")});
         count->setObjectName(prefix + QStringLiteral("Count"));
         connect(count, &brushlib::StudioSegmentedRow::chosen, &dialog, [onionChanged, side](int index) {
             SankoOnionSkin::setCount(side, index);
             sankoSettings().setValue(SankoOnionSkin::countKey(side), SankoOnionSkin::choice(side).count);
-            onionChanged();
+            onionChanged(StoryboardPage::OnionChange::Everything);
         });
         onionLayout->addWidget(count);
-        auto applyColor = [onionChanged, side](const QColor &color) {
-            SankoOnionSkin::setColor(side, color);
-            sankoSettings().setValue(SankoOnionSkin::colorKey(side), SankoOnionSkin::choice(side).color.name());
-            onionChanged();
-        };
         auto *line = new QHBoxLayout;
-        line->setSpacing(4);
-        QVector<KeySwatch *> swatches;
-        for (const SankoOnionSkin::Preset &preset : SankoOnionSkin::presets()) {
-            auto *swatch = new KeySwatch(preset.color, preset.name);
-            swatch->setObjectName(prefix + preset.name);
-            connect(swatch, &QAbstractButton::clicked, &dialog,
-                    [applyColor, color = preset.color] { applyColor(color); });
-            line->addWidget(swatch);
-            swatches.append(swatch);
-        }
-        auto *custom = new KeySwatch(QColor(), QStringLiteral("Your custom colour"));
-        custom->setObjectName(prefix + QStringLiteral("Custom"));
-        connect(custom, &QAbstractButton::clicked, &dialog, [applyColor, custom] { applyColor(custom->color()); });
-        line->addWidget(custom);
-        line->addSpacing(6);
-        QPushButton *pick = new QPushButton(QStringLiteral("Custom..."));
-        pick->setObjectName(prefix + QStringLiteral("Pick"));
-        pick->setStyleSheet(QStringLiteral("QPushButton { padding: 3px 10px; }"));
-        connect(pick, &QPushButton::clicked, &dialog, [&dialog, applyColor, side, title] {
-            const QColor chosen = SankoColorPicker::getColor(SankoOnionSkin::choice(side).color, &dialog,
-                                                             title + QStringLiteral(" - Custom Colour"));
-            if (!chosen.isValid())
-                return;
-            sankoSettings().setValue(SankoOnionSkin::customKey(side), QColor(chosen.rgb()).name());
-            applyColor(chosen);
+        line->setSpacing(16);
+        auto *hue = new SankoStandardSlider(QStringLiteral("Colour"), SankoStandardSlider::Kind::Hue);
+        hue->setObjectName(prefix + QStringLiteral("Hue"));
+        connect(hue, &SankoStandardSlider::valueChanged, &dialog, [onionChanged, side](int h) {
+            SankoOnionSkin::setColor(side, QColor::fromHsv(h, 255, 255));
+            sankoSettings().setValue(SankoOnionSkin::colorKey(side), SankoOnionSkin::choice(side).color.name());
+            onionChanged(StoryboardPage::OnionChange::Color);
         });
-        line->addWidget(pick);
-        line->addStretch(1);
-        onionLayout->addLayout(line);
-        auto *opacityLine = new QHBoxLayout;
-        opacityLine->setSpacing(8);
-        QLabel *opacityLabel = new QLabel(QStringLiteral("Opacity"));
-        opacityLabel->setFixedWidth(52);
-        opacityLine->addWidget(opacityLabel);
-        SankoSlider *opacity = new SankoSlider;
+        line->addWidget(hue, 1);
+        auto *opacity = new SankoStandardSlider(QStringLiteral("Opacity"));
         opacity->setObjectName(prefix + QStringLiteral("Opacity"));
         opacity->setRange(SankoOnionSkin::kMinOpacityPercent, 100);
         opacity->setValueSuffix(QStringLiteral("%"));
         opacity->setValue(SankoOnionSkin::choice(side).opacityPercent);
-        connect(opacity, &SankoSlider::valueChanged, &dialog, [onionChanged, side](int v) {
+        connect(opacity, &SankoStandardSlider::valueChanged, &dialog, [onionChanged, side](int v) {
             if (v == SankoOnionSkin::choice(side).opacityPercent)
                 return;
             SankoOnionSkin::setOpacityPercent(side, v);
             sankoSettings().setValue(SankoOnionSkin::opacityKey(side), SankoOnionSkin::choice(side).opacityPercent);
-            onionChanged();
+            onionChanged(StoryboardPage::OnionChange::Opacity);
         });
-        opacityLine->addWidget(opacity, 1);
-        onionLayout->addLayout(opacityLine);
-        onionSyncers.append([side, count, swatches, custom, opacity] {
+        line->addWidget(opacity, 1);
+        onionLayout->addLayout(line);
+        onionSyncers.append([side, count, hue, opacity] {
             const SankoOnionSkin::Choice now = SankoOnionSkin::choice(side);
             count->setCurrentIndex(now.count);
-            const QColor saved = QColor::fromString(sankoSettings().value(SankoOnionSkin::customKey(side)).toString());
-            custom->setColor(saved);
-            custom->setVisible(saved.isValid());
-            bool preset = false;
-            for (KeySwatch *s : swatches) {
-                const bool on = s->color().rgb() == now.color.rgb();
-                s->setChecked(on);
-                preset = preset || on;
+            // The dragger follows the colour's hue without choosing anything: a colour that is
+            // not its hue at full strength (the defaults) stays the colour it is.
+            // (And where the dragger already gives this very colour it is left where it is.)
+            if (QColor::fromHsv(hue->value(), 255, 255).rgb() != now.color.rgb()) {
+                const QSignalBlocker quiet(hue);
+                hue->setValue(qMax(0, now.color.hsvHue()));
             }
-            custom->setChecked(!preset && saved.isValid() && saved.rgb() == now.color.rgb());
+            hue->setSwatch(now.color);
             if (opacity->value() != now.opacityPercent)
                 opacity->setValue(now.opacityPercent);
         });
     };
-    addOnionSide(SankoOnionSkin::Side::Before, QStringLiteral("Drawings before"), QStringLiteral("prefsOnionBefore"));
-    onionLayout->addSpacing(6);
-    addOnionSide(SankoOnionSkin::Side::After, QStringLiteral("Drawings after"), QStringLiteral("prefsOnionAfter"));
-    onionLayout->addSpacing(6);
+    addOnionSide(SankoOnionSkin::Side::Before, QStringLiteral("Frames before"), QStringLiteral("prefsOnionBefore"));
+    onionLayout->addSpacing(8);
+    addOnionSide(SankoOnionSkin::Side::After, QStringLiteral("Frames after"), QStringLiteral("prefsOnionAfter"));
+    onionLayout->addSpacing(8);
     onionLayout->addWidget(onionPreview);
     QLabel *onionNote = new QLabel(QStringLiteral(
         "Shown at once on the canvas. The \"before\" colour is also the previous panel's ghost. "
@@ -1446,7 +1456,7 @@ void MainWindow::onPreferences()
             sankoSettings().setValue(SankoOnionSkin::colorKey(side), SankoOnionSkin::choice(side).color.name());
             sankoSettings().setValue(SankoOnionSkin::opacityKey(side), SankoOnionSkin::choice(side).opacityPercent);
         }
-        onionChanged();
+        onionChanged(StoryboardPage::OnionChange::Everything);
     });
     onionButtons->addWidget(onionDefault);
     onionButtons->addStretch(1);

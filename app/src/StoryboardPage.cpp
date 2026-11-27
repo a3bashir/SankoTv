@@ -1607,7 +1607,8 @@ public:
         f.setPixelSize(10);
         setFont(f);
         setFixedSize(18 + QFontMetrics(f).horizontalAdvance(m_text), 14);
-        setToolTip(count == 1 ? QStringLiteral("1 drawing") : QStringLiteral("%1 drawings").arg(count));
+        // ("frame" everywhere, the user's word 2026-11-27; "1 drawing" / "24 drawings" until then.)
+        setToolTip(count == 1 ? QStringLiteral("1 frame") : QStringLiteral("%1 frames").arg(count));
     }
     QString text() const { return m_text; }
 
@@ -8850,6 +8851,18 @@ void StoryboardPage::setTitleSafeMaskOpacity(int percent)
         m_canvas->setTitleSafeMaskOpacity(percent);
 }
 
+void StoryboardPage::setActionSafeLineWidth(int px)
+{
+    if (m_canvas)
+        m_canvas->setActionSafeLineWidth(px);
+}
+
+void StoryboardPage::setTitleSafeLineWidth(int px)
+{
+    if (m_canvas)
+        m_canvas->setTitleSafeLineWidth(px);
+}
+
 void StoryboardPage::rebuildPanelStrip()
 {
     m_panelThumbs.clear();
@@ -11689,6 +11702,7 @@ void StoryboardPage::updateOnionGhost()
         // just before the cut - each run's last exposed drawing, each moving layer where its keys
         // leave it - not the panel's first frame, which the strip and the SHOTS clips show.
         const Panel *previous = scene->panels.at(m_currentPanel - 1);
+        ++m_onionFlattens;
         m_canvas->setPreviousPixmap(previous->flattenedPixmap(lastPlaceOf(previous)),
                                     neighbourOnStage(scene->panels.at(m_currentPanel), previous));
     } else {
@@ -14772,7 +14786,7 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
     for (int idx : indices) {
         const Layer &layer = panel->layers.at(idx);
         if (panel->layerHasRun(layer)) {
-            sayWarning(QStringLiteral("Merge Layers: “%1” has %2 drawings, and a merge would keep only one. "
+            sayWarning(QStringLiteral("Merge Layers: “%1” has %2 frames, and a merge would keep only one. "
                                    "Keep the layers apart.")
                         .arg(layer.name)
                         .arg(layer.drawingCount()));
@@ -15846,18 +15860,21 @@ void StoryboardPage::refreshOnionForDrawing()
         updateDrawingGhosts();
 }
 
-QPixmap StoryboardPage::drawingGhostFor(const LayerPixels &px, const QColor &tint)
+QPixmap StoryboardPage::drawingGhostFor(const LayerPixels &px, const QColor &tint, bool before)
 {
     const qint64 key = px.contentKey();
     for (GhostEntry &entry : m_ghostCache)
         if (entry.key == key && entry.tint == tint.rgb()) {
             entry.used = ++m_ghostClock;
+            entry.before = before;
             return entry.pixmap;
         }
     GhostEntry made;
     made.key = key;
     made.tint = tint.rgb();
+    made.before = before;
     made.pixmap = DrawingCanvas::drawingGhost(px.pixels(), tint);
+    ++m_onionBuilds;
     made.used = ++m_ghostClock;
     m_ghostCache.append(made);
     // A few stage-sized pictures at most (a 4K one is 32 MB): what is shown now - up to the two
@@ -15898,7 +15915,7 @@ void StoryboardPage::updateDrawingGhosts()
                 if (index < 0 || index >= count)
                     continue;
                 DrawingCanvas::OnionGhost ghost;
-                ghost.pixmap = drawingGhostFor(layer->pixelsOf(index), choice.color);
+                ghost.pixmap = drawingGhostFor(layer->pixelsOf(index), choice.color, side == Side::Before);
                 ghost.opacity = SankoOnionSkin::opacityAt(side, distance);
                 ghost.drawing = index;
                 ghost.before = side == Side::Before;
@@ -15909,8 +15926,37 @@ void StoryboardPage::updateDrawingGhosts()
     m_canvas->setDrawingGhosts(ghosts);
 }
 
-void StoryboardPage::onionSkinSettingsChanged()
+void StoryboardPage::onionSkinSettingsChanged(OnionChange what)
 {
+    if (what == OnionChange::Opacity) {
+        // Nothing is built: the same pictures at their new opacities (the cache answers), and
+        // the previous panel's ghost reads its opacity when it is painted.
+        updateDrawingGhosts();
+        if (m_canvas)
+            m_canvas->update();
+        return;
+    }
+    if (what == OnionChange::Color) {
+        // The ghosts that are up, coloured again where they lie. The canvas lets go of its
+        // copies first, so each picture is coloured in place and none is copied to do it.
+        if (m_canvas) {
+            m_canvas->setDrawingGhosts({});
+            m_canvas->recolourPreviousGhost();
+        }
+        using SankoOnionSkin::Side;
+        for (GhostEntry &entry : m_ghostCache) {
+            const QColor now = SankoOnionSkin::choice(entry.before ? Side::Before : Side::After).color;
+            if (entry.tint == now.rgb())
+                continue;
+            DrawingCanvas::recolourGhost(entry.pixmap, now);
+            entry.tint = now.rgb();
+            ++m_onionRecolours;
+        }
+        updateDrawingGhosts();
+        if (m_animatic) // the LAYER row's blocks carry the two colours while the onion skin is on
+            m_animatic->refreshLayerRow();
+        return;
+    }
     m_ghostCache.clear();
     if (m_canvas)
         m_canvas->refreshOnionColors();
@@ -15963,7 +16009,7 @@ bool StoryboardPage::newDrawing(bool fromThisOne)
             return false;
         }
         if (target.type == QLatin1String("background")) {
-            sayWarning(what + QStringLiteral(": the Background has one drawing. Choose a layer."));
+            sayWarning(what + QStringLiteral(": the Background has one frame. Choose a layer."));
             return false;
         }
         if (target.locked) {
@@ -15994,7 +16040,7 @@ bool StoryboardPage::newDrawing(bool fromThisOne)
         return false;
     }
     if (!last && probe.drawingStart(count - 1) + shift > frames - 1) {
-        sayWarning(what + QStringLiteral(": no room here - the later drawings would pass the panel's end. Make the "
+        sayWarning(what + QStringLiteral(": no room here - the later frames would pass the panel's end. Make the "
                                          "panel longer first."));
         return false;
     }
@@ -16055,7 +16101,7 @@ bool StoryboardPage::deleteDrawing(int layerIndex, int drawingIndex)
     {
         const Layer &target = panel->layers.at(layerIndex);
         if (!panel->layerHasRun(target)) {
-            sayWarning(QStringLiteral("Delete Frame: this is the layer's only drawing. Clear Layer empties it."));
+            sayWarning(QStringLiteral("Delete Frame: this is the layer's only frame. Clear Layer empties it."));
             return false;
         }
         if (drawingIndex < 0 || drawingIndex >= target.drawings.size())
@@ -16132,7 +16178,8 @@ bool StoryboardPage::moveDrawingCut(int layerIndex, int drawingIndex, int startF
         for (int i = drawingIndex; i < layer.drawings.size(); ++i)
             layer.drawings[i].start += delta;
     }
-    const QString what = alone ? QStringLiteral("Move Drawing Cut") : QStringLiteral("Change Drawing Length");
+    // ("Move Drawing Cut" / "Change Drawing Length" until 2026-11-27: "frame" everywhere.)
+    const QString what = alone ? QStringLiteral("Move Frame Cut") : QStringLiteral("Change Frame Length");
     settleDrawingsAtPlayhead(panel);
     panel->unfoldNow();
     pushLayerCommand(panel, before, beforeActive, what);
@@ -16159,7 +16206,7 @@ void StoryboardPage::goToDrawing(int layerIndex, int drawingIndex)
     probe.countRunAt(fps);
     const int frames = qMax(1, shotcam::panelFrames(*panel, fps));
     if (probe.drawingStart(drawingIndex) > frames - 1) {
-        sayNote(QStringLiteral("Drawing %1 starts after the panel's end. Make the panel longer to see it.")
+        sayNote(QStringLiteral("Frame %1 starts after the panel's end. Make the panel longer to see it.")
                     .arg(drawingIndex + 1));
         return;
     }

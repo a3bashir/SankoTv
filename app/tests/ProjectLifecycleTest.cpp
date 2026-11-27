@@ -75,6 +75,8 @@
 #include "SankoKeyColors.h" // Preferences > Keyframes (batch I-1b round 2)
 #include "SankoOnionSkin.h" // Preferences > Onion Skin (batch I-2)
 #include "SankoSlider.h"
+#include "SankoStandardSlider.h" // Preferences' sliders since 2026-11-27 (the (sl) checks)
+#include "ZoomToolbar.h"         // (sl1): the standard slider is the Zoom Toolbar's
 #include "SankoTimelineTheme.h"
 #include "brushlib/StudioControls.h" // the Onion Skin page's "Drawings shown" rows
 #include "SankoTheme.h"
@@ -38902,11 +38904,11 @@ void runI2Pass(const QString &scratch)
         const QString clamped = startsOf(pa, ground);
         check(QStringLiteral("(dr9) A DRAGGED CUT: the cut where drawing 3 starts, dragged two frames right - through "
                              "the window system - makes drawing 2 four frames and moves every later drawing two "
-                             "frames (one step, \"Change Drawing Length\"); with Alt, one frame left, the cut alone "
-                             "moves (\"Move Drawing Cut\"); dragged far left it stops one frame after the drawing "
+                             "frames (one step, \"Change Frame Length\"); with Alt, one frame left, the cut alone "
+                             "moves (\"Move Frame Cut\"); dragged far left it stops one frame after the drawing "
                              "before it"),
-              rippled == QLatin1String("0,2,6,8,10,24") && rippleStep == QLatin1String("Change Drawing Length")
-                  && rolled == QLatin1String("0,2,5,8,10,24") && rollStep == QLatin1String("Move Drawing Cut")
+              rippled == QLatin1String("0,2,6,8,10,24") && rippleStep == QLatin1String("Change Frame Length")
+                  && rolled == QLatin1String("0,2,5,8,10,24") && rollStep == QLatin1String("Move Frame Cut")
                   && clamped == QLatin1String("0,2,3,6,8,22") && stack->index() == before + 3,
               QStringLiteral("with the later drawings '%1' ('%2'); alone '%3' ('%4'); far left '%5'; steps %6")
                   .arg(rippled).arg(rippleStep).arg(rolled).arg(rollStep).arg(clamped).arg(stack->index() - before));
@@ -39016,7 +39018,7 @@ void runI2Pass(const QString &scratch)
         const QString bar = r.canvas->noteBarText();
         const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
         const QString wanted = QStringLiteral("Ground") + dot
-            + QStringLiteral("drawing %1 of %2").arg(lower + 1).arg(g.drawings.size());
+            + QStringLiteral("frame %1 of %2").arg(lower + 1).arg(g.drawings.size());
         check(QStringLiteral("(dr11) WHAT THE FILM, THE STRIP AND THE BAR SHOW: the film's frame inside a drawing "
                              "shows that drawing's stroke and not the other's; frame 0 shows neither; the strip's "
                              "picture is the panel's first frame - the square, no stroke - whichever drawing is on "
@@ -39119,9 +39121,9 @@ void runI2Pass(const QString &scratch)
         };
         const QString groundMark = markOf(ground), boatMark = markOf(boat);
         const int count = pa->layers.at(ground).drawingCount();
-        check(QStringLiteral("(dr12) THE LAYERS PANEL: the Ground's row carries the drawings' mark with their number; "
-                             "the Boat's, with one drawing, has none"),
-              groundMark == QStringLiteral("%1 drawings").arg(count) && boatMark.isEmpty(),
+        check(QStringLiteral("(dr12) THE LAYERS PANEL: the Ground's row carries the drawings' mark with their number "
+                             "(\"6 frames\"); the Boat's, with one drawing, has none"),
+              groundMark == QStringLiteral("%1 frames").arg(count) && boatMark.isEmpty(),
               QStringLiteral("the Ground '%1' (%2 drawings), the Boat '%3'").arg(groundMark).arg(count).arg(boatMark));
         const int layers = int(pa->layers.size());
         const int before = stack->index();
@@ -39299,11 +39301,13 @@ void runI2Pass(const QString &scratch)
             }
             using SankoOnionSkin::Side;
             auto *count = dialog->findChild<brushlib::StudioSegmentedRow *>(QStringLiteral("prefsOnionAfterCount"));
-            auto *green = dialog->findChild<QAbstractButton *>(QStringLiteral("prefsOnionAfterGreen"));
-            auto *opacity = dialog->findChild<SankoSlider *>(QStringLiteral("prefsOnionBeforeOpacity"));
+            // (2026-11-27: the colour is a hue slider - green is its hue 120 - and the opacity the standard slider;
+            // until then the Green diamond and the round-handled SankoSlider.)
+            auto *green = dialog->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionAfterHue"));
+            auto *opacity = dialog->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeOpacity"));
             auto *defaults = dialog->findChild<QPushButton *>(QStringLiteral("prefsOnionDefault"));
             page->countRow = count != nullptr;
-            page->green = green != nullptr;
+            page->green = green != nullptr && green->kind() == SankoStandardSlider::Kind::Hue;
             page->slider = opacity != nullptr;
             if (count && green && opacity && defaults) {
                 goTo(1, 2); // drawing 2: drawings 3 and 4 are after it
@@ -39311,7 +39315,7 @@ void runI2Pass(const QString &scratch)
                 QCoreApplication::processEvents();
                 page->afterTwo = ghosts();
                 page->savedCount = sankoSettings().value(SankoOnionSkin::countKey(Side::After)).toInt();
-                green->click();
+                green->setValue(120);
                 QCoreApplication::processEvents();
                 page->afterGreen = SankoOnionSkin::choice(Side::After).color.name();
                 page->savedColor = sankoSettings().value(SankoOnionSkin::colorKey(Side::After)).toString();
@@ -39336,17 +39340,17 @@ void runI2Pass(const QString &scratch)
         pump(300);
         const bool backToDefault = SankoOnionSkin::isDefault();
         check(QStringLiteral("(dr15) EDIT > PREFERENCES > ONION SKIN (your answer 5): the page is in the list after "
-                             "Keyframes; \"Drawings shown\" 2 after the drawing shows the two after it, the further "
-                             "one at 60 % of the nearer; Green for the drawings after turns their ghost green on the "
-                             "canvas; the opacity before, 60 %, is the ghost's before; each is kept in the settings "
-                             "and read back as a launch reads them; \"Use the default\" is one before and one after "
-                             "at 30 %, blue and orange"),
+                             "Keyframes; \"Frames shown\" 2 after the drawing shows the two after it, the further "
+                             "one at 60 % of the nearer; the after colour's hue slider at green (hue 120) turns their "
+                             "ghost green on the canvas; the opacity before, 60 %, is the ghost's before; each is kept "
+                             "in the settings and read back as a launch reads them; \"Use the default\" is one before "
+                             "and one after at 30 %, blue and orange"),
               page->categories
                       == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"), QStringLiteral("Onion Skin"),
                                       QStringLiteral("Playback"), QStringLiteral("Recovery"), QStringLiteral("Saving")})
                   && page->page && page->countRow && page->green && page->slider
                   && page->afterTwo == QLatin1String("a4@18 a3@30 b1@30") && page->savedCount == 2
-                  && page->afterGreen == QLatin1String("#6cc04a") && page->savedColor == QLatin1String("#6cc04a")
+                  && page->afterGreen == QLatin1String("#00ff00") && page->savedColor == QLatin1String("#00ff00")
                   && page->pixelGreen.isValid() && page->pixelGreen.green() > page->pixelGreen.red() + 5
                   && page->pixelGreen.green() > page->pixelGreen.blue() + 5
                   && page->afterOpacity == QLatin1String("a4@18 a3@30 b1@60") && page->savedOpacity == 60
@@ -39361,7 +39365,6 @@ void runI2Pass(const QString &scratch)
             sankoSettings().remove(SankoOnionSkin::countKey(side));
             sankoSettings().remove(SankoOnionSkin::colorKey(side));
             sankoSettings().remove(SankoOnionSkin::opacityKey(side));
-            sankoSettings().remove(SankoOnionSkin::customKey(side));
         }
         SankoOnionSkin::setDefaults();
         r.canvas->setOnionSkinEnabled(false);
@@ -39493,8 +39496,8 @@ void runI2Pass(const QString &scratch)
         r.storyboard->layerRowClickedForTest(ground);
         pump(100);
         check(QStringLiteral("(dr19) A MERGE onto a layer with a run of drawings is refused - no layer goes, no step - "
-                             "and the bar says the layer has several drawings"),
-              kept && why.contains(QLatin1String("drawings")) && why.contains(QLatin1String("Ground")),
+                             "and the bar says the layer has several frames"),
+              kept && why.contains(QLatin1String("frames")) && why.contains(QLatin1String("Ground")),
               QStringLiteral("kept %1; said '%2'").arg(kept).arg(why));
 
         // The Dev Recorder's line for a step of the run.
@@ -40702,6 +40705,689 @@ void runI2bPass(const QString &scratch)
               QStringLiteral("the button hidden %1; zoom %2 % -> %3 %").arg(hiddenNoLane).arg(zoomBeforeDbl, 0, 'f', 2)
                   .arg(r.timeline->zoomForTest(), 0, 'f', 2));
     }
+    r.window.markCleanForTest();
+}
+
+// ---- (sl) THE SLIDERS ROUND (2026-11-27; the user's word after hand test I2-2) ---------------------------------------
+// "Preferences > Onion Skin: hue sliders for the previous and next colours, as in the Perspective tool's guides, and
+// standard Sanko sliders (the Zoom Toolbar's) for their opacity, with no stalls while I drag. Preferences > Camera:
+// standard Sanko sliders for the Action Safe and Title Safe opacity, plus a line-thickness slider for each. Every new
+// slider in SankoTV uses the standard Sanko slider from the Zoom Toolbar. The "frame" wording and the FRAMES label."
+// No check here is judged by the clock: "no stalls" is read as the work a drag asks for - how many times the
+// previous panel is flattened and a ghost is built from pixels - counted, not timed.
+namespace sl {
+int amberness(QRgb c) { return qRed(c) - qBlue(c); } // the Action Safe amber #f5a623: 210 at full strength
+int blueness(QRgb c) { return qBlue(c) - qRed(c); }  // the Title Safe blue #4d9fff: 178 at full strength
+// One edge's thickness, in pixels, of a guide drawn over neutral ground: in the picture with the guides against the
+// one without, each column's growth of the colour's measure, summed down the column and divided by the colour's
+// full strength, is the line's coverage across both edges (top and bottom); the mean of 41 columns around the
+// middle (away from the labels at the guides' top left), halved.
+double edgeThickness(const QImage &on, const QImage &off, int (*measure)(QRgb), double full)
+{
+    if (on.size() != off.size() || on.isNull())
+        return -1.0;
+    double total = 0.0;
+    int columns = 0;
+    for (int x = on.width() / 2 - 20; x <= on.width() / 2 + 20; ++x) {
+        double sum = 0.0;
+        for (int y = 0; y < on.height(); ++y) {
+            const int d = measure(on.pixel(x, y)) - measure(off.pixel(x, y));
+            if (d > 0)
+                sum += d / full;
+        }
+        total += sum;
+        ++columns;
+    }
+    return columns ? total / columns / 2.0 : -1.0;
+}
+// The text of the timeline's label column within `area`: the pixels 40 brighter than the column's ground there.
+struct TextBox
+{
+    QRect box;
+    QColor brightest;
+    int count = 0;
+};
+TextBox textIn(const QImage &img, const QRect &area, const QColor &ground)
+{
+    TextBox t;
+    int best = -1;
+    const int g = qGray(ground.rgb());
+    for (int y = qMax(0, area.top()); y <= qMin(img.height() - 1, area.bottom()); ++y)
+        for (int x = qMax(0, area.left()); x <= qMin(img.width() - 1, area.right()); ++x) {
+            const int v = qGray(img.pixel(x, y));
+            if (v < g + 40)
+                continue;
+            ++t.count;
+            t.box = t.box.isNull() ? QRect(x, y, 1, 1) : t.box.united(QRect(x, y, 1, 1));
+            if (v > best) {
+                best = v;
+                t.brightest = QColor(img.pixel(x, y));
+            }
+        }
+    return t;
+}
+int channelGap(const QColor &a, const QColor &b)
+{
+    return qMax(qAbs(a.red() - b.red()), qMax(qAbs(a.green() - b.green()), qAbs(a.blue() - b.blue())));
+}
+// The largest channel difference along a row of two pictures: `a` from x `ax`, `b` from x `bx`, `n` pixels.
+int rowGap(const QImage &a, int ay, int ax, const QImage &b, int by, int bx, int n)
+{
+    int most = 0;
+    for (int i = 0; i < n; ++i)
+        if (a.valid(ax + i, ay) && b.valid(bx + i, by))
+            most = qMax(most, channelGap(QColor(a.pixel(ax + i, ay)), QColor(b.pixel(bx + i, by))));
+        else
+            return 999;
+    return most;
+}
+} // namespace sl
+
+void runSlidersPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lmui;
+    using namespace sl;
+    using camtool::grabCanvas;
+    out() << "--- (sl) the sliders round: the standard Sanko slider, Preferences > Camera's guides, Preferences > Onion "
+             "Skin's hue and opacity with no stall, \"frame\" everywhere, the FRAMES label ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/sl");
+    const QString project = writeMotionProject(dir, true);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    QAction *prefsAct = nullptr;
+    for (QAction *a : r.window.findChildren<QAction *>())
+        if (a->text() == QLatin1String("Preferences..."))
+            prefsAct = a;
+    ZoomToolbar *zoomBar = r.ok ? r.window.findChild<ZoomToolbar *>() : nullptr;
+    if (!zoomBar)
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (auto *z = qobject_cast<ZoomToolbar *>(w))
+                zoomBar = z;
+    if (!r.ok || !scene || scene->panels.size() != 2 || !stack || !brushBtn || !prefsAct || !zoomBar
+        || scene->panels.at(0)->layers.size() != 3) {
+        check(QStringLiteral("(sl) the fixture opens, with the Brush, Preferences and the Zoom Toolbar"), false);
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scene->panels.at(0);
+    const int ground = 1, boat = 2;
+    auto startsOf = [](const Panel *panel, int layer) {
+        QStringList s;
+        for (const LayerDrawing &d : panel->layers.at(layer).drawings)
+            s << QString::number(d.start);
+        return s.join(QLatin1Char(','));
+    };
+    auto goTo = [&](int flat, int frame) {
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(150);
+    };
+    auto drawRow = [&](int row) {
+        stroke(r.canvas, row);
+        r.canvas->flushPaintCommit();
+        pump(250);
+    };
+    // Preferences, opened as the menu opens it; `onPage` runs while it is up, on the page named, then it closes.
+    auto withPreferences = [&](const QString &pageName, const std::function<void(QDialog *, QWidget *)> &onPage) {
+        bool ran = false;
+        QTimer::singleShot(400, &r.window, [&] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            auto *list = dialog->findChild<QListWidget *>();
+            auto *pages = dialog->findChild<QStackedWidget *>();
+            QWidget *page = nullptr;
+            if (list && pages)
+                for (int i = 0; i < list->count(); ++i)
+                    if (list->item(i)->text() == pageName) {
+                        list->setCurrentRow(i);
+                        QCoreApplication::processEvents();
+                        page = pages->currentWidget();
+                    }
+            onPage(dialog, page);
+            ran = true;
+            dialog->close();
+        });
+        prefsAct->trigger();
+        pump(300);
+        return ran;
+    };
+    // A press, or a drag through `steps` moves, on a slider - through the window system, as a pen's or a mouse's.
+    auto pressSlider = [&](QWidget *s, int x) {
+        const QPointF at(x, SankoStandardSlider::kTrackTop + SankoStandardSlider::kTrackHeight / 2);
+        libbox::pointerTo(s, at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(s, at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(s, at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        QCoreApplication::processEvents();
+    };
+    auto dragSlider = [&](QWidget *s, int x0, int x1, int steps) {
+        const double y = SankoStandardSlider::kTrackTop + SankoStandardSlider::kTrackHeight / 2;
+        libbox::pointerTo(s, QPointF(x0, y), QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(s, QPointF(x0, y), QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        for (int i = 1; i <= steps; ++i) {
+            libbox::pointerTo(s, QPointF(x0 + (x1 - x0) * double(i) / steps, y), QEvent::MouseMove, Qt::LeftButton,
+                              Qt::NoButton);
+            QCoreApplication::processEvents();
+        }
+        libbox::pointerTo(s, QPointF(x1, y), QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        QCoreApplication::processEvents();
+    };
+
+    // (sl1) THE STANDARD SANKO SLIDER IS THE ZOOM TOOLBAR'S. The toolbar's zoom at 100 % puts its dragger halfway
+    // (its track is logarithmic, 25 % to 400 %); the standard slider at 50 of 0-100, 160 px wide, halfway too. The
+    // row through the middle of the track - its ground, the purple fill and the dragger - is compared pixel by pixel.
+    {
+        zoomBar->setZoom(1.0);
+        QImage bar(zoomBar->size(), QImage::Format_ARGB32_Premultiplied);
+        bar.fill(Qt::transparent);
+        zoomBar->render(&bar);
+        bar = bar.convertToFormat(QImage::Format_ARGB32);
+        SankoStandardSlider slider(QStringLiteral("Zoom"));
+        slider.setRange(0, 100);
+        slider.setValueSuffix(QStringLiteral("%"));
+        slider.setValue(50);
+        slider.resize(SankoStandardSlider::kStandardWidth, SankoStandardSlider::kHeight);
+        QImage mine(slider.size(), QImage::Format_ARGB32_Premultiplied);
+        mine.fill(QColor(0x21, 0x21, 0x21)); // the toolbar's body under it
+        slider.render(&mine);
+        mine = mine.convertToFormat(QImage::Format_ARGB32);
+        // The toolbar's track: x 29 to 189, y 24.5 to 34.5 - its row 29 lies wholly inside; the slider's: y 14 to 24.
+        const int gap = rowGap(bar, 29, 29, mine, 19, 0, 160);
+        const bool shape = slider.trackRect() == QRectF(0, 14, 160, 10) && slider.draggerRect() == QRectF(70, 14, 20, 10)
+            && slider.fillRect() == QRectF(0, 14, 80, 10);
+        // The dragger, the fill and the ground are all on that row: sampled, so a pass is not three equal greys.
+        const QColor dragger(mine.pixel(80, 19)), fill(mine.pixel(40, 19)), groundPx(mine.pixel(120, 19));
+        check(QStringLiteral("(sl1) THE STANDARD SANKO SLIDER IS THE ZOOM TOOLBAR'S: at the same place along its track the "
+                             "standard slider's track, purple fill and dragger are the Zoom Toolbar's, pixel for pixel "
+                             "along the track's middle row (no channel more than 3 apart), and its geometry is the "
+                             "toolbar's - a 160 x 10 track 14 px below the label, a 20 x 10 dragger, the fill to the "
+                             "dragger's middle"),
+              gap <= 3 && shape && channelGap(dragger, QColor(0xb3, 0xb3, 0xb3)) <= 2 && fill.blue() > fill.red() + 40
+                  && channelGap(groundPx, QColor(0x33, 0x33, 0x33)) <= 2,
+              QStringLiteral("the largest channel gap along the row %1; geometry as the toolbar's %2; the dragger %3, the "
+                             "fill %4, the ground %5")
+                  .arg(gap).arg(shape).arg(dragger.name()).arg(fill.name()).arg(groundPx.name()));
+        // Control: the slider Preferences had until now (SankoSlider, a round handle) at the same value, measured the
+        // same way along its track's middle row, is not the toolbar's.
+        SankoSlider older;
+        older.setRange(0, 100);
+        older.setValue(50);
+        older.resize(qMax(160, older.minimumWidth()), older.sizeHint().height());
+        QImage theirs(older.size(), QImage::Format_ARGB32_Premultiplied);
+        theirs.fill(QColor(0x21, 0x21, 0x21));
+        older.render(&theirs);
+        theirs = theirs.convertToFormat(QImage::Format_ARGB32);
+        const int olderGap = rowGap(bar, 29, 29, theirs, theirs.height() / 2, 0, 160);
+        check(QStringLiteral("(sl1) control: the older Preferences slider at the same value, read the same way, is not the "
+                             "toolbar's (more than 40 apart somewhere along the row)"),
+              olderGap > 40, QStringLiteral("the largest channel gap %1").arg(olderGap));
+    }
+
+    // The Ground gets a run, as in the I-2 checks: drawing 1 its own square, drawing 2 (frames 2-3) a stroke on row 0,
+    // drawing 3 (from frame 4 to the panel's end) a stroke on row 3.
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(ground);
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600);
+    goTo(0, 0);
+    const bool n1 = keyClaimed(&r.window, Qt::Key_N);
+    drawRow(0);
+    const bool n2 = keyClaimed(&r.window, Qt::Key_N);
+    drawRow(3);
+    const bool runOk = n1 && n2 && startsOf(pa, ground) == QLatin1String("0,2,4");
+
+    // (sl2) PREFERENCES > CAMERA: THE SAFE-AREA GUIDES' OPACITY AND LINE THICKNESS.
+    {
+        const QStringList keys = {QStringLiteral("camera/actionSafeOpacity"), QStringLiteral("camera/titleSafeOpacity"),
+                                  QStringLiteral("camera/actionSafeThickness"), QStringLiteral("camera/titleSafeThickness")};
+        QHash<QString, QVariant> kept;
+        for (const QString &k : keys)
+            if (sankoSettings().contains(k))
+                kept.insert(k, sankoSettings().value(k));
+        // What the sliders must open at: the saved values (50 % and 1 px unless set).
+        const int openOpacity = qBound(0, sankoSettings().value(keys.at(0), 50).toInt(), 100);
+        const int openThickness = qBound(1, sankoSettings().value(keys.at(2), 1).toInt(), 6);
+        struct Cam
+        {
+            bool four = false, kinds = false;
+            QString ranges;
+            double amber1 = -1, blue1 = -1, amber4 = -1, blue4 = -1, amberHalf = -1;
+            int savedThickness = -1, canvasThickness = -1, savedOpacity = -1, pressedTo = -1;
+        } cam;
+        const bool ran = withPreferences(QStringLiteral("Camera"), [&](QDialog *dialog, QWidget *) {
+            auto *aOp = dialog->findChild<SankoStandardSlider *>(QStringLiteral("prefsActionSafeOpacity"));
+            auto *aTh = dialog->findChild<SankoStandardSlider *>(QStringLiteral("prefsActionSafeThickness"));
+            auto *tOp = dialog->findChild<SankoStandardSlider *>(QStringLiteral("prefsTitleSafeOpacity"));
+            auto *tTh = dialog->findChild<SankoStandardSlider *>(QStringLiteral("prefsTitleSafeThickness"));
+            cam.four = aOp && aTh && tOp && tTh;
+            if (!cam.four)
+                return;
+            cam.kinds = aOp->kind() == SankoStandardSlider::Kind::Value && aTh->kind() == SankoStandardSlider::Kind::Value
+                && aOp->isVisible() && aTh->isVisible() && tOp->isVisible() && tTh->isVisible();
+            cam.ranges = QStringLiteral("%1-%2 '%3', %4-%5 '%6'").arg(aOp->minimum()).arg(aOp->maximum())
+                             .arg(aOp->valueText()).arg(aTh->minimum()).arg(aTh->maximum()).arg(aTh->valueText());
+            aOp->setValue(100);
+            tOp->setValue(100);
+            aTh->setValue(1);
+            tTh->setValue(1);
+            QCoreApplication::processEvents();
+            auto measure = [&](double *amber, double *blue) {
+                r.canvas->setSafeAreaEnabled(false);
+                r.canvas->setTitleSafeEnabled(false);
+                const QImage off = grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+                r.canvas->setSafeAreaEnabled(true);
+                r.canvas->setTitleSafeEnabled(true);
+                const QImage on = grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+                *amber = edgeThickness(on, off, amberness, 210.0);
+                *blue = edgeThickness(on, off, blueness, 178.0);
+            };
+            measure(&cam.amber1, &cam.blue1);
+            // The Action Safe's thickness pressed at 4 px, through the window system.
+            pressSlider(aTh, aTh->xForValue(4));
+            cam.pressedTo = aTh->value();
+            cam.savedThickness = sankoSettings().value(keys.at(2)).toInt();
+            cam.canvasThickness = r.canvas->actionSafeLineWidth();
+            measure(&cam.amber4, &cam.blue4);
+            aOp->setValue(50);
+            QCoreApplication::processEvents();
+            cam.savedOpacity = sankoSettings().value(keys.at(0)).toInt();
+            double unused = 0;
+            measure(&cam.amberHalf, &unused);
+        });
+        r.canvas->setSafeAreaEnabled(false);
+        r.canvas->setTitleSafeEnabled(false);
+        check(QStringLiteral("(sl2) PREFERENCES > CAMERA: for the Action Safe and the Title Safe guide, an opacity (0-100 %) and "
+                             "a line thickness (1-6 px), four standard sliders opening at the saved values; the Action "
+                             "Safe's thickness pressed at 4 is saved and drawn - its lines 4 px thick on the canvas, the "
+                             "Title Safe's still 1 - and its opacity at 50 % halves them"),
+              ran && cam.four && cam.kinds
+                  && cam.ranges == QStringLiteral("0-100 '%1%', 1-6 '%2 px'").arg(openOpacity).arg(openThickness)
+                  && cam.pressedTo == 4 && cam.savedThickness == 4 && cam.canvasThickness == 4 && cam.amber4 >= 3.4
+                  && cam.amber4 <= 4.6 && cam.blue4 >= 0.6 && cam.blue4 <= 1.5 && cam.savedOpacity == 50
+                  && cam.amberHalf >= 1.6 && cam.amberHalf <= 2.4,
+              QStringLiteral("the dialog %1, four sliders %2, standard %3 (%4); pressed to %5, saved %6, the canvas %7; "
+                             "measured lines: Action Safe %8 px, Title Safe %9 px; at 50 % (saved %10) %11 px")
+                  .arg(ran).arg(cam.four).arg(cam.kinds).arg(cam.ranges).arg(cam.pressedTo).arg(cam.savedThickness)
+                  .arg(cam.canvasThickness).arg(cam.amber4, 0, 'f', 2).arg(cam.blue4, 0, 'f', 2).arg(cam.savedOpacity)
+                  .arg(cam.amberHalf, 0, 'f', 2));
+        check(QStringLiteral("(sl2) control: the same measure at 1 px, the guides' line until now, reads 1 for both - it "
+                             "tells 1 px from 4"),
+              cam.amber1 >= 0.6 && cam.amber1 <= 1.5 && cam.blue1 >= 0.6 && cam.blue1 <= 1.5,
+              QStringLiteral("Action Safe %1 px, Title Safe %2 px").arg(cam.amber1, 0, 'f', 2).arg(cam.blue1, 0, 'f', 2));
+        for (const QString &k : keys)
+            sankoSettings().remove(k);
+        for (auto it = kept.constBegin(); it != kept.constEnd(); ++it)
+            sankoSettings().setValue(it.key(), it.value());
+        r.canvas->setActionSafeMaskOpacity(sankoSettings().value(keys.at(0), 50).toInt());
+        r.canvas->setTitleSafeMaskOpacity(sankoSettings().value(keys.at(1), 50).toInt());
+        r.canvas->setActionSafeLineWidth(sankoSettings().value(keys.at(2), 1).toInt());
+        r.canvas->setTitleSafeLineWidth(sankoSettings().value(keys.at(3), 1).toInt());
+    }
+
+    // (sl3) PREFERENCES > ONION SKIN: A HUE SLIDER FOR EACH COLOUR, THE STANDARD SLIDER FOR EACH OPACITY. And (sl7):
+    // every slider in Preferences is the standard one.
+    {
+        using SankoOnionSkin::Side;
+        SankoOnionSkin::setDefaults();
+        for (Side side : {Side::Before, Side::After}) {
+            sankoSettings().remove(SankoOnionSkin::countKey(side));
+            sankoSettings().remove(SankoOnionSkin::colorKey(side));
+            sankoSettings().remove(SankoOnionSkin::opacityKey(side));
+        }
+        struct Onion
+        {
+            QStringList beforeNames, afterNames, texts;
+            bool hueKinds = false, keptDefault = false, nothingSaved = false, customButton = true, keySwatches = false;
+            int beforeHue = -1, afterHue = -1, pressedHue = -1;
+            QString beforeSwatch, afterSwatch, afterNow, savedAfter, beforeNow;
+            int standard = -1, hues = -1, older = -1, plain = -1, olderPlanted = -1;
+        } on;
+        const bool ran = withPreferences(QStringLiteral("Onion Skin"), [&](QDialog *dialog, QWidget *page) {
+            if (!page)
+                return;
+            for (QWidget *w : page->findChildren<QWidget *>()) {
+                if (w->objectName().startsWith(QLatin1String("prefsOnionBefore")))
+                    on.beforeNames << w->objectName().mid(16);
+                if (w->objectName().startsWith(QLatin1String("prefsOnionAfter")))
+                    on.afterNames << w->objectName().mid(15);
+            }
+            on.beforeNames.sort();
+            on.afterNames.sort();
+            for (QLabel *l : page->findChildren<QLabel *>())
+                on.texts << l->text();
+            // (The counts' caption is painted by their row, not a QLabel: read from the row.)
+            for (brushlib::StudioSegmentedRow *row : page->findChildren<brushlib::StudioSegmentedRow *>())
+                on.texts << row->label();
+            on.customButton = false;
+            for (QPushButton *b : page->findChildren<QPushButton *>())
+                on.customButton = on.customButton || b->text() == QLatin1String("Custom...");
+            auto *bHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeHue"));
+            auto *aHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionAfterHue"));
+            auto *bOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeOpacity"));
+            auto *aOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionAfterOpacity"));
+            on.hueKinds = bHue && aHue && bOp && aOp && bHue->kind() == SankoStandardSlider::Kind::Hue
+                && aHue->kind() == SankoStandardSlider::Kind::Hue && bOp->kind() == SankoStandardSlider::Kind::Value
+                && aOp->kind() == SankoStandardSlider::Kind::Value;
+            // Opened, untouched: the defaults are what they were, nothing is written, the draggers on their hues.
+            on.keptDefault = SankoOnionSkin::isDefault();
+            on.nothingSaved = !sankoSettings().contains(SankoOnionSkin::colorKey(Side::Before))
+                && !sankoSettings().contains(SankoOnionSkin::colorKey(Side::After));
+            if (bHue && aHue) {
+                on.beforeHue = bHue->value();
+                on.afterHue = aHue->value();
+                on.beforeSwatch = bHue->swatch().name();
+                on.afterSwatch = aHue->swatch().name();
+                pressSlider(aHue, aHue->xForValue(120));
+                on.pressedHue = aHue->value();
+            }
+            on.afterNow = SankoOnionSkin::choice(Side::After).color.name();
+            on.savedAfter = sankoSettings().value(SankoOnionSkin::colorKey(Side::After)).toString();
+            on.beforeNow = SankoOnionSkin::choice(Side::Before).color.name();
+            // (sl7): the sliders of every page.
+            on.standard = int(dialog->findChildren<SankoStandardSlider *>().size());
+            on.hues = 0;
+            for (SankoStandardSlider *s : dialog->findChildren<SankoStandardSlider *>())
+                on.hues += s->kind() == SankoStandardSlider::Kind::Hue;
+            on.older = int(dialog->findChildren<SankoSlider *>().size());
+            on.plain = int(dialog->findChildren<QSlider *>().size());
+            // Its control: an older slider put on a page for a moment is found by the same search.
+            auto *planted = new SankoSlider(page);
+            on.olderPlanted = int(dialog->findChildren<SankoSlider *>().size());
+            delete planted;
+            on.keySwatches = dialog->findChild<QAbstractButton *>(QStringLiteral("prefsCameraKeyPurple")) != nullptr;
+        });
+        const int wantBefore = QColor(SankoOnionSkin::kBeforeDefault).hsvHue();
+        const int wantAfter = QColor(SankoOnionSkin::kAfterDefault).hsvHue();
+        bool oldWord = false;
+        for (const QString &t : on.texts)
+            oldWord = oldWord || t.contains(QLatin1String("Drawing"));
+        check(QStringLiteral("(sl3) PREFERENCES > ONION SKIN: before and after each have a count, a hue slider for the colour "
+                             "and a standard slider for the opacity, and no colour diamonds or Custom...; opened, it "
+                             "changes nothing - the default blue and orange stay, nothing is written, each dragger lies "
+                             "on its colour's hue with the colour beside it; the after hue pressed at 120 makes the "
+                             "after colour green, saved, the before colour untouched; the page says \"Frames before\", "
+                             "\"Frames after\", \"Frames shown\""),
+              ran && on.beforeNames == QStringList({QStringLiteral("Count"), QStringLiteral("Hue"), QStringLiteral("Opacity")})
+                  && on.afterNames == QStringList({QStringLiteral("Count"), QStringLiteral("Hue"), QStringLiteral("Opacity")})
+                  && on.hueKinds && !on.customButton && on.keptDefault && on.nothingSaved
+                  && on.beforeHue == wantBefore && on.afterHue == wantAfter
+                  && on.beforeSwatch == QColor(SankoOnionSkin::kBeforeDefault).name()
+                  && on.afterSwatch == QColor(SankoOnionSkin::kAfterDefault).name() && on.pressedHue == 120
+                  && on.afterNow == QLatin1String("#00ff00") && on.savedAfter == QLatin1String("#00ff00")
+                  && on.beforeNow == QColor(SankoOnionSkin::kBeforeDefault).name()
+                  && on.texts.contains(QStringLiteral("Frames before")) && on.texts.contains(QStringLiteral("Frames after"))
+                  && on.texts.contains(QStringLiteral("Frames shown")) && !oldWord,
+              QStringLiteral("the dialog %1; before [%2], after [%3]; hue kinds %4; Custom... %5; opened: default %6, nothing "
+                             "saved %7, draggers %8 / %9 (want %10 / %11), swatches %12 / %13; pressed to %14: after %15 "
+                             "(saved '%16'), before %17; texts [%18]")
+                  .arg(ran).arg(on.beforeNames.join(QLatin1Char(','))).arg(on.afterNames.join(QLatin1Char(',')))
+                  .arg(on.hueKinds).arg(on.customButton).arg(on.keptDefault).arg(on.nothingSaved).arg(on.beforeHue)
+                  .arg(on.afterHue).arg(wantBefore).arg(wantAfter).arg(on.beforeSwatch).arg(on.afterSwatch)
+                  .arg(on.pressedHue).arg(on.afterNow).arg(on.savedAfter).arg(on.beforeNow)
+                  .arg(on.texts.join(QStringLiteral(" | "))));
+        check(QStringLiteral("(sl3) control: the Keyframes page still has its colour diamonds, found by the same kind of "
+                             "search"),
+              on.keySwatches, QStringLiteral("the camera keys' Purple diamond %1").arg(on.keySwatches));
+        check(QStringLiteral("(sl7) EVERY SLIDER IN PREFERENCES IS THE STANDARD ONE: eight - the Camera page's four, the "
+                             "Onion Skin page's four, two of them hue sliders - and no older SankoSlider or QSlider"),
+              on.standard == 8 && on.hues == 2 && on.older == 0 && on.plain == 0,
+              QStringLiteral("standard %1 (hue %2); SankoSlider %3, QSlider %4").arg(on.standard).arg(on.hues).arg(on.older)
+                  .arg(on.plain));
+        check(QStringLiteral("(sl7) control: an older slider put on a page for a moment is found by the same search (one "
+                             "more than before it)"),
+              on.olderPlanted == on.older + 1, QStringLiteral("found %1, before it %2").arg(on.olderPlanted).arg(on.older));
+        SankoOnionSkin::setDefaults();
+        for (Side side : {Side::Before, Side::After}) {
+            sankoSettings().remove(SankoOnionSkin::countKey(side));
+            sankoSettings().remove(SankoOnionSkin::colorKey(side));
+            sankoSettings().remove(SankoOnionSkin::opacityKey(side));
+        }
+        r.storyboard->onionSkinSettingsChanged();
+    }
+
+    // (sl4) NO STALL WHILE A SLIDER IS DRAGGED: the work a drag asks for, counted. (a) On panel 2 with the Gull (one
+    // drawing) selected the previous panel's ghost is up: dragging the "before" opacity, then the "before" hue,
+    // flattens panel 1 no more and builds its ghost no more - the ghost is shown at each new opacity and coloured
+    // again where it lies. (b) On panel 1's Ground, drawing 2, the drawings' ghosts are up: dragging the "after"
+    // opacity and hue builds no ghost from a drawing's pixels; the ghost of drawing 3 takes the new opacity and the
+    // new colour.
+    {
+        using SankoOnionSkin::Side;
+        SankoOnionSkin::setDefaults();
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1); // the Gull: one drawing, so panel 1 is its ghost
+        goTo(1, 0);
+        if (!r.canvas->isOnionSkinEnabled())
+            keyClaimed(&r.window, Qt::Key_O);
+        pump(200);
+        const bool ghostUp = r.canvas->previousGhostShownForTest();
+        const QTransform view = r.canvas->viewTransformForTest();
+        auto tintAt = [&](const QImage &img, const QPointF &stage) {
+            const QPoint c = view.map(stage).toPoint();
+            int most = -1;
+            for (int dy = -8; dy <= 8; ++dy)
+                for (int dx = -8; dx <= 8; ++dx)
+                    if (img.valid(c + QPoint(dx, dy)))
+                        most = qMax(most, i2b::spreadOf(QColor(img.pixel(c + QPoint(dx, dy)))));
+            return most;
+        };
+        // The most tinted pixel near a stage point, and its colour.
+        auto colourAt = [&](const QImage &img, const QPointF &stage) {
+            const QPoint c = view.map(stage).toPoint();
+            QColor best;
+            int most = -1;
+            for (int dy = -8; dy <= 8; ++dy)
+                for (int dx = -8; dx <= 8; ++dx) {
+                    if (!img.valid(c + QPoint(dx, dy)))
+                        continue;
+                    const QColor px(img.pixel(c + QPoint(dx, dy)));
+                    if (i2b::spreadOf(px) > most) {
+                        most = i2b::spreadOf(px);
+                        best = px;
+                    }
+                }
+            return best;
+        };
+        const QPointF row3(240, 300); // panel 1's last frame: the Ground's drawing 3's stroke
+        struct Drag
+        {
+            int steps = 0, flat0 = -1, flat1 = -1, flat2 = -1, flat3 = -1, built0 = -1, built1 = -1, built2 = -1;
+            int panelTint30 = -1, panelTint90 = -1, opacityNow = -1, hueNow = -1;
+            QColor ghostColour;
+            // (b)
+            int b0 = -1, b1 = -1, b2 = -1, b3 = -1, rc0 = -1, rc2 = -1, opacityAfter = -1, hueAfter = -1;
+            QString ghosts0, ghosts1;
+            QColor drawingColour;
+        } d;
+        auto ghostsText = [&] {
+            QStringList s;
+            for (const DrawingCanvas::OnionGhost &g : r.canvas->drawingGhostsForTest())
+                s << QStringLiteral("%1%2@%3").arg(g.before ? QLatin1Char('b') : QLatin1Char('a')).arg(g.drawing + 1)
+                         .arg(qRound(g.opacity * 100));
+            return s.join(QLatin1Char(' '));
+        };
+        int changes = 0;
+        // (a) The previous panel's ghost.
+        const bool ranA = withPreferences(QStringLiteral("Onion Skin"), [&](QDialog *, QWidget *page) {
+            if (!page)
+                return;
+            auto *bHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeHue"));
+            auto *bOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeOpacity"));
+            auto *bCount = page->findChild<brushlib::StudioSegmentedRow *>(QStringLiteral("prefsOnionBeforeCount"));
+            if (!bHue || !bOp || !bCount)
+                return;
+            for (SankoStandardSlider *s : {bHue, bOp})
+                QObject::connect(s, &SankoStandardSlider::valueChanged, page, [&changes] { ++changes; });
+            d.flat0 = r.storyboard->onionFlattensForTest();
+            d.built0 = r.canvas->previousGhostBuildsForTest();
+            d.panelTint30 = tintAt(grabCanvas(r.canvas), row3);
+            dragSlider(bOp, bOp->xForValue(30), bOp->xForValue(90), 24);
+            d.opacityNow = SankoOnionSkin::choice(Side::Before).opacityPercent;
+            d.panelTint90 = tintAt(grabCanvas(r.canvas), row3);
+            d.flat1 = r.storyboard->onionFlattensForTest();
+            d.built1 = r.canvas->previousGhostBuildsForTest();
+            dragSlider(bHue, bHue->xForValue(0), bHue->xForValue(120), 24);
+            d.hueNow = bHue->value();
+            {
+                const QImage g = r.canvas->previousGhostForTest().convertToFormat(QImage::Format_ARGB32);
+                for (int y = 0; y < g.height() && !d.ghostColour.isValid(); y += 2)
+                    for (int x = 0; x < g.width(); x += 2)
+                        if (qAlpha(g.pixel(x, y)) > 200) {
+                            d.ghostColour = QColor(qRed(g.pixel(x, y)), qGreen(g.pixel(x, y)), qBlue(g.pixel(x, y)));
+                            break;
+                        }
+            }
+            d.flat2 = r.storyboard->onionFlattensForTest();
+            d.built2 = r.canvas->previousGhostBuildsForTest();
+            bCount->choose(2); // the control: a count asks for the ghosts again
+            QCoreApplication::processEvents();
+            d.flat3 = r.storyboard->onionFlattensForTest();
+        });
+        // (b) The drawings' ghosts, on panel 1's Ground (the dialog closed while the canvas is moved there).
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        goTo(0, 2);
+        const bool ranB = withPreferences(QStringLiteral("Onion Skin"), [&](QDialog *, QWidget *page) {
+            if (!page)
+                return;
+            auto *aHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionAfterHue"));
+            auto *aOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionAfterOpacity"));
+            auto *aCount = page->findChild<brushlib::StudioSegmentedRow *>(QStringLiteral("prefsOnionAfterCount"));
+            if (!aHue || !aOp || !aCount)
+                return;
+            for (SankoStandardSlider *s : {aHue, aOp})
+                QObject::connect(s, &SankoStandardSlider::valueChanged, page, [&changes] { ++changes; });
+            d.b0 = r.storyboard->onionBuildsForTest();
+            d.rc0 = r.storyboard->onionRecoloursForTest();
+            d.ghosts0 = ghostsText();
+            dragSlider(aOp, aOp->xForValue(30), aOp->xForValue(80), 24);
+            d.opacityAfter = SankoOnionSkin::choice(Side::After).opacityPercent;
+            d.ghosts1 = ghostsText();
+            d.b1 = r.storyboard->onionBuildsForTest();
+            dragSlider(aHue, aHue->xForValue(200), aHue->xForValue(300), 24);
+            d.hueAfter = aHue->value();
+            d.drawingColour = colourAt(grabCanvas(r.canvas), QPointF(240, 300)); // drawing 3's stroke, on row 3
+            d.b2 = r.storyboard->onionBuildsForTest();
+            d.rc2 = r.storyboard->onionRecoloursForTest();
+            aCount->choose(2); // the control again: the drawings' ghosts are built anew
+            QCoreApplication::processEvents();
+            d.b3 = r.storyboard->onionBuildsForTest();
+        });
+        const bool ran = ranA && ranB;
+        d.steps = changes;
+        const QColor wantA = QColor::fromHsv(120, 255, 255), wantB = QColor::fromHsv(d.hueAfter, 255, 255);
+        const int drawnHue = d.drawingColour.isValid() ? d.drawingColour.hsvHue() : -1;
+        check(QStringLiteral("(sl4) NO STALL WHILE A SLIDER IS DRAGGED (the work counted, not the time): (a) with panel 1's "
+                             "ghost up, dragging the before opacity from 30 to 90 % and the before hue to green "
+                             "flattens panel 1 no more and builds its ghost no more - yet the ghost shows stronger, and "
+                             "green; (b) with drawing 2's ghosts up, dragging the after opacity to 80 % and the after "
+                             "hue builds no ghost from a drawing's pixels - drawing 3's ghost takes the opacity and is "
+                             "coloured again where it lies, in the new hue on the canvas"),
+              ran && ghostUp && d.steps >= 60 && d.flat1 == d.flat0 && d.flat2 == d.flat0 && d.built1 == d.built0
+                  && d.built2 == d.built0 && d.opacityNow == 90 && d.panelTint90 > d.panelTint30 + 15 && d.hueNow == 120
+                  && d.ghostColour.isValid() && channelGap(d.ghostColour, wantA) <= 3 && d.opacityAfter == 80
+                  && d.ghosts1.contains(QLatin1String("a3@80")) && d.b1 == d.b0 && d.b2 == d.b0 && d.rc2 > d.rc0
+                  && drawnHue >= 0 && qAbs(drawnHue - wantB.hsvHue()) <= 12,
+              QStringLiteral("the dialog %1, panel 1's ghost up %2; %3 value changes in the drags; (a) flattens %4 -> %5 -> "
+                             "%6, its ghost built %7 -> %8 -> %9; opacity %10 %, the ghost's tint %11 -> %12; hue %13, "
+                             "the ghost's colour %14; (b) ghosts [%15] -> [%16] (opacity %17); built %18 -> %19 -> %20; "
+                             "coloured again %21 -> %22; hue %23 (%24), on the canvas hue %25")
+                  .arg(ran).arg(ghostUp).arg(d.steps).arg(d.flat0).arg(d.flat1).arg(d.flat2).arg(d.built0).arg(d.built1)
+                  .arg(d.built2).arg(d.opacityNow).arg(d.panelTint30).arg(d.panelTint90).arg(d.hueNow)
+                  .arg(d.ghostColour.name()).arg(d.ghosts0).arg(d.ghosts1).arg(d.opacityAfter).arg(d.b0).arg(d.b1)
+                  .arg(d.b2).arg(d.rc0).arg(d.rc2).arg(d.hueAfter).arg(wantB.name()).arg(drawnHue));
+        check(QStringLiteral("(sl4) control: the counts count - a change of a count (Frames shown) flattens panel 1 again "
+                             "on panel 2, and builds the drawings' ghosts again on panel 1"),
+              d.flat3 > d.flat2 && d.b3 > d.b2,
+              QStringLiteral("flattens %1 -> %2; ghosts built %3 -> %4").arg(d.flat2).arg(d.flat3).arg(d.b2).arg(d.b3));
+        SankoOnionSkin::setDefaults();
+        for (Side side : {Side::Before, Side::After}) {
+            sankoSettings().remove(SankoOnionSkin::countKey(side));
+            sankoSettings().remove(SankoOnionSkin::colorKey(side));
+            sankoSettings().remove(SankoOnionSkin::opacityKey(side));
+        }
+        if (r.canvas->isOnionSkinEnabled())
+            keyClaimed(&r.window, Qt::Key_O);
+        r.storyboard->onionSkinSettingsChanged();
+        pump(150);
+    }
+
+    // (sl5) "FRAME" EVERYWHERE (the user's answer 2): the bar, the Zoom to Frames tip.
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        goTo(0, 2);
+        pump(200);
+        const QString middle = r.canvas->noteBarText();
+        goTo(0, 4);
+        pump(200);
+        const QString last = r.canvas->noteBarText();
+        const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+        QAbstractButton *zoomBtn = r.timeline->zoomToFramesButtonForTest();
+        const QString zoomTip = zoomBtn ? zoomBtn->toolTip() : QString();
+        check(QStringLiteral("(sl5) \"FRAME\" EVERYWHERE: on the Ground's drawing 2 the bar says \"Ground · frame 2 of 3 · held "
+                             "2 frames\", on its last \"Ground · frame 3 of 3 · held to the panel's end\"; the Zoom to "
+                             "Frames tip says \"each frame at least 32 px wide\"; none says \"drawing\""),
+              runOk && middle.startsWith(QStringLiteral("Ground") + dot + QStringLiteral("frame 2 of 3") + dot + QStringLiteral("held 2 frames"))
+                  && last.startsWith(QStringLiteral("Ground") + dot + QStringLiteral("frame 3 of 3") + dot
+                                     + QStringLiteral("held to the panel's end"))
+                  && zoomTip.contains(QLatin1String("each frame at least 32 px wide"))
+                  && !middle.contains(QLatin1String("drawing"), Qt::CaseInsensitive)
+                  && !last.contains(QLatin1String("drawing"), Qt::CaseInsensitive)
+                  && !zoomTip.contains(QLatin1String("drawing"), Qt::CaseInsensitive),
+              QStringLiteral("the run %1; the bar '%2', then '%3'; the tip '%4'").arg(runOk).arg(middle).arg(last).arg(zoomTip));
+        r.storyboard->layerRowClickedForTest(boat);
+        pump(200);
+        const QString onBoat = r.canvas->noteBarText();
+        check(QStringLiteral("(sl5) control: the bar read is the bar now - with the Boat (one drawing) selected it names no "
+                             "frame of a run"),
+              !onBoat.contains(QLatin1String("frame 3 of 3")) && !onBoat.contains(QLatin1String("held")),
+              QStringLiteral("the bar '%1'").arg(onBoat));
+    }
+
+    // (sl6) THE FRAMES LABEL: a track's label like SCENES, SHOTS, CAMERA and AUDIO - their size, their colour, their
+    // right edge - in capitals, in the middle of the lane.
+    {
+        clickThumb(r, 0);
+        r.storyboard->layerRowClickedForTest(ground);
+        pump(250);
+        const QRect lane = r.timeline->drawingsLaneForTest();
+        const QImage img = r.surface->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        const int labelW = AnimaticTimeline::labelColumnWidthForTest();
+        const QColor columnGround(img.pixel(labelW - 4, lane.center().y()));
+        // (From x 80 - right of the + and the magnifier, and of the rows' lock and eye buttons - to the column's edge.)
+        const TextBox frames = textIn(img, QRect(80, lane.top(), labelW - 80 - 2, lane.height()), columnGround);
+        const TextBox scenes = textIn(img, QRect(80, 24, labelW - 80 - 2, 24), QColor(img.pixel(labelW - 4, 36)));
+        check(QStringLiteral("(sl6) THE FRAMES LABEL: the lane's label is set like the SCENES label - the same right edge, "
+                             "the same height (capitals of the same size), the same colour - and sits in the middle of "
+                             "the lane"),
+              runOk && frames.count > 20 && scenes.count > 20 && qAbs(frames.box.right() - scenes.box.right()) <= 1
+                  && qAbs(frames.box.height() - scenes.box.height()) <= 1 && channelGap(frames.brightest, scenes.brightest) <= 16
+                  && qAbs(frames.box.center().y() - lane.center().y()) <= 2,
+              QStringLiteral("FRAMES: %1 px in %2,%3 %4x%5, brightest %6; SCENES: %7 px in %8,%9 %10x%11, brightest %12; "
+                             "the lane %13..%14")
+                  .arg(frames.count).arg(frames.box.x()).arg(frames.box.y()).arg(frames.box.width()).arg(frames.box.height())
+                  .arg(frames.brightest.name()).arg(scenes.count).arg(scenes.box.x()).arg(scenes.box.y())
+                  .arg(scenes.box.width()).arg(scenes.box.height()).arg(scenes.brightest.name()).arg(lane.top())
+                  .arg(lane.bottom()));
+        // Control: the measure finds two labels known to be set alike - AUDIO and SCENES - alike.
+        const QRect audio = r.timeline->audioRowForTest();
+        const TextBox audioText = textIn(img, QRect(80, audio.top(), labelW - 80 - 2, audio.height()),
+                                         QColor(img.pixel(labelW - 4, audio.center().y())));
+        check(QStringLiteral("(sl6) control: the same measure reads the AUDIO label as set like the SCENES label"),
+              audioText.count > 20 && qAbs(audioText.box.right() - scenes.box.right()) <= 1
+                  && qAbs(audioText.box.height() - scenes.box.height()) <= 1
+                  && channelGap(audioText.brightest, scenes.brightest) <= 16,
+              QStringLiteral("AUDIO: %1 px in %2,%3 %4x%5, brightest %6").arg(audioText.count).arg(audioText.box.x())
+                  .arg(audioText.box.y()).arg(audioText.box.width()).arg(audioText.box.height())
+                  .arg(audioText.brightest.name()));
+    }
+
     r.window.markCleanForTest();
 }
 
@@ -43352,6 +44038,14 @@ int main(int argc, char **argv)
               << Qt::endl;
         return g_failures;
     }
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("sl")) {
+        runSlidersPass(scratch); // the sliders round (2026-11-27)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i2b")) {
         runI2bPass(scratch); // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -43667,6 +44361,7 @@ int main(int argc, char **argv)
     runI1b2Pass(scratch);         // batch I-1b round 2: layer keys' copy/cut/paste/Delete, key colours, Esc, Soft (2026-11-25)
     runI2Pass(scratch);           // batch I-2: frame-by-frame drawings in a layer (2026-11-26)
     runI2bPass(scratch);          // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
+    runSlidersPass(scratch);      // the sliders round: Preferences' sliders, "frame", FRAMES (2026-11-27)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

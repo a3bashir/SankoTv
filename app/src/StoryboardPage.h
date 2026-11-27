@@ -191,6 +191,9 @@ public:
     // forwarded live to the drawing canvas.
     void setActionSafeMaskOpacity(int percent);
     void setTitleSafeMaskOpacity(int percent);
+    // ...and their lines' thickness in screen pixels (2026-11-27).
+    void setActionSafeLineWidth(int px);
+    void setTitleSafeLineWidth(int px);
 
     // Edit-menu entry points: route to the CANVAS selection clipboard when a
     // selection exists (copy/cut) or the last copy came from the canvas
@@ -671,8 +674,22 @@ public:
     // The drawing under the playhead onto every layer with a run of the panel on the canvas:
     // true when a layer changed drawing. Nothing is copied; the drawings left fold at rest.
     bool showDrawingsAtPlayhead();
-    // Edit > Preferences > Onion Skin changed: the ghosts are made again.
-    void onionSkinSettingsChanged();
+    // Edit > Preferences > Onion Skin changed. WHAT changed decides the work (2026-11-27, the
+    // user's word after hand test I2-1: the sliders "with no stalls while I drag" - a drag of
+    // an opacity had flattened the previous panel and tinted every ghost again at each step):
+    //   Opacity    - nothing is built. The drawings' ghosts are the pictures already held, at
+    //                their new opacities; the previous panel's reads its own when painted.
+    //   Color      - the ghosts that are up are coloured again where they lie (their alpha
+    //                kept): no panel is flattened, no drawing's pixels are read.
+    //   Everything - a count, or the defaults: the panels are asked again, as before.
+    enum class OnionChange { Opacity, Color, Everything };
+    void onionSkinSettingsChanged(OnionChange what = OnionChange::Everything);
+    // The checks': since the page was made, how many times a previous panel was flattened for
+    // its ghost, how many ghosts of drawings were built from their pixels, and how many were
+    // coloured again where they lay.
+    int onionFlattensForTest() const { return m_onionFlattens; }
+    int onionBuildsForTest() const { return m_onionBuilds; }
+    int onionRecoloursForTest() const { return m_onionRecolours; }
     // Everything that shows a layer's motion, after a key or the playhead moved.
     void refreshLayerMotionUi();
     // The Dev Recorder's layerMotion event for a step just made on `layerIndex` of `panel`.
@@ -960,10 +977,14 @@ private:
         QRgb tint = 0;
         QPixmap pixmap;
         quint64 used = 0;
+        bool before = true; // the side it was last made or asked for
     };
     QVector<GhostEntry> m_ghostCache;
     quint64 m_ghostClock = 0;
-    QPixmap drawingGhostFor(const LayerPixels &px, const QColor &tint);
+    QPixmap drawingGhostFor(const LayerPixels &px, const QColor &tint, bool before);
+    int m_onionFlattens = 0;
+    int m_onionBuilds = 0;
+    int m_onionRecolours = 0;
     // The selected key, if it is still there.
     bool focusedLayerKey(Panel **panel, int *flat, int *layer, int *key) const;
     // The copied key: as it was (its time is not used), and where its move put the art's centre

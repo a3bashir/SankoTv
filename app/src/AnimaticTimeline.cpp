@@ -745,7 +745,7 @@ void AnimaticTimeline::buildTrackControls()
     m_zoomFramesButton->setCursor(Qt::PointingHandCursor);
     m_zoomFramesButton->setFocusPolicy(Qt::NoFocus);
     m_zoomFramesButton->setFixedSize(20, 20);
-    m_zoomFramesButton->setToolTip(QStringLiteral("Zoom to Frames: each drawing at least 32 px wide, the playhead "
+    m_zoomFramesButton->setToolTip(QStringLiteral("Zoom to Frames: each frame at least 32 px wide, the playhead "
                                                   "in the middle. A double-click on the lane does the same."));
     {
         const qreal dpr = devicePixelRatioF();
@@ -3005,13 +3005,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const QRect r(left, layerTrackY(), kLabelColW - 15 - left, kLayerRowH);
             p.drawText(r, Qt::AlignVCenter | Qt::AlignRight,
                        QFontMetrics(f).elidedText(layerRowLabel(), Qt::ElideRight, r.width()));
-            // The drawings lane's own small label, under the layer's name.
+            // The lane's own label: FRAMES, a track's label like SCENES, SHOTS, CAMERA and AUDIO -
+            // their font, their colour, their right edge (the user's word, 2026-11-27; until
+            // then a small dimmer "drawings").
             if (m_layerRowRun) {
-                p.setPen(QColor(0x8a, 0x8c, 0x99));
                 // (After the + and Zoom to Frames: 4 + 20 + 3 + 20, and 3 px.)
                 p.drawText(QRect(50, layerTrackY() + kDrawingsLaneY, kLabelColW - 15 - 50, kDrawingsLaneH),
-                           Qt::AlignVCenter | Qt::AlignRight, QStringLiteral("drawings"));
-                p.setPen(kTrackLabel);
+                           Qt::AlignVCenter | Qt::AlignRight, QStringLiteral("FRAMES"));
             }
         }
 
@@ -4952,8 +4952,8 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         // The chip: the drawing the cut ends, and how long it is shown now.
         const int length = m_cutDragFrame - counted.drawingStart(m_cutDragDrawing - 1);
         followChip(e->globalPosition().toPoint(),
-                   QStringLiteral("drawing %1  ").arg(m_cutDragDrawing) + QChar(0x00B7)
-                       + (length == 1 ? QStringLiteral("  1 frame") : QStringLiteral("  %1 frames").arg(length)));
+                   QStringLiteral("frame %1  ").arg(m_cutDragDrawing) + QChar(0x00B7)
+                       + (length == 1 ? QStringLiteral("  held 1 frame") : QStringLiteral("  held %1 frames").arg(length)));
         return;
     }
 

@@ -1,15 +1,13 @@
 #pragma once
 
-#include "SankoKeyColors.h"
-
 #include <QColor>
 #include <QString>
-#include <QVector>
 
 // THE ONION SKIN'S SETTINGS (batch I-2, 2026-11-26; the user's answer 5, Figma I-2 727:757
 // sections 3 and 3b): Edit > Preferences > Onion Skin. For the drawings BEFORE the one on the
 // canvas and for the drawings AFTER it, each on its own: how many are shown (0 to 3; 0: none on
-// that side), the ghost's colour (a preset, or Custom... with the SankoTV colour picker) and its
+// that side), the ghost's colour (since 2026-11-27 a hue slider, as the Perspective tool's
+// guides have - the hue at full strength; until then eight presets and Custom...) and its
 // opacity. A setting of SankoTV on this computer (sankoSettings, "onionSkin/..."), never in the
 // project file.
 //
@@ -101,32 +99,15 @@ inline double opacityAt(Side side, int distance)
     return o;
 }
 
-// The presets, as drawn in I-2 section 3b: the onion skin's own blue first, then seven - the key
-// colours' (SankoKeyColors) where they are the same hue, and the Light Table's red.
-struct Preset
-{
-    QString name;
-    QColor color;
-};
-inline QVector<Preset> presets()
-{
-    QVector<Preset> out{{QStringLiteral("Blue"), kBeforeDefault}};
-    for (const SankoKeyColors::Preset &p : SankoKeyColors::presets())
-        if (p.name != QLatin1String("Blue") && p.name != QLatin1String("White"))
-            out.append({p.name, p.color});
-    out.append({QStringLiteral("Red"), QColor(0xff, 0x4d, 0x4d)});
-    return out;
-}
-
 inline QString sideName(Side side)
 {
     return side == Side::Before ? QStringLiteral("before") : QStringLiteral("after");
 }
 
-// The settings' keys (sankoSettings): onionSkin/<before|after><Count|Color|Opacity|Custom>.
+// The settings' keys (sankoSettings): onionSkin/<before|after><Count|Color|Opacity>.
+// (...Custom, the colour Custom... had last picked, is no longer written or read: 2026-11-27.)
 inline QString countKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Count"); }
 inline QString colorKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Color"); }
 inline QString opacityKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Opacity"); }
-inline QString customKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Custom"); }
 
 } // namespace SankoOnionSkin
