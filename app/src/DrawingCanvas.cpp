@@ -2,6 +2,7 @@
 #include "SankoSettings.h"
 #include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "SankoOnionSkin.h" // the onion skin's counts, colours and opacities (batch I-2)
+#include "SankoLightTable.h" // the Light Table's colours and opacities (OS-1)
 #include "DrawingCanvas.h"
 
 #include "StageMarginDialog.h" // stagemargin::kMaxSide
@@ -72,31 +73,11 @@
 
 namespace {
 
-// Build a display-only ghost: previous strokes become semi-transparent blue
-// (#4d9fff) and the white paper becomes fully transparent, so compositing it
-// over the current panel shows a faint blue ghost without washing the canvas.
-// (`tint`: the onion skin's "before" colour - that blue unless Preferences > Onion Skin
-// says another, batch I-2.)
-QPixmap buildGhost(const QPixmap &previous, const QColor &tint)
-{
-    if (previous.isNull())
-        return QPixmap();
-    QImage img = previous.toImage().convertToFormat(QImage::Format_ARGB32);
-    const int w = img.width();
-    const int h = img.height();
-    const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
-    for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-        for (int x = 0; x < w; ++x) {
-            const int alpha = 255 - qGray(line[x]); // dark strokes opaque, white clear
-            line[x] = qRgba(tr, tg, tb, alpha);
-        }
-    }
-    return QPixmap::fromImage(img);
-}
+// (buildGhost, the onion skin's ghost of the previous panel, went with OS-1, 2026-11-27: the
+// panels are the Light Table's.)
 
-// Light-table ghost: like buildGhost but with an arbitrary tint — the panel's
-// dark art becomes `tint` (alpha by darkness), white paper becomes transparent.
+// Light-table ghost: the panel's dark art becomes `tint` (alpha by darkness), white paper
+// becomes transparent.
 QPixmap buildTintedGhost(const QPixmap &flattened, const QColor &tint)
 {
     if (flattened.isNull())
@@ -1132,16 +1113,6 @@ void DrawingCanvas::setOnionSkinEnabled(bool enabled)
     update();
 }
 
-void DrawingCanvas::setPreviousPixmap(const QPixmap &previous, const QRect &onStage)
-{
-    m_ghostSource = previous;
-    if (!previous.isNull())
-        ++m_ghostBuilds;
-    m_ghost = buildGhost(previous, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color); // null pixmap -> empty ghost
-    m_ghostRect = onStage;
-    update();
-}
-
 // --- THE DRAWINGS BEFORE AND AFTER (batch I-2) -----------------------------------------------
 
 void DrawingCanvas::setDrawingGhosts(const QVector<OnionGhost> &ghosts)
@@ -1173,14 +1144,6 @@ QPixmap DrawingCanvas::drawingGhost(const QImage &pixels, const QColor &tint)
     return QPixmap::fromImage(img);
 }
 
-void DrawingCanvas::refreshOnionColors()
-{
-    if (!m_ghostSource.isNull())
-        ++m_ghostBuilds;
-    m_ghost = buildGhost(m_ghostSource, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color);
-    update();
-}
-
 void DrawingCanvas::recolourGhost(QPixmap &ghost, const QColor &tint)
 {
     if (ghost.isNull())
@@ -1188,12 +1151,6 @@ void DrawingCanvas::recolourGhost(QPixmap &ghost, const QColor &tint)
     QPainter p(&ghost);
     p.setCompositionMode(QPainter::CompositionMode_SourceIn); // the colour in, the alpha kept
     p.fillRect(ghost.rect(), QColor(tint.rgb()));
-}
-
-void DrawingCanvas::recolourPreviousGhost()
-{
-    recolourGhost(m_ghost, SankoOnionSkin::choice(SankoOnionSkin::Side::Before).color);
-    update();
 }
 
 QString DrawingCanvas::shownDrawingIdOf(const Panel *panel, const QString &layerId) const
@@ -1266,24 +1223,38 @@ void DrawingCanvas::setLightTableEnabled(bool enabled)
 void DrawingCanvas::setLightTablePixmaps(const QPixmap &previous, const QPixmap &next,
                                          const QRect &previousOnStage, const QRect &nextOnStage)
 {
-    m_ltPrevGhost = buildTintedGhost(previous, QColor(0xff, 0x4d, 0x4d)); // red = previous
-    m_ltNextGhost = buildTintedGhost(next, QColor(0x4d, 0xff, 0x91));     // green = next
+    using SankoLightTable::Side;
+    m_ltPrevGhost = buildTintedGhost(previous, SankoLightTable::choice(Side::Before).color); // red by default
+    m_ltNextGhost = buildTintedGhost(next, SankoLightTable::choice(Side::After).color);     // green by default
+    m_ltBuilds += int(!previous.isNull()) + int(!next.isNull());
     m_ltPrevRect = previousOnStage;
     m_ltNextRect = nextOnStage;
     update();
 }
 
-// Draw the neighbour ghosts at 35% each (previous red under next green), by the
-// frame on a panel with another stage and no further than this stage (batch 6c).
+void DrawingCanvas::recolourLightTable()
+{
+    recolourGhost(m_ltPrevGhost, SankoLightTable::choice(SankoLightTable::Side::Before).color);
+    recolourGhost(m_ltNextGhost, SankoLightTable::choice(SankoLightTable::Side::After).color);
+    update();
+}
+
+// Draw the neighbour ghosts (previous under next), each at its opacity - 35 % unless
+// Preferences > Light Table says another - by the frame on a panel with another stage and no
+// further than this stage (batch 6c).
 void DrawingCanvas::drawLightTable(QPainter &painter, const QRect &d) const
 {
+    using SankoLightTable::Side;
     painter.save();
     painter.setClipRect(d, Qt::IntersectClip);
-    painter.setOpacity(0.35);
-    if (!m_ltPrevGhost.isNull())
+    if (!m_ltPrevGhost.isNull()) {
+        painter.setOpacity(SankoLightTable::opacity(Side::Before));
         painter.drawPixmap(m_ltPrevRect.isEmpty() ? d : m_ltPrevRect.translated(d.topLeft()), m_ltPrevGhost);
-    if (!m_ltNextGhost.isNull())
+    }
+    if (!m_ltNextGhost.isNull()) {
+        painter.setOpacity(SankoLightTable::opacity(Side::After));
         painter.drawPixmap(m_ltNextRect.isEmpty() ? d : m_ltNextRect.translated(d.topLeft()), m_ltNextGhost);
+    }
     painter.setOpacity(1.0);
     painter.restore();
 }
@@ -3815,10 +3786,9 @@ void DrawingCanvas::resetViewForNewProject()
     m_panOffset = QPointF(0, 0);
     m_viewRotation = 0.0;
     m_viewFlipH = false;
-    // Per-drawing aids: carrying these into a different project is the same
-    // surprise as carrying the zoom.
-    m_onionSkin = false;
-    m_lightTable = false;
+    // (The onion skin and the light table were turned off here until OS-1, 2026-11-27: their
+    // switches are settings of SankoTV on this computer now, remembered after a restart and
+    // never in a project - the user's answer C - so another project keeps them as they are.)
     syncViewToolbar();
     emit viewZoomChanged(m_zoom);
     update();
@@ -9285,19 +9255,9 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     }
     painter.setOpacity(1.0);
 
-    // Onion skin: faint blue ghost of the previous panel (display only). Its colour and its
-    // opacity are the onion skin's "before" (the blue at 30 % unless Preferences says another).
-    if (m_onionSkin && !m_ghost.isNull()) {
-        painter.save();
-        painter.setClipRect(canvasRi, Qt::IntersectClip); // by the frame (batch 6c)
-        painter.setOpacity(SankoOnionSkin::opacityAt(SankoOnionSkin::Side::Before, 1));
-        painter.drawPixmap(m_ghostRect.isEmpty() ? canvasRi : m_ghostRect.translated(canvasRi.topLeft()),
-                           m_ghost);
-        painter.setOpacity(1.0);
-        painter.restore();
-    }
-    // ...and, on a layer with a run of drawings, its drawings before and after the one under
-    // the playhead (batch I-2), in the order the page gave them.
+    // The onion skin: on a layer with a run of drawings, its drawings before and after the one
+    // under the playhead (batch I-2), in the order the page gave them. (The previous panel's
+    // ghost that was painted here first went with OS-1, 2026-11-27: the Light Table's now.)
     if (m_onionSkin && !m_drawingGhosts.isEmpty() && !poseMode()) {
         painter.save();
         painter.setClipRect(canvasRi, Qt::IntersectClip);

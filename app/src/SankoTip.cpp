@@ -26,6 +26,9 @@ SankoTipFrame::SankoTipFrame(QWidget *parent)
     m_label->setStyleSheet(QStringLiteral("color: #cccccc; font-size: 11px; background: transparent;"));
     auto *layout = new QHBoxLayout(this);
     layout->setContentsMargins(10, 6, 10, 6);
+    // The layout places the label and asks nothing of the window: the frame's size is set in
+    // one step by setTipText (OS-1, 2026-11-27).
+    layout->setSizeConstraint(QLayout::SetNoConstraint);
     layout->addWidget(m_label);
     m_fade = new QPropertyAnimation(this, "windowOpacity", this);
     m_fade->setDuration(kFadeMs);
@@ -38,11 +41,23 @@ void SankoTipFrame::setTipText(const QString &text, Qt::TextFormat format)
     m_label->setMinimumWidth(0);
     m_label->setMaximumWidth(QWIDGETSIZE_MAX);
     m_label->setText(text);
-    if (m_label->sizeHint().width() > kMaxWidth) {
+    ensurePolished(); // the label's sheet (11 px) applied before it is measured, as adjustSize did
+    QSize labelSize = m_label->sizeHint();
+    if (labelSize.width() > kMaxWidth) {
         m_label->setWordWrap(true);
         m_label->setFixedWidth(kMaxWidth);
+        labelSize = QSize(kMaxWidth, m_label->heightForWidth(kMaxWidth));
     }
-    adjustSize();
+    // THE FRAME'S NEW SIZE IN ONE STEP (OS-1, 2026-11-27; the user's word after hand test SL:
+    // "fix the Qt warning when the Zoom to Frames tooltip opens"). Hand test I2-2 logged twice
+    // "QWindowsWindow::setGeometry: Unable to set geometry 500x27 ... Resulting geometry:
+    // 500x42" - each time the frame was up with one line ("New Frame (N)", the + beside it) and
+    // was given the Zoom to Frames tip, which wraps: the label's new width made the layout set
+    // the window's least size to 500 x 27 and Windows resized the window to that, one line's
+    // height, before the wrapped text's 42. Now the layout sets nothing on the window
+    // (SetNoConstraint) and the size is worked out here first: the label's, wrapped or not,
+    // with the padding round it - and set once.
+    resize(labelSize.grownBy(layout()->contentsMargins()));
 }
 
 QString SankoTipFrame::tipText() const

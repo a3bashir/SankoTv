@@ -18,10 +18,13 @@
 //
 // WHAT TAKES THEM: on a layer with a run of drawings, the ghosts of that layer's drawings
 // before and after the one under the playhead - the nearest at the opacity set, each one
-// further away at kFalloff of the one before it. The "before" colour and opacity are also the
-// previous PANEL's ghost: on a run's first drawing, and on a layer with a single drawing, where
-// it is what the onion skin showed before I-2. The Light Table (previous panel red, next green)
-// is another thing and is not set here. The O key switches the onion skin on and off.
+// further away at kFalloff of the one before it. Only the selected layer's frames, never a
+// panel (OS-1, 2026-11-27, the user's word: "Light Table for panels, Onion Skin for animation
+// frames, each with its own switch"): on a run's first frame there is nothing before it, and a
+// layer with one frame has nothing for the onion skin. (Until then the "before" colour was also
+// the previous panel's ghost there.) The panels are the Light Table's (SankoLightTable.h). The
+// O key, the LAYER row's Onion Skin button and View > Onion Skin switch it on and off; the
+// switch is remembered on this computer (switchKey), never in the project.
 namespace SankoOnionSkin {
 
 enum class Side { Before, After };
@@ -109,5 +112,6 @@ inline QString sideName(Side side)
 inline QString countKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Count"); }
 inline QString colorKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Color"); }
 inline QString opacityKey(Side side) { return QStringLiteral("onionSkin/") + sideName(side) + QStringLiteral("Opacity"); }
+inline QString switchKey() { return QStringLiteral("onionSkin/on"); }
 
 } // namespace SankoOnionSkin

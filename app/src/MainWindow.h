@@ -398,6 +398,10 @@ private:
     void onSaveProject();
     void onSaveProjectAs();
     void onPreferences(); // Edit > Preferences... (category list + settings pane)
+    // Preferences opened at one page ("Light Table", "Onion Skin"): a right-click on either
+    // switch's button (OS-1, the user's answer 3 B).
+    void openPreferencesAt(const QString &page);
+    QString m_prefsStartPage; // the page onPreferences opens at; empty: the first
     // File > Project Settings... — settings of the CURRENTLY OPEN project
     // (name, frame rate; canvas facts read-only). Pending until Apply/OK.
     // Unsaved-changes bookkeeping. markDirty() is deliberately cheap and
@@ -716,7 +720,8 @@ private:
     // Preferences > Keyframes (batch I-1b round 2): the keys' colours from the settings, at start.
     void loadKeyColors();
     // Preferences > Onion Skin (batch I-2): how many drawings before and after, their colours
-    // and opacities, from the settings, at start.
+    // and opacities, from the settings, at start - and Preferences > Light Table's colours and
+    // opacities (OS-1).
     void loadOnionSkin();
     QAction *m_flipHAct = nullptr; // batch D: Edit > Flip Horizontal / Vertical (the Move box)
     QAction *m_flipVAct = nullptr;

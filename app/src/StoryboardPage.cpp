@@ -10,6 +10,7 @@
 #include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "SankoNoteStyle.h" // sankoGreyWithReason
 #include "SankoOnionSkin.h" // the onion skin's counts, colours and opacities (batch I-2)
+#include "SankoLightTable.h" // the Light Table's colours, opacities, switch and icon (OS-1)
 #include "SankoScrollBarStyle.h"
 #include "SankoTip.h"       // the Brush bar's tip look, shared by every tooltip
 #include "SankoTimelineTheme.h"
@@ -2952,13 +2953,16 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         }
     });
 
-    // 'O' toggles onion skin (the extras-bar button is gone; the shortcut
-    // drives the canvas state directly).
+    // 'O' toggles the onion skin - the selected layer's frames (OS-1: and the LAYER row's
+    // button, and View > Onion Skin). SHIFT+L the Light Table - the panels before and after
+    // (OS-1, the user's answer 2; L alone is the Lasso). A key in a text field types.
     QShortcut *onionShortcut = new QShortcut(QKeySequence(Qt::Key_O), this);
     connect(onionShortcut, &QShortcut::activated, this, [this] {
-        m_canvas->setOnionSkinEnabled(!m_canvas->isOnionSkinEnabled());
-        updateOnionGhost();
+        setOnionSkinOn(!m_canvas->isOnionSkinEnabled());
     });
+    QShortcut *lightTableShortcut = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_L), this);
+    lightTableShortcut->setAutoRepeat(false);
+    connect(lightTableShortcut, &QShortcut::activated, this, [this] { setLightTableOn(!isLightTableOn()); });
 
     // THE TOOL AND SIZE KEYS (batch C, Photoshop's; the user's choice of 2026-11-10):
     // B E G V L, and [ ] for the size. M is made with the timeline's keys (it also marks
@@ -3027,6 +3031,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // the sequence ambiguous and silently break both.)
 
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
+    restoreGhostSwitches();  // the Onion Skin and the Light Table as last left on this computer (OS-1)
 }
 
 // Layout is persisted ONLY here and on app close (aboutToQuit) — never on
@@ -3261,6 +3266,28 @@ void StoryboardPage::installDockViewActions()
     connect(gridAction, &QAction::toggled, this, [this](bool on) {
         if (m_canvas)
             m_canvas->setGridEnabled(on);
+    });
+
+    // THE TWO SWITCHES (OS-1, Figma 745:757 section 3): ticked while on, each with its key
+    // beside it - the page's own shortcuts, shown here and not made twice - so each can be
+    // found without knowing its key or its button.
+    QAction *lightTableAct = viewMenu->addAction(QStringLiteral("Light Table\tShift+L"));
+    lightTableAct->setObjectName(QStringLiteral("viewLightTable"));
+    lightTableAct->setCheckable(true);
+    lightTableAct->setChecked(isLightTableOn());
+    connect(lightTableAct, &QAction::triggered, this, [this](bool on) { setLightTableOn(on); });
+    connect(this, &StoryboardPage::lightTableSwitched, lightTableAct, [lightTableAct](bool on) {
+        const QSignalBlocker quiet(lightTableAct);
+        lightTableAct->setChecked(on);
+    });
+    QAction *onionAct = viewMenu->addAction(QStringLiteral("Onion Skin\tO"));
+    onionAct->setObjectName(QStringLiteral("viewOnionSkin"));
+    onionAct->setCheckable(true);
+    onionAct->setChecked(m_canvas && m_canvas->isOnionSkinEnabled());
+    connect(onionAct, &QAction::triggered, this, [this](bool on) { setOnionSkinOn(on); });
+    connect(this, &StoryboardPage::onionSkinSwitched, onionAct, [onionAct](bool on) {
+        const QSignalBlocker quiet(onionAct);
+        onionAct->setChecked(on);
     });
 
     // Layout commands: explicit save/restore plus the escape hatch that
@@ -9349,7 +9376,11 @@ QPixmap StoryboardPage::stripIconPixmap(const QString &svg,
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QSvgRenderer renderer(svg);
+    QSvgRenderer renderer;
+    if (svg == SankoLightTable::kIconPath)
+        renderer.load(SankoLightTable::whiteIconSvg()); // the Light Table's icon in white (OS-1)
+    else
+        renderer.load(svg);
     renderer.render(&p, QRectF(0, 0, bw, bh));
     p.end();
     m_stripIconCache.insert(key, pm);
@@ -9866,6 +9897,13 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     // and it is the selected thing on the row (Del deletes it) until a press anywhere else; a
     // cut dragged; the lane's menu. Each edit is made here, as the keys' are.
     connect(m_animatic, &AnimaticPage::newDrawingRequested, this, [this] { newDrawing(false); });
+    // THE ONION SKIN'S BUTTON on the LAYER row (OS-1): a click switches it, a right-click opens
+    // Preferences > Onion Skin.
+    if (AnimaticTimeline *timeline = m_animatic->timeline()) {
+        connect(timeline, &AnimaticTimeline::onionSkinButtonClicked, this, [this](bool on) { setOnionSkinOn(on); });
+        connect(timeline, &AnimaticTimeline::onionSkinPageRequested, this,
+                [this] { emit preferencesPageRequested(QStringLiteral("Onion Skin")); });
+    }
     connect(m_animatic, &AnimaticPage::drawingBlockPressed, this, [this](int layer, int drawing) {
         goToDrawing(layer, drawing);
         setLayerKeyFocus(true, currentFlatIndex(), layer, -1, drawing);
@@ -11685,29 +11723,110 @@ void StoryboardPage::updateOnionGhost()
 {
     if (!m_canvas)
         return;
-    Scene *scene = currentScene();
-    // THE PREVIOUS PANEL'S GHOST (the onion skin as it was before I-2) shows for a layer with
-    // one drawing, and on the FIRST drawing of a run - where no drawing is before it (the
-    // user's answer 5: "On a run's first drawing: the previous panel's drawing as a ghost, as
-    // today"). On a run's later drawings the ghosts are that layer's drawings before and after
-    // (updateDrawingGhosts). It is the "before" side: none when Preferences shows 0 before.
-    const bool show = m_canvas->isOnionSkinEnabled() && scene
-        && m_currentPanel > 0 && m_currentPanel < scene->panels.size() && panelGhostWanted();
-    m_panelGhostShown = panelGhostWanted();
+    // ONLY THE SELECTED LAYER'S FRAMES (OS-1, 2026-11-27; the user's word: "Light Table for
+    // panels, Onion Skin for animation frames, each with its own switch"): the frames before
+    // and after on its run (updateDrawingGhosts) - on a run's first frame nothing before it, on
+    // a layer with one frame nothing at all. The previous panel's ghost that showed there
+    // since before I-2 is the Light Table's now (updateLightTable), as it ends.
     updateDrawingGhosts();
-    if (m_animatic) // the LAYER row's blocks take the onion skin's colours while it is on
+    if (m_animatic) // the LAYER row's blocks take the onion skin's colours while it is on, its button lit
         m_animatic->setOnionSkinShown(m_canvas->isOnionSkinEnabled());
-    if (show) {
-        // ITS LAST FRAME (the user's answer 2 to hand test I2-1, 2026-11-26): what was on screen
-        // just before the cut - each run's last exposed drawing, each moving layer where its keys
-        // leave it - not the panel's first frame, which the strip and the SHOTS clips show.
-        const Panel *previous = scene->panels.at(m_currentPanel - 1);
-        ++m_onionFlattens;
-        m_canvas->setPreviousPixmap(previous->flattenedPixmap(lastPlaceOf(previous)),
-                                    neighbourOnStage(scene->panels.at(m_currentPanel), previous));
-    } else {
-        m_canvas->setPreviousPixmap(QPixmap()); // clears the ghost
+}
+
+// --- THE TWO SWITCHES (OS-1, 2026-11-27) ------------------------------------------------------
+// The user's answers after hand test SL: the Light Table shows both sides (the panel before as
+// it ends, in red; the panel after as it begins, in green); Shift+L switches it and O stays the
+// Onion Skin's; a right-click on either button opens its page of Preferences; both switches
+// are remembered after a restart, on this computer, never in the project; neither turns the
+// other off; O on a layer with one frame says so in the bar, in grey.
+void StoryboardPage::setOnionSkinOn(bool on)
+{
+    if (!m_canvas)
+        return;
+    const bool changed = m_canvas->isOnionSkinEnabled() != on;
+    m_canvas->setOnionSkinEnabled(on);
+    updateOnionGhost();
+    sankoSettings().setValue(SankoOnionSkin::switchKey(), on);
+    emit onionSkinSwitched(on);
+    if (changed)
+        sayOnionSkinSwitched(on);
+}
+
+bool StoryboardPage::isLightTableOn() const
+{
+    return m_canvas && m_canvas->isLightTableEnabled();
+}
+
+void StoryboardPage::setLightTableOn(bool on)
+{
+    if (!m_canvas)
+        return;
+    const bool changed = m_canvas->isLightTableEnabled() != on;
+    m_canvas->setLightTableEnabled(on);
+    if (m_lightTableButton && m_lightTableButton->isChecked() != on) {
+        const QSignalBlocker quiet(m_lightTableButton);
+        m_lightTableButton->setChecked(on);
     }
+    updateLightTable();
+    sankoSettings().setValue(SankoLightTable::switchKey(), on);
+    emit lightTableSwitched(on);
+    if (changed)
+        sayLightTableSwitched(on);
+}
+
+void StoryboardPage::sayOnionSkinSwitched(bool on)
+{
+    if (!on) {
+        sayNote(QStringLiteral("Onion Skin off"));
+        return;
+    }
+    const Panel *panel = currentPanel();
+    const Layer *layer = panel ? panel->activeLayer() : nullptr;
+    if (!layer || isGroupLayer(*layer)) {
+        sayNote(QStringLiteral("Onion Skin on: choose a layer with frames to see its frames before and after"));
+        return;
+    }
+    // (answer 4) "O on a layer with one frame: a grey note in the bar, such as 'Bird has one
+    // frame: nothing for the onion skin'".
+    if (!panel->layerHasRun(*layer)) {
+        sayNote(QStringLiteral("Onion Skin on. %1 has one frame: nothing for the onion skin").arg(layer->name));
+        return;
+    }
+    sayNote(QStringLiteral("Onion Skin on: %1's frames before and after").arg(layer->name));
+}
+
+void StoryboardPage::sayLightTableSwitched(bool on)
+{
+    sayNote(on ? QStringLiteral("Light Table on: the panels before and after") : QStringLiteral("Light Table off"));
+}
+
+void StoryboardPage::restoreGhostSwitches()
+{
+    if (!m_canvas)
+        return;
+    const bool onion = sankoSettings().value(SankoOnionSkin::switchKey(), false).toBool();
+    const bool light = sankoSettings().value(SankoLightTable::switchKey(), false).toBool();
+    m_canvas->setOnionSkinEnabled(onion);
+    m_canvas->setLightTableEnabled(light);
+    if (m_lightTableButton) {
+        const QSignalBlocker quiet(m_lightTableButton);
+        m_lightTableButton->setChecked(light);
+    }
+    updateOnionGhost();
+    updateLightTable();
+    emit onionSkinSwitched(onion);
+    emit lightTableSwitched(light);
+}
+
+void StoryboardPage::lightTableSettingsChanged(LightTableChange what)
+{
+    if (!m_canvas)
+        return;
+    if (what == LightTableChange::Opacity) {
+        m_canvas->update(); // the ghosts read their opacities when painted
+        return;
+    }
+    m_canvas->recolourLightTable(); // a colour, or the defaults: coloured again where they lie
 }
 
 // --- App-wide undo plumbing ---------------------------------------------------
@@ -11829,12 +11948,13 @@ void StoryboardPage::applyPanelDurationForUndo(Panel *panel, int frames, int rat
             pinnedHere = pinnedHere || key.pinned;
     if (scene && ((scene->panels.contains(panel) && !scene->camera.isEmpty()) || pinnedHere))
         refreshCameraViews(scene);
-    // The onion skin's ghost is the panel before's LAST frame (2026-11-26): a new length
-    // exposes another drawing there, a run's drawings keeping their frames.
-    if (scene && m_canvas && m_canvas->isOnionSkinEnabled() && m_currentPanel > 0
+    // The Light Table's panel before is that panel's LAST frame (2026-11-26 the onion skin's,
+    // OS-1 the Light Table's): a new length exposes another drawing there, a run's drawings
+    // keeping their frames.
+    if (scene && m_canvas && m_canvas->isLightTableEnabled() && m_currentPanel > 0
         && m_currentPanel < scene->panels.size() && scene->panels.at(m_currentPanel - 1) == panel
         && panel->changesOverTime())
-        updateOnionGhost();
+        updateLightTable();
 }
 
 void StoryboardPage::addPanelToScene(int sceneIndex)
@@ -13286,19 +13406,25 @@ QWidget *StoryboardPage::createPanelControls()
     connect(m_dupPanelButton, &QPushButton::clicked, this, [this] { duplicatePanel(); });
     layout->addWidget(m_dupPanelButton);
 
-    // Light Table — checkable toggle; amber border marks the ON state.
+    // Light Table — checkable toggle. ON (OS-1, 2026-11-27, the user's word after hand test SL
+    // and their Figma 749:892): the purple border and the purple background (the accent at
+    // 28 %), as the LAYER row's Onion Skin button; the icon white, nothing added.
     m_lightTableButton = ctrlButton(
-        QStringLiteral(":/icons/lighttable.svg"), QSize(14, 21), QStringLiteral("#111111"),
-        QStringLiteral("<b>Light Table</b> | Ghost neighbouring panels behind the current "
-                       "one (previous red, next green)."),
+        SankoLightTable::kIconPath, QSize(14, 21), QStringLiteral("#111111"),
+        QStringLiteral("<b>Light Table (Shift+L)</b> | The panels before and after this one, under your "
+                       "drawing: the previous panel as it ends, in red; the next as it begins, in green. "
+                       "Right-click: its Preferences. A layer's frames are the Onion Skin's (O)."),
         SankoTheme::themed("QPushButton:hover { border-color: #3a3a3a; }"
-                       "QPushButton:checked { border: 1.5px solid %ACCENT%; }"));
+                       "QPushButton:checked { border: 1.5px solid %ACCENT%;"
+                       " background-color: rgba(124, 110, 246, 71); }"));
+    m_lightTableButton->setObjectName(QStringLiteral("stripLightTable"));
+    m_lightTableButton->setIcon(QIcon(stripIconPixmap(SankoLightTable::kIconPath, QSize(14, 21))));
     m_lightTableButton->setCheckable(true);
-    connect(m_lightTableButton, &QPushButton::toggled, this, [this](bool on) {
-        if (m_canvas)
-            m_canvas->setLightTableEnabled(on);
-        updateLightTable();
-    });
+    connect(m_lightTableButton, &QPushButton::toggled, this, [this](bool on) { setLightTableOn(on); });
+    // (answer 3 B) A right-click opens its page of Preferences.
+    m_lightTableButton->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_lightTableButton, &QWidget::customContextMenuRequested, this,
+            [this] { emit preferencesPageRequested(QStringLiteral("Light Table")); });
     layout->addWidget(m_lightTableButton);
 
     m_deletePanelButton = ctrlButton(
@@ -13315,8 +13441,7 @@ QWidget *StoryboardPage::createPanelControls()
          QStringLiteral(":/icons/add.svg")},
         {m_dupPanelButton, QSize(44, 30), QSize(17, 17),
          QStringLiteral(":/icons/duplicate.svg")},
-        {m_lightTableButton, QSize(44, 30), QSize(14, 21),
-         QStringLiteral(":/icons/lighttable.svg")},
+        {m_lightTableButton, QSize(44, 30), QSize(14, 21), SankoLightTable::kIconPath}, // drawn white
         {m_deletePanelButton, QSize(44, 30), QSize(14, 15),
          QStringLiteral(":/icons/delete.svg")},
     };
@@ -13324,24 +13449,32 @@ QWidget *StoryboardPage::createPanelControls()
     return column;
 }
 
-// Feed the current panel's neighbour pixmaps (within the same scene) to the
-// canvas: previous tinted red, next tinted green. Display-only; recomputed
-// whenever the panel changes or panels are added/removed/reordered.
+// Feed the current panel's neighbour pixmaps (within the same scene) to the canvas, which
+// tints them in Preferences > Light Table's colours (red before, green after unless set
+// otherwise). Display-only; recomputed whenever the panel changes or panels are
+// added/removed/reordered - never while a slider of the Light Table's page is dragged.
+// BOTH SIDES OF BOTH CUTS (OS-1, the user's answer 1): the panel before AS IT ENDS - its last
+// frame, each run's last exposed drawing and each moving layer where its keys leave it (what
+// the onion skin showed there from 2026-11-26 until OS-1) - and the panel after AS IT
+// BEGINS, its first frame.
 void StoryboardPage::updateLightTable()
 {
     if (!m_canvas)
         return;
     Scene *scene = currentScene();
-    const bool on = m_lightTableButton && m_lightTableButton->isChecked();
+    const bool on = m_canvas->isLightTableEnabled();
     QPixmap prev, next;
     QRect prevRect, nextRect; // by the frame (batch 6c)
     if (on && scene && m_currentPanel >= 0 && m_currentPanel < scene->panels.size()) {
         const Panel *here = scene->panels.at(m_currentPanel);
         if (m_currentPanel > 0) {
-            prev = scene->panels.at(m_currentPanel - 1)->flattenedPixmap();
-            prevRect = neighbourOnStage(here, scene->panels.at(m_currentPanel - 1));
+            const Panel *previous = scene->panels.at(m_currentPanel - 1);
+            ++m_lightTableFlattens;
+            prev = previous->flattenedPixmap(lastPlaceOf(previous));
+            prevRect = neighbourOnStage(here, previous);
         }
         if (m_currentPanel + 1 < scene->panels.size()) {
+            ++m_lightTableFlattens;
             next = scene->panels.at(m_currentPanel + 1)->flattenedPixmap();
             nextRect = neighbourOnStage(here, scene->panels.at(m_currentPanel + 1));
         }
@@ -15841,23 +15974,11 @@ void StoryboardPage::refreshLayerThumbs()
     }
 }
 
-bool StoryboardPage::panelGhostWanted() const
-{
-    if (SankoOnionSkin::choice(SankoOnionSkin::Side::Before).count < 1)
-        return false;
-    const Panel *panel = currentPanel();
-    const Layer *layer = panel ? panel->activeLayer() : nullptr;
-    return !layer || !panel->layerHasRun(*layer) || layer->shown == 0;
-}
-
 void StoryboardPage::refreshOnionForDrawing()
 {
     if (!m_canvas)
         return;
-    if (panelGhostWanted() != m_panelGhostShown)
-        updateOnionGhost(); // the previous panel's ghost comes or goes; the drawings' with it
-    else
-        updateDrawingGhosts();
+    updateDrawingGhosts(); // (OS-1: no panel's ghost comes or goes with the drawing any more)
 }
 
 QPixmap StoryboardPage::drawingGhostFor(const LayerPixels &px, const QColor &tint, bool before)
@@ -15895,8 +16016,9 @@ QPixmap StoryboardPage::drawingGhostFor(const LayerPixels &px, const QColor &tin
 // as Preferences > Onion Skin shows on each side, each side in its colour - the nearest at the
 // opacity set, each one further at 60 % of the one before it. The farthest first and the
 // drawing before last, so the one the artist is working from is on top. On the run's first
-// drawing there is none before (the previous panel's ghost stands in, updateOnionGhost); on
-// its last none after. My reading of "first": the drawings AFTER show there too.
+// drawing there is none before (until OS-1 the previous panel's ghost stood in; it is the
+// Light Table's now); on its last none after. My reading of "first": the drawings AFTER show
+// there too.
 void StoryboardPage::updateDrawingGhosts()
 {
     if (!m_canvas)
@@ -15929,8 +16051,7 @@ void StoryboardPage::updateDrawingGhosts()
 void StoryboardPage::onionSkinSettingsChanged(OnionChange what)
 {
     if (what == OnionChange::Opacity) {
-        // Nothing is built: the same pictures at their new opacities (the cache answers), and
-        // the previous panel's ghost reads its opacity when it is painted.
+        // Nothing is built: the same pictures at their new opacities (the cache answers).
         updateDrawingGhosts();
         if (m_canvas)
             m_canvas->update();
@@ -15939,10 +16060,8 @@ void StoryboardPage::onionSkinSettingsChanged(OnionChange what)
     if (what == OnionChange::Color) {
         // The ghosts that are up, coloured again where they lie. The canvas lets go of its
         // copies first, so each picture is coloured in place and none is copied to do it.
-        if (m_canvas) {
+        if (m_canvas)
             m_canvas->setDrawingGhosts({});
-            m_canvas->recolourPreviousGhost();
-        }
         using SankoOnionSkin::Side;
         for (GhostEntry &entry : m_ghostCache) {
             const QColor now = SankoOnionSkin::choice(entry.before ? Side::Before : Side::After).color;
@@ -15958,8 +16077,6 @@ void StoryboardPage::onionSkinSettingsChanged(OnionChange what)
         return;
     }
     m_ghostCache.clear();
-    if (m_canvas)
-        m_canvas->refreshOnionColors();
     updateOnionGhost();
 }
 

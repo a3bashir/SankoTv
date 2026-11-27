@@ -98,20 +98,15 @@ public:
 
     void setActivePanel(Panel *panel);
 
-    // Onion skin: a faint blue ghost of the previous panel, display-only.
+    // Onion skin: the selected layer's frames before and after, display-only. (Until OS-1,
+    // 2026-11-27, also the previous panel's ghost - the Light Table's now.)
     void setOnionSkinEnabled(bool enabled);
     bool isOnionSkinEnabled() const { return m_onionSkin; }
-    // Pass the previous panel's flattened pixmap (or null to clear the ghost).
-    // `onStage` (batch 6c): the picture's place on this panel's stage, so panels with
-    // different stages overlay by the frame. Empty: the whole stage, as ever.
-    // Its colour and opacity are the onion skin's "before" (SankoOnionSkin.h; the blue at
-    // 30 % it always was, unless Preferences > Onion Skin says another).
-    void setPreviousPixmap(const QPixmap &previous, const QRect &onStage = QRect());
     // THE DRAWINGS BEFORE AND AFTER (batch I-2, the user's answer 5): on a layer with a run,
     // the ghosts of its neighbouring drawings, each already in its colour, painted in the
-    // order given with its opacity, over the picture as the previous panel's ghost is. Not
-    // painted while the Move tool poses an animated layer (the box is the layer's pose then,
-    // and the drawings are not what is being worked on).
+    // order given with its opacity, over the picture. Not painted while the Move tool poses
+    // an animated layer (the box is the layer's pose then, and the drawings are not what is
+    // being worked on).
     struct OnionGhost
     {
         QPixmap pixmap;       // stage-sized, tinted (drawingGhost)
@@ -121,20 +116,12 @@ public:
     };
     void setDrawingGhosts(const QVector<OnionGhost> &ghosts);
     const QVector<OnionGhost> &drawingGhostsForTest() const { return m_drawingGhosts; }
-    bool previousGhostShownForTest() const { return m_onionSkin && !m_ghost.isNull(); }
     // A drawing's own pixels as a ghost: `tint` wherever it has anything, as opaque as it is.
     static QPixmap drawingGhost(const QImage &pixels, const QColor &tint);
     // A ghost in another colour, made where it lies (2026-11-27): every pixel takes `tint`
     // and keeps its alpha. One fill - no source picture is read - so a colour dragged in
-    // Preferences > Onion Skin costs no flatten and no tint loop.
+    // Preferences > Onion Skin or > Light Table costs no flatten and no tint loop.
     static void recolourGhost(QPixmap &ghost, const QColor &tint);
-    // The previous panel's ghost in the onion skin's "before" colour as it is now, that way.
-    void recolourPreviousGhost();
-    // The checks': how many times the previous panel's ghost was built from a flatten.
-    int previousGhostBuildsForTest() const { return m_ghostBuilds; }
-    QImage previousGhostForTest() const { return m_ghost.toImage(); }
-    // The onion skin's settings changed: the previous panel's ghost is tinted again.
-    void refreshOnionColors();
     // A layer of `panel` shows this drawing of its run ("" when it has none): what a pixel
     // step remembers, so that undo and redo land on the drawing they were made on.
     QString shownDrawingIdOf(const Panel *panel, const QString &layerId) const;
@@ -143,16 +130,32 @@ public:
     // for the status bar; empty for a layer without a run.
     QString runNoteText() const;
 
-    // Light table: fuller onion skin showing neighbouring panels behind the
-    // current drawing — previous tinted red, next tinted green. Display-only
-    // (never written to any layer, flattenedPixmap, export, or save).
+    // Light table: the neighbouring panels behind the current drawing - the panel before as
+    // it ends, the panel after as it begins (OS-1, 2026-11-27), each in its colour at its
+    // opacity (SankoLightTable.h: red and green at 35 % unless Preferences > Light Table says
+    // another). Display-only (never written to any layer, flattenedPixmap, export, or save).
     void setLightTableEnabled(bool enabled);
     bool isLightTableEnabled() const { return m_lightTable; }
     // Raw flattened pixmaps of the previous / next panel (null = none). Tinted
-    // ghosts are built internally.
+    // ghosts are built internally. `...OnStage` (batch 6c): the picture's place on this
+    // panel's stage, so panels with different stages overlay by the frame; empty, the whole.
     void setLightTablePixmaps(const QPixmap &previous, const QPixmap &next,
                               const QRect &previousOnStage = QRect(),
                               const QRect &nextOnStage = QRect());
+    // The two ghosts in Preferences > Light Table's colours as they are now, coloured again
+    // where they lie (recolourGhost): a colour dragged there flattens and tints nothing.
+    void recolourLightTable();
+    // The checks': a ghost of the Light Table is up; the ghosts built from a flatten so far;
+    // a side's ghost as it is.
+    bool lightTableShownForTest() const
+    {
+        return m_lightTable && (!m_ltPrevGhost.isNull() || !m_ltNextGhost.isNull());
+    }
+    int lightTableBuildsForTest() const { return m_ltBuilds; }
+    QImage lightTableGhostForTest(bool before) const
+    {
+        return (before ? m_ltPrevGhost : m_ltNextGhost).toImage();
+    }
 
     // Import an image file as a NEW image-type layer above the active layer
     // (scaled to fit the canvas, transparent padding). Returns true on success.
@@ -1491,19 +1494,17 @@ private:
     qreal m_lastBrushPressure = 1.0;
 
     bool m_onionSkin = false;
-    QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
-    QPixmap m_ghostSource;   // the flatten it was made from: tinted again when the colour changes
-    int m_ghostBuilds = 0;   // (the checks': buildGhost calls on a picture)
-    QRect m_ghostRect;       // its place on this stage when it is not the whole of it
     QVector<OnionGhost> m_drawingGhosts; // the run's drawings before and after (batch I-2)
     QRect m_ltPrevRect;
     QRect m_ltNextRect;
 
-    // Light table: red-tinted previous + green-tinted next ghosts, drawn on
-    // the paper behind the current drawing layers (display only, session state).
+    // Light table: the previous panel's ghost (red) and the next's (green) by default, drawn
+    // on the paper behind the current drawing layers (display only; the switch is a setting
+    // on this computer since OS-1).
     bool m_lightTable = false;
-    QPixmap m_ltPrevGhost;   // previous panel, tinted red
-    QPixmap m_ltNextGhost;   // next panel, tinted green
+    QPixmap m_ltPrevGhost;   // previous panel, in the Light Table's "before" colour
+    QPixmap m_ltNextGhost;   // next panel, in its "after" colour
+    int m_ltBuilds = 0;      // (the checks': ghosts built from a flatten)
     void drawLightTable(QPainter &painter, const QRect &d) const;
 
     // Viewport: zoom + pan.

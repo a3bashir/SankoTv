@@ -326,6 +326,13 @@ public:
     // and a SHOTS clip's thumbnail keeps its picture's shape inside the clip.
     void zoomToFrames();
     QAbstractButton *zoomToFramesButtonForTest() const;
+    // THE ONION SKIN'S BUTTON (OS-1, 2026-11-27; the user's Figma 749:892, "LAYER row button:
+    // onion (on)"): 20 x 20 on the LAYER row at x 50, between Zoom to Frames and the FRAMES
+    // lane, there while the lane is. The Light Table's own icon in white; on, a purple border
+    // and a purple background (the accent at 28 %) and nothing else. A click switches the
+    // onion skin (onionSkinButtonClicked), a right-click asks for its Preferences page. It
+    // shows the onion skin's state (setOnionSkinShown).
+    QAbstractButton *onionSkinButtonForTest() const;
     int rowsMinimumForTest() const { return rowsMinH(); }
     // Each row as laid out, "y,h": "timecode", "scenes", "shots", "camera", "layer", "audio";
     // and "canvas", the painted surface's height.
@@ -399,6 +406,9 @@ signals:
     // a cut dragged to a frame of the panel (`alone`: Alt was down), on release; a right-click
     // on a block (its index) - each of the selected layer of the panel on the canvas.
     void newDrawingRequested();
+    // The Onion Skin's button (OS-1): clicked to `on`; right-clicked.
+    void onionSkinButtonClicked(bool on);
+    void onionSkinPageRequested();
     // The rows need another least height (a LAYER row came or went, or its drawings lane):
     // whoever sizes the timeline's section gives it the room (2026-11-26).
     void rowsMinimumChanged();
@@ -569,6 +579,7 @@ private:
     mutable QHash<qint64, bool> m_blankByKey;
     int m_hoverDrawing = -1; // the block under the pointer, -1: none
     QToolButton *m_zoomFramesButton = nullptr;
+    QToolButton *m_onionButton = nullptr; // the Onion Skin's switch on the LAYER row (OS-1)
     bool m_layerRowRun = false;
     bool m_onionShown = false;
     int m_selectedDrawing = -1;

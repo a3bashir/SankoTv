@@ -33,6 +33,7 @@ this fence."
 #include "SankoKeyColors.h"
 #include "SankoNoteStyle.h"
 #include "SankoOnionSkin.h"          // Preferences > Onion Skin (batch I-2)
+#include "SankoLightTable.h"         // Preferences > Light Table (OS-1)
 #include "brushlib/StudioControls.h" // its "Drawings shown" rows: the shared segmented row
 #include "SankoTimelineTheme.h"
 #include "SankoTip.h"
@@ -360,6 +361,9 @@ MainWindow::MainWindow(QWidget *parent)
     // Storyboard <-> Consistency Board.
     connect(m_storyboard, &StoryboardPage::settingsRequested, this,
             [this] { onPreferences(); });
+    // A right-click on the Light Table's or the Onion Skin's button: its page (OS-1).
+    connect(m_storyboard, &StoryboardPage::preferencesPageRequested, this,
+            [this](const QString &page) { openPreferencesAt(page); });
     connect(m_storyboard, &StoryboardPage::consistencyBoardRequested, this, [this] {
         m_consistencyBoard->refresh();
         m_stack->setCurrentWidget(m_consistencyBoard);
@@ -1143,6 +1147,7 @@ void MainWindow::onPreferences()
     categories->setFixedWidth(130);
     categories->addItem(QStringLiteral("Camera"));
     categories->addItem(QStringLiteral("Keyframes")); // batch I-1b round 2: the list is alphabetical
+    categories->addItem(QStringLiteral("Light Table")); // OS-1
     categories->addItem(QStringLiteral("Onion Skin")); // batch I-2
     categories->addItem(QStringLiteral("Playback"));
     categories->addItem(QStringLiteral("Recovery"));
@@ -1340,6 +1345,106 @@ void MainWindow::onPreferences()
     refreshKeysPage();
     pages->addWidget(keysPage);
 
+    // --- Light Table page (OS-1, 2026-11-27; the user's answer 3 A, Figma OS-1 745:757 section
+    // 4) ------------------------------------------------------------------------------------------
+    // Made like the Onion Skin page: the panel before (as it ends) and the panel after (as it
+    // begins), each a hue slider and a standard opacity slider side by side - red, green and the
+    // 35 % the Light Table has always had, by default - and "Use the default". A choice shows at
+    // once on the canvas; nothing is flattened while a slider is dragged (the two ghosts are
+    // coloured again where they lie, an opacity is read when they are painted). A setting of
+    // SankoTV on this computer, never in the project file (SankoLightTable.h). Opening the page
+    // changes nothing: as on the Onion Skin page the dragger is put on the colour's hue quietly,
+    // and the default red and green stay exactly as they are until a slider is dragged.
+    QWidget *lightPage = new QWidget;
+    QVBoxLayout *lightLayout = new QVBoxLayout(lightPage);
+    lightLayout->setContentsMargins(16, 12, 16, 12);
+    lightLayout->setSpacing(4);
+    QVector<std::function<void()>> lightSyncers;
+    auto refreshLightPage = [&lightSyncers] {
+        for (const std::function<void()> &sync : std::as_const(lightSyncers))
+            sync();
+    };
+    auto lightChanged = [this, &refreshLightPage](StoryboardPage::LightTableChange what) {
+        if (m_storyboard)
+            m_storyboard->lightTableSettingsChanged(what);
+        refreshLightPage();
+    };
+    auto addLightSide = [&](SankoLightTable::Side side, const QString &title, const QString &prefix) {
+        QLabel *head = new QLabel(title);
+        head->setStyleSheet(keyHeadStyle);
+        lightLayout->addWidget(head);
+        auto *line = new QHBoxLayout;
+        line->setSpacing(16);
+        auto *hue = new SankoStandardSlider(QStringLiteral("Colour"), SankoStandardSlider::Kind::Hue);
+        hue->setObjectName(prefix + QStringLiteral("Hue"));
+        connect(hue, &SankoStandardSlider::valueChanged, &dialog, [lightChanged, side](int h) {
+            SankoLightTable::setColor(side, QColor::fromHsv(h, 255, 255));
+            sankoSettings().setValue(SankoLightTable::colorKey(side), SankoLightTable::choice(side).color.name());
+            lightChanged(StoryboardPage::LightTableChange::Color);
+        });
+        line->addWidget(hue, 1);
+        auto *opacity = new SankoStandardSlider(QStringLiteral("Opacity"));
+        opacity->setObjectName(prefix + QStringLiteral("Opacity"));
+        opacity->setRange(SankoLightTable::kMinOpacityPercent, 100);
+        opacity->setValueSuffix(QStringLiteral("%"));
+        opacity->setValue(SankoLightTable::choice(side).opacityPercent);
+        connect(opacity, &SankoStandardSlider::valueChanged, &dialog, [lightChanged, side](int v) {
+            if (v == SankoLightTable::choice(side).opacityPercent)
+                return;
+            SankoLightTable::setOpacityPercent(side, v);
+            sankoSettings().setValue(SankoLightTable::opacityKey(side), SankoLightTable::choice(side).opacityPercent);
+            lightChanged(StoryboardPage::LightTableChange::Opacity);
+        });
+        line->addWidget(opacity, 1);
+        lightLayout->addLayout(line);
+        lightSyncers.append([side, hue, opacity] {
+            const SankoLightTable::Choice now = SankoLightTable::choice(side);
+            if (QColor::fromHsv(hue->value(), 255, 255).rgb() != now.color.rgb()) {
+                const QSignalBlocker quiet(hue);
+                hue->setValue(qMax(0, now.color.hsvHue()));
+            }
+            hue->setSwatch(now.color);
+            if (opacity->value() != now.opacityPercent)
+                opacity->setValue(now.opacityPercent);
+        });
+    };
+    addLightSide(SankoLightTable::Side::Before, QStringLiteral("Panel before (as it ends)"),
+                 QStringLiteral("prefsLightBefore"));
+    lightLayout->addSpacing(8);
+    addLightSide(SankoLightTable::Side::After, QStringLiteral("Panel after (as it begins)"),
+                 QStringLiteral("prefsLightAfter"));
+    lightLayout->addSpacing(8);
+    QLabel *lightNote = new QLabel(QStringLiteral(
+        "Under your drawing, on the canvas only. Shift+L or the bulb in the panel strip switches the Light "
+        "Table on and off; the frames of a layer are the Onion Skin's."));
+    lightNote->setWordWrap(true);
+    lightNote->setStyleSheet(keyNoteStyle);
+    lightLayout->addWidget(lightNote);
+    lightLayout->addStretch(1);
+    QHBoxLayout *lightButtons = new QHBoxLayout;
+    QPushButton *lightDefault = new QPushButton(QStringLiteral("Use the default (red before, green after)"));
+    lightDefault->setObjectName(QStringLiteral("prefsLightDefault"));
+    lightDefault->setCursor(Qt::PointingHandCursor);
+    lightDefault->setStyleSheet(SankoTheme::themed(
+        "QPushButton { background: transparent; border: none; color: %ACCENT%; padding: 6px 0px; }"
+        "QPushButton:hover { background: transparent; text-decoration: underline; }"));
+    connect(lightDefault, &QPushButton::clicked, &dialog, [lightChanged] {
+        SankoLightTable::setDefaults();
+        for (SankoLightTable::Side side : {SankoLightTable::Side::Before, SankoLightTable::Side::After}) {
+            sankoSettings().setValue(SankoLightTable::colorKey(side), SankoLightTable::choice(side).color.name());
+            sankoSettings().setValue(SankoLightTable::opacityKey(side), SankoLightTable::choice(side).opacityPercent);
+        }
+        lightChanged(StoryboardPage::LightTableChange::Everything);
+    });
+    lightButtons->addWidget(lightDefault);
+    lightButtons->addStretch(1);
+    QPushButton *closeLight = new QPushButton(QStringLiteral("Close"));
+    connect(closeLight, &QPushButton::clicked, &dialog, &QDialog::accept);
+    lightButtons->addWidget(closeLight);
+    lightLayout->addLayout(lightButtons);
+    refreshLightPage();
+    pages->addWidget(lightPage);
+
     // --- Onion Skin page (batch I-2, 2026-11-26; the user's answer 5, Figma I-2 727:757 section
     // 3b) -----------------------------------------------------------------------------------------
     // "In the style of the Keyframes page: the number of previous drawings and of next drawings
@@ -1436,8 +1541,8 @@ void MainWindow::onPreferences()
     onionLayout->addSpacing(8);
     onionLayout->addWidget(onionPreview);
     QLabel *onionNote = new QLabel(QStringLiteral(
-        "Shown at once on the canvas. The \"before\" colour is also the previous panel's ghost. "
-        "The O key switches the onion skin on and off."));
+        "Shown at once on the canvas. The O key switches the onion skin on and off."));
+    // (OS-1: the line "The before colour is also the previous panel's ghost." went - it no longer is.)
     onionNote->setWordWrap(true);
     onionNote->setStyleSheet(keyNoteStyle);
     onionLayout->addWidget(onionNote);
@@ -1593,6 +1698,12 @@ void MainWindow::onPreferences()
     categories->addItem(QStringLiteral("Saving"));
     pages->addWidget(savingPage);
 
+    // At the page asked for (a right-click on a switch's button, OS-1), else the first.
+    if (!m_prefsStartPage.isEmpty()) {
+        const QList<QListWidgetItem *> found = categories->findItems(m_prefsStartPage, Qt::MatchExactly);
+        if (!found.isEmpty())
+            categories->setCurrentItem(found.first());
+    }
     dialog.exec();
 }
 
@@ -1614,6 +1725,19 @@ void MainWindow::loadOnionSkin()
         setColor(side, QColor::fromString(settings.value(colorKey(side)).toString()));
         setOpacityPercent(side, settings.value(opacityKey(side), kDefaultOpacityPercent).toInt());
     }
+    // ...and the Light Table's (OS-1): red and green at 35 % unless set otherwise.
+    for (SankoLightTable::Side side : {SankoLightTable::Side::Before, SankoLightTable::Side::After}) {
+        SankoLightTable::setColor(side, QColor::fromString(settings.value(SankoLightTable::colorKey(side)).toString()));
+        SankoLightTable::setOpacityPercent(
+            side, settings.value(SankoLightTable::opacityKey(side), SankoLightTable::kDefaultOpacityPercent).toInt());
+    }
+}
+
+void MainWindow::openPreferencesAt(const QString &page)
+{
+    m_prefsStartPage = page;
+    onPreferences();
+    m_prefsStartPage.clear();
 }
 
 // Edit > Paste: a panel or a drawing is copied - or, while the LAYER row is the last thing

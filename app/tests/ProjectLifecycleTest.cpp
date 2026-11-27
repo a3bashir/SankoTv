@@ -74,6 +74,7 @@
 #include "SankoIcons.h"
 #include "SankoKeyColors.h" // Preferences > Keyframes (batch I-1b round 2)
 #include "SankoOnionSkin.h" // Preferences > Onion Skin (batch I-2)
+#include "SankoLightTable.h" // Preferences > Light Table, the two switches (OS-1, the (os) checks)
 #include "SankoSlider.h"
 #include "SankoStandardSlider.h" // Preferences' sliders since 2026-11-27 (the (sl) checks)
 #include "ZoomToolbar.h"         // (sl1): the standard slider is the Zoom Toolbar's
@@ -1005,10 +1006,16 @@ void runViewResetPass(const QString &projectA, const QString &projectB)
               QStringLiteral("%1").arg(canvas->viewRotation()));
         check(QStringLiteral("(g) %1: horizontal flip cleared").arg(transition),
               !canvas->viewFlipH());
-        check(QStringLiteral("(g) %1: onion skin off").arg(transition),
-              !canvas->isOnionSkinEnabled());
-        check(QStringLiteral("(g) %1: light table off").arg(transition),
-              !canvas->isLightTableEnabled());
+        // (Changed with OS-1, 2026-11-27: the onion skin and the light table are switches of
+        // SankoTV on this computer now - remembered after a restart, never in a project, the
+        // user's answer C - so, as the grid below, they are NOT swept up in the reset. They
+        // were "(g) <transition>: onion skin off" / "light table off".)
+        check(QStringLiteral("(g) %1: the onion skin (a setting on this computer since OS-1) is NOT reset")
+                  .arg(transition),
+              canvas->isOnionSkinEnabled());
+        check(QStringLiteral("(g) %1: the light table (a setting on this computer since OS-1) is NOT reset")
+                  .arg(transition),
+              canvas->isLightTableEnabled());
         // The preference must NOT be swept up in the reset.
         check(QStringLiteral("(g) %1: grid (an app-wide PREFERENCE) is NOT "
                              "reset").arg(transition),
@@ -1055,6 +1062,8 @@ void runViewResetPass(const QString &projectA, const QString &projectB)
               && qFuzzyIsNull(canvas->viewRotation()));
 
     canvas->setGridVisible(false); // leave the preference as we found it
+    canvas->setOnionSkinEnabled(false); // ...and the two switches (OS-1)
+    canvas->setLightTableEnabled(false);
     window.markCleanForTest();
     window.close();
     pump(300);
@@ -21006,9 +21015,12 @@ void runEyedropperFlipPass(const QString &scratch)
             QPainter g(&ghost);
             g.fillRect(QRect(700, 320, 200, 200), QColor(0, 160, 0));
         }
-        r.canvas->setPreviousPixmap(ghost, QRect(0, 0, 960, 540));
+        // (Changed with OS-1, 2026-11-27: the onion skin shows no panel's ghost any more - the
+        // overlay is the Light Table's, the same picture through setLightTablePixmaps. It was
+        // setPreviousPixmap and setOnionSkinEnabled.)
+        r.canvas->setLightTablePixmaps(ghost, QPixmap(), QRect(0, 0, 960, 540));
         const QImage noGhost = grabCanvas(r.canvas);
-        r.canvas->setOnionSkinEnabled(true);
+        r.canvas->setLightTableEnabled(true);
         pump(60);
         const QImage withGhost = grabCanvas(r.canvas);
         const QColor seenOff = pixAt(noGhost, paperAt), seenOn = pixAt(withGhost, paperAt);
@@ -21018,14 +21030,14 @@ void runEyedropperFlipPass(const QString &scratch)
         mouseAt(QEvent::MouseButtonRelease, paperAt);
         pump(60);
         const QColor got4 = r.canvas->currentColorForTest();
-        r.canvas->setOnionSkinEnabled(false);
-        r.canvas->setPreviousPixmap(QPixmap(), QRect());
+        r.canvas->setLightTableEnabled(false);
+        r.canvas->setLightTablePixmaps(QPixmap(), QPixmap());
         pump(40);
-        check(QStringLiteral("(ep4) OVERLAYS ARE NOT TAKEN: over the onion skin's ghost the pick takes the paper - "
+        check(QStringLiteral("(ep4) OVERLAYS ARE NOT TAKEN: over the Light Table's ghost the pick takes the paper - "
                              "the drawing's own colour there"),
               armed4 && nearColor(got4, paper, 1), QStringLiteral("armed %1; took %2").arg(armed4).arg(hex(got4)));
-        check(QStringLiteral("(ep4) control: the ghost is really shown there - the view's pixel changes with the onion "
-                             "skin on"),
+        check(QStringLiteral("(ep4) control: the ghost is really shown there - the view's pixel changes with the Light "
+                             "Table on"),
               !nearColor(seenOff, seenOn, 10), QStringLiteral("off %1, on %2").arg(hex(seenOff), hex(seenOn)));
 
         // --- (ep5) I arms as the button does; I again, Esc or another tool disarms -------------
@@ -31895,14 +31907,16 @@ void runStageModePass(const QString &scratch)
             r.storyboard->applyPanelMargin(scene->panels.at(1), QMargins(480, 270, 480, 270)); // as it was
             pump(60);
         }
-        // Onion skin: panel 0's red block, on panel 1, where it is in the shot.
+        // The Light Table: panel 0's red block, on panel 1, where it is in the shot. (Changed with
+        // OS-1, 2026-11-27: the onion skin's until then - setOnionSkinEnabled and
+        // updateOnionGhostForTest; the panels are the Light Table's now. Panel 2, its other side,
+        // is blank paper: nothing of it shows.)
         clickThumb(r, 1);
         pump(30);
         r.canvas->placeViewForTest(0.25, QPointF(1440.0, 810.0), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
         pump(20);
         const QImage plain = r.canvas->grab().toImage();
-        r.canvas->setOnionSkinEnabled(true);
-        r.storyboard->updateOnionGhostForTest();
+        r.storyboard->setLightTableOn(true);
         pump(30);
         const QImage ghosted = r.canvas->grab().toImage();
         const qreal dpr = plain.devicePixelRatio();
@@ -31911,13 +31925,12 @@ void runStageModePass(const QString &scratch)
         const QTransform t = r.canvas->viewTransformForTest();
         const QPoint aligned = (t.map(QPointF(480.0 + 220.0, 270.0 + 230.0)) * dpr).toPoint();
         const QPoint byCorner = (t.map(QPointF(380.0 + 220.0 + 1000.0, 270.0 + 230.0)) * dpr).toPoint();
-        check(QStringLiteral("(sm8) THE ONION SKIN overlays by the frame; control: elsewhere nothing changed"),
+        check(QStringLiteral("(sm8) THE LIGHT TABLE overlays by the frame; control: elsewhere nothing changed"),
               plain.pixelColor(aligned) != ghosted.pixelColor(aligned)
                   && plain.pixelColor(byCorner) == ghosted.pixelColor(byCorner),
               QStringLiteral("%1 -> %2; %3 -> %4").arg(plain.pixelColor(aligned).name(), ghosted.pixelColor(aligned).name(),
                                                        plain.pixelColor(byCorner).name(), ghosted.pixelColor(byCorner).name()));
-        r.canvas->setOnionSkinEnabled(false);
-        r.storyboard->updateOnionGhostForTest();
+        r.storyboard->setLightTableOn(false);
         // Paste in Place: copied on panel 0, where it was in the shot on panel 1.
         clickThumb(r, 0);
         pump(30);
@@ -38373,14 +38386,17 @@ void runI1b2Pass(const QString &scratch)
         const QColor purple = SankoKeyColors::kDefault;
         // (Changed with batch I-2, 2026-11-26: the list has "Onion Skin" after Keyframes, so the page is between
         // Camera and Onion Skin and the list asked for has six entries. Nothing else of the check moved.)
-        check(QStringLiteral("(kp1) EDIT > PREFERENCES > KEYFRAMES (your note 7): a page between Camera and Onion Skin; the "
+        // (Changed with OS-1, 2026-11-27: "Light Table" joined the list after Keyframes - the page is between Camera
+        // and Light Table, seven entries. Nothing else moved.)
+        check(QStringLiteral("(kp1) EDIT > PREFERENCES > KEYFRAMES (your note 7): a page between Camera and Light Table; the "
                              "camera keys' row and the layer keys' row of eight presets each, purple chosen for both, "
                              "Custom... for each, \"Use the default\"; Blue chosen for layer keys repaints the LAYER row's "
                              "line in blue (none of the purple left) and the Layers panel's diamond, the preview shows "
                              "both rows, the camera keys stay purple; the choice is remembered by the app"),
               page->categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"),
-                                               QStringLiteral("Onion Skin"), QStringLiteral("Playback"),
-                                               QStringLiteral("Recovery"), QStringLiteral("Saving")})
+                                               QStringLiteral("Light Table"), QStringLiteral("Onion Skin"),
+                                               QStringLiteral("Playback"), QStringLiteral("Recovery"),
+                                               QStringLiteral("Saving")})
                   && page->cameraPresets == 8 && page->layerPresets == 8 && page->purpleChosen && page->customHidden
                   && page->pickers && page->defaultLink && page->afterBlue == blue && page->cameraAfterBlue == purple
                   && page->savedBlue == blue.name() && page->blueChosen && page->blueLineAfter > 10
@@ -39233,25 +39249,27 @@ void runI2Pass(const QString &scratch)
         goTo(1, 4); // drawing 3, in between
         r.storyboard->updateOnionGhostForTest();
         const QString between = ghosts();
-        const bool panelBetween = r.canvas->previousGhostShownForTest();
+        // (Changed with OS-1, 2026-11-27: a panel's ghost on the canvas is only ever the Light Table's,
+        // off here; until then previousGhostShownForTest - the onion skin's ghost of the previous panel.)
+        const bool panelBetween = r.canvas->lightTableShownForTest();
         const QImage shotBetween = grabCanvas(r.canvas);
         const QColor before2 = canvasPixel(shotBetween, 0), after4 = canvasPixel(shotBetween, 6);
         goTo(1, 0); // the run's first drawing
         r.storyboard->updateOnionGhostForTest();
         const QString first = ghosts();
-        const bool panelFirst = r.canvas->previousGhostShownForTest();
+        const bool panelFirst = r.canvas->lightTableShownForTest();
         goTo(1, 6); // its last
         r.storyboard->updateOnionGhostForTest();
         const QString last = ghosts();
-        const bool panelLast = r.canvas->previousGhostShownForTest();
+        const bool panelLast = r.canvas->lightTableShownForTest();
         check(QStringLiteral("(dr14) THE ONION SKIN (your answer 5): on a drawing in between, the one before and the "
                              "one after are the ghosts - blue where the drawing before has its stroke, orange where "
-                             "the one after has, in the canvas's picture - and the previous panel's ghost is not; on "
-                             "the run's first drawing the previous panel's ghost is, with the drawing after; on the "
-                             "last, the drawing before alone"),
+                             "the one after has, in the canvas's picture - and no panel's ghost; on the run's first "
+                             "drawing the drawing after alone (OS-1: no panel's ghost there any more); on the last, "
+                             "the drawing before alone"),
               between == QLatin1String("a4@30 b2@30") && !panelBetween && before2.isValid()
                   && before2.blue() > before2.red() + 8 && after4.isValid() && after4.red() > after4.blue() + 8
-                  && first == QLatin1String("a2@30") && panelFirst && last == QLatin1String("b3@30") && !panelLast,
+                  && first == QLatin1String("a2@30") && !panelFirst && last == QLatin1String("b3@30") && !panelLast,
               QStringLiteral("between [%1] (the panel's ghost %2), the pixel on drawing 2's stroke %3, on drawing 4's "
                              "%4; first [%5] (the panel's %6); last [%7] (the panel's %8)")
                   .arg(between).arg(panelBetween).arg(before2.name()).arg(after4.name()).arg(first).arg(panelFirst)
@@ -39340,14 +39358,15 @@ void runI2Pass(const QString &scratch)
         pump(300);
         const bool backToDefault = SankoOnionSkin::isDefault();
         check(QStringLiteral("(dr15) EDIT > PREFERENCES > ONION SKIN (your answer 5): the page is in the list after "
-                             "Keyframes; \"Frames shown\" 2 after the drawing shows the two after it, the further "
+                             "Keyframes and Light Table; \"Frames shown\" 2 after the drawing shows the two after it, the further "
                              "one at 60 % of the nearer; the after colour's hue slider at green (hue 120) turns their "
                              "ghost green on the canvas; the opacity before, 60 %, is the ghost's before; each is kept "
                              "in the settings and read back as a launch reads them; \"Use the default\" is one before "
                              "and one after at 30 %, blue and orange"),
-              page->categories
-                      == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"), QStringLiteral("Onion Skin"),
-                                      QStringLiteral("Playback"), QStringLiteral("Recovery"), QStringLiteral("Saving")})
+              page->categories // (OS-1, 2026-11-27: "Light Table" joined after Keyframes)
+                      == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"), QStringLiteral("Light Table"),
+                                      QStringLiteral("Onion Skin"), QStringLiteral("Playback"), QStringLiteral("Recovery"),
+                                      QStringLiteral("Saving")})
                   && page->page && page->countRow && page->green && page->slider
                   && page->afterTwo == QLatin1String("a4@18 a3@30 b1@30") && page->savedCount == 2
                   && page->afterGreen == QLatin1String("#00ff00") && page->savedColor == QLatin1String("#00ff00")
@@ -39965,14 +39984,16 @@ void runI2bPass(const QString &scratch)
                   .arg(afterDuplicate).arg(undoDelete).arg(startsOf(pa, ground)).arg(rowSaid));
     }
 
-    // (fr3) THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME (the user's answer 2).
+    // (fr3) THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME (the user's answer 2). (Changed with OS-1, 2026-11-27:
+    // that ghost is the Light Table's now - Shift+L, lightTableShownForTest - where it was the onion skin's - O,
+    // previousGhostShownForTest. The rest of the check is as it was.)
     {
         clickThumb(r, 1);
-        r.storyboard->layerRowClickedForTest(1); // the Gull: one drawing, so the panel before is its ghost
+        r.storyboard->layerRowClickedForTest(1); // the Gull: one drawing
         goTo(1, 0);
-        const bool wasOn = r.canvas->isOnionSkinEnabled();
+        const bool wasOn = r.storyboard->isLightTableOn();
         if (!wasOn)
-            keyClaimed(&r.window, Qt::Key_O);
+            keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
         const QTransform view = r.canvas->viewTransformForTest();
         // The most tinted pixel of the canvas's picture within 8 px of a stage point: white paper unless a ghost
         // lies there.
@@ -39993,9 +40014,9 @@ void runI2bPass(const QString &scratch)
                 .arg(tintAt(img, row3)).arg(tintAt(img, boatLast)).arg(tintAt(img, row0)).arg(tintAt(img, square))
                 .arg(tintAt(img, boatFirst));
         };
-        const bool ghostOn = r.canvas->previousGhostShownForTest();
+        const bool ghostOn = r.canvas->lightTableShownForTest();
         const QImage last = grabCanvas(r.canvas);
-        check(QStringLiteral("(fr3) THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME: on panel 2 with the onion skin on, the ghost "
+        check(QStringLiteral("(fr3) THE PREVIOUS PANEL'S GHOST IS ITS LAST FRAME: on panel 2 with the Light Table on, the ghost "
                              "has what panel 1 shows at its end - the stroke of the Ground's last drawing and the Boat "
                              "where its keys leave it - and nothing of panel 1's first frame: not the Ground's first "
                              "drawing, not the Boat's first place, not the drawing in between"),
@@ -40017,7 +40038,7 @@ void runI2bPass(const QString &scratch)
                   && shotcam::panelFrames(*pa, 24) == 24 && tintAt(restored, row3) >= 20 && tintAt(restored, row0) < 8,
               QStringLiteral("panel 1 at %1 frames: %2; back at %3 frames: %4").arg(framesShort).arg(reading(shortened))
                   .arg(shotcam::panelFrames(*pa, 24)).arg(reading(restored)));
-        // Control: the strip's picture of panel 1 is still its first frame, and with the onion skin off the canvas
+        // Control: the strip's picture of panel 1 is still its first frame, and with the Light Table off the canvas
         // has no ghost at all.
         const QImage first = pa->flattenedImage().convertToFormat(QImage::Format_ARGB32);
         int squareInk = 0, row3Ink = 0;
@@ -40029,17 +40050,17 @@ void runI2bPass(const QString &scratch)
                 if (ink && QRect(150, 255, 190, 90).contains(x, y))
                     ++row3Ink;
             }
-        keyClaimed(&r.window, Qt::Key_O);
+        keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
         const QImage off = grabCanvas(r.canvas);
         check(QStringLiteral("(fr3) control: panel 1's own picture - the strip's, the SHOTS clip's - is still its first frame "
-                             "(the Ground's first drawing, no stroke); and with the onion skin off the canvas has no ghost "
+                             "(the Ground's first drawing, no stroke); and with the Light Table off the canvas has no ghost "
                              "at any of the five places"),
-              squareInk > 200 && row3Ink == 0 && !r.canvas->previousGhostShownForTest() && tintAt(off, row3) < 8
+              squareInk > 200 && row3Ink == 0 && !r.canvas->lightTableShownForTest() && tintAt(off, row3) < 8
                   && tintAt(off, boatLast) < 8 && tintAt(off, row0) < 8 && tintAt(off, square) < 8,
-              QStringLiteral("first frame: the square's pixels %1, row 3's %2; onion off: %3").arg(squareInk).arg(row3Ink)
-                  .arg(reading(off)));
+              QStringLiteral("first frame: the square's pixels %1, row 3's %2; Light Table off: %3").arg(squareInk)
+                  .arg(row3Ink).arg(reading(off)));
         if (wasOn)
-            keyClaimed(&r.window, Qt::Key_O);
+            keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
     }
 
     // (fr2) CUT, COPY AND PASTE ACT ONCE PER PRESS (the user's answer 3).
@@ -41133,9 +41154,12 @@ void runSlidersPass(const QString &scratch)
         check(QStringLiteral("(sl3) control: the Keyframes page still has its colour diamonds, found by the same kind of "
                              "search"),
               on.keySwatches, QStringLiteral("the camera keys' Purple diamond %1").arg(on.keySwatches));
-        check(QStringLiteral("(sl7) EVERY SLIDER IN PREFERENCES IS THE STANDARD ONE: eight - the Camera page's four, the "
-                             "Onion Skin page's four, two of them hue sliders - and no older SankoSlider or QSlider"),
-              on.standard == 8 && on.hues == 2 && on.older == 0 && on.plain == 0,
+        // (Changed with OS-1, 2026-11-27: the Light Table page brought four more, two of them hue sliders - it was
+        // "eight ... two of them hue sliders", 8 and 2.)
+        check(QStringLiteral("(sl7) EVERY SLIDER IN PREFERENCES IS THE STANDARD ONE: twelve - the Camera page's four, the "
+                             "Light Table page's four and the Onion Skin page's four, four of them hue sliders - and no "
+                             "older SankoSlider or QSlider"),
+              on.standard == 12 && on.hues == 4 && on.older == 0 && on.plain == 0,
               QStringLiteral("standard %1 (hue %2); SankoSlider %3, QSlider %4").arg(on.standard).arg(on.hues).arg(on.older)
                   .arg(on.plain));
         check(QStringLiteral("(sl7) control: an older slider put on a page for a moment is found by the same search (one "
@@ -41150,22 +41174,27 @@ void runSlidersPass(const QString &scratch)
         r.storyboard->onionSkinSettingsChanged();
     }
 
-    // (sl4) NO STALL WHILE A SLIDER IS DRAGGED: the work a drag asks for, counted. (a) On panel 2 with the Gull (one
-    // drawing) selected the previous panel's ghost is up: dragging the "before" opacity, then the "before" hue,
-    // flattens panel 1 no more and builds its ghost no more - the ghost is shown at each new opacity and coloured
-    // again where it lies. (b) On panel 1's Ground, drawing 2, the drawings' ghosts are up: dragging the "after"
+    // (sl4) NO STALL WHILE A SLIDER IS DRAGGED: the work a drag asks for, counted. (a) On panel 2 with the Light
+    // Table on (OS-1; the onion skin's previous panel ghost until then) panel 1's ghost is up: dragging the Light
+    // Table's "before" opacity, then its "before" hue, flattens panel 1 no more and builds its ghost no more - the
+    // ghost is shown at each new opacity and coloured again where it lies. (b) On panel 1's Ground, drawing 2, the drawings' ghosts are up: dragging the "after"
     // opacity and hue builds no ghost from a drawing's pixels; the ghost of drawing 3 takes the new opacity and the
     // new colour.
     {
+        // (Changed with OS-1, 2026-11-27: panel 1's ghost on panel 2 is the Light Table's now, its sliders on
+        // Preferences > Light Table - (a) was the onion skin's previous panel ghost, its "before" sliders, and a
+        // count's change for its control; now the Light Table's "before" sliders, and the switch off and on for the
+        // control. (b) is as it was.)
         using SankoOnionSkin::Side;
         SankoOnionSkin::setDefaults();
+        SankoLightTable::setDefaults();
         clickThumb(r, 1);
-        r.storyboard->layerRowClickedForTest(1); // the Gull: one drawing, so panel 1 is its ghost
+        r.storyboard->layerRowClickedForTest(1); // the Gull
         goTo(1, 0);
-        if (!r.canvas->isOnionSkinEnabled())
-            keyClaimed(&r.window, Qt::Key_O);
+        if (!r.storyboard->isLightTableOn())
+            keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
         pump(200);
-        const bool ghostUp = r.canvas->previousGhostShownForTest();
+        const bool ghostUp = r.canvas->lightTableShownForTest();
         const QTransform view = r.canvas->viewTransformForTest();
         auto tintAt = [&](const QImage &img, const QPointF &stage) {
             const QPoint c = view.map(stage).toPoint();
@@ -41212,29 +41241,28 @@ void runSlidersPass(const QString &scratch)
             return s.join(QLatin1Char(' '));
         };
         int changes = 0;
-        // (a) The previous panel's ghost.
-        const bool ranA = withPreferences(QStringLiteral("Onion Skin"), [&](QDialog *, QWidget *page) {
+        // (a) The Light Table's ghost of panel 1.
+        const bool ranA = withPreferences(QStringLiteral("Light Table"), [&](QDialog *, QWidget *page) {
             if (!page)
                 return;
-            auto *bHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeHue"));
-            auto *bOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsOnionBeforeOpacity"));
-            auto *bCount = page->findChild<brushlib::StudioSegmentedRow *>(QStringLiteral("prefsOnionBeforeCount"));
-            if (!bHue || !bOp || !bCount)
+            auto *bHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsLightBeforeHue"));
+            auto *bOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsLightBeforeOpacity"));
+            if (!bHue || !bOp)
                 return;
             for (SankoStandardSlider *s : {bHue, bOp})
                 QObject::connect(s, &SankoStandardSlider::valueChanged, page, [&changes] { ++changes; });
-            d.flat0 = r.storyboard->onionFlattensForTest();
-            d.built0 = r.canvas->previousGhostBuildsForTest();
+            d.flat0 = r.storyboard->lightTableFlattensForTest();
+            d.built0 = r.canvas->lightTableBuildsForTest();
             d.panelTint30 = tintAt(grabCanvas(r.canvas), row3);
-            dragSlider(bOp, bOp->xForValue(30), bOp->xForValue(90), 24);
-            d.opacityNow = SankoOnionSkin::choice(Side::Before).opacityPercent;
+            dragSlider(bOp, bOp->xForValue(35), bOp->xForValue(90), 24);
+            d.opacityNow = SankoLightTable::choice(SankoLightTable::Side::Before).opacityPercent;
             d.panelTint90 = tintAt(grabCanvas(r.canvas), row3);
-            d.flat1 = r.storyboard->onionFlattensForTest();
-            d.built1 = r.canvas->previousGhostBuildsForTest();
+            d.flat1 = r.storyboard->lightTableFlattensForTest();
+            d.built1 = r.canvas->lightTableBuildsForTest();
             dragSlider(bHue, bHue->xForValue(0), bHue->xForValue(120), 24);
             d.hueNow = bHue->value();
             {
-                const QImage g = r.canvas->previousGhostForTest().convertToFormat(QImage::Format_ARGB32);
+                const QImage g = r.canvas->lightTableGhostForTest(true).convertToFormat(QImage::Format_ARGB32);
                 for (int y = 0; y < g.height() && !d.ghostColour.isValid(); y += 2)
                     for (int x = 0; x < g.width(); x += 2)
                         if (qAlpha(g.pixel(x, y)) > 200) {
@@ -41242,12 +41270,16 @@ void runSlidersPass(const QString &scratch)
                             break;
                         }
             }
-            d.flat2 = r.storyboard->onionFlattensForTest();
-            d.built2 = r.canvas->previousGhostBuildsForTest();
-            bCount->choose(2); // the control: a count asks for the ghosts again
-            QCoreApplication::processEvents();
-            d.flat3 = r.storyboard->onionFlattensForTest();
+            d.flat2 = r.storyboard->lightTableFlattensForTest();
+            d.built2 = r.canvas->lightTableBuildsForTest();
         });
+        // The control: the Light Table switched off and on asks for panel 1 again.
+        keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
+        keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
+        d.flat3 = r.storyboard->lightTableFlattensForTest();
+        keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier); // off for (b)
+        if (!r.canvas->isOnionSkinEnabled())
+            keyClaimed(&r.window, Qt::Key_O);
         // (b) The drawings' ghosts, on panel 1's Ground (the dialog closed while the canvas is moved there).
         clickThumb(r, 0);
         r.storyboard->layerRowClickedForTest(ground);
@@ -41282,10 +41314,11 @@ void runSlidersPass(const QString &scratch)
         d.steps = changes;
         const QColor wantA = QColor::fromHsv(120, 255, 255), wantB = QColor::fromHsv(d.hueAfter, 255, 255);
         const int drawnHue = d.drawingColour.isValid() ? d.drawingColour.hsvHue() : -1;
-        check(QStringLiteral("(sl4) NO STALL WHILE A SLIDER IS DRAGGED (the work counted, not the time): (a) with panel 1's "
-                             "ghost up, dragging the before opacity from 30 to 90 % and the before hue to green "
-                             "flattens panel 1 no more and builds its ghost no more - yet the ghost shows stronger, and "
-                             "green; (b) with drawing 2's ghosts up, dragging the after opacity to 80 % and the after "
+        check(QStringLiteral("(sl4) NO STALL WHILE A SLIDER IS DRAGGED (the work counted, not the time): (a) with the Light "
+                             "Table's ghost of panel 1 up, dragging Preferences > Light Table's before opacity from 35 "
+                             "to 90 % and its hue to green flattens panel 1 no more and builds its ghost no more - yet "
+                             "the ghost shows stronger, and green; (b) with drawing 2's ghosts up, dragging the after "
+                             "opacity to 80 % and the after "
                              "hue builds no ghost from a drawing's pixels - drawing 3's ghost takes the opacity and is "
                              "coloured again where it lies, in the new hue on the canvas"),
               ran && ghostUp && d.steps >= 60 && d.flat1 == d.flat0 && d.flat2 == d.flat0 && d.built1 == d.built0
@@ -41301,19 +41334,28 @@ void runSlidersPass(const QString &scratch)
                   .arg(d.built2).arg(d.opacityNow).arg(d.panelTint30).arg(d.panelTint90).arg(d.hueNow)
                   .arg(d.ghostColour.name()).arg(d.ghosts0).arg(d.ghosts1).arg(d.opacityAfter).arg(d.b0).arg(d.b1)
                   .arg(d.b2).arg(d.rc0).arg(d.rc2).arg(d.hueAfter).arg(wantB.name()).arg(drawnHue));
-        check(QStringLiteral("(sl4) control: the counts count - a change of a count (Frames shown) flattens panel 1 again "
-                             "on panel 2, and builds the drawings' ghosts again on panel 1"),
+        check(QStringLiteral("(sl4) control: the counts count - the Light Table switched off and on flattens panel 1 again "
+                             "on panel 2, and a change of a count (Frames shown) builds the drawings' ghosts again on "
+                             "panel 1"),
               d.flat3 > d.flat2 && d.b3 > d.b2,
               QStringLiteral("flattens %1 -> %2; ghosts built %3 -> %4").arg(d.flat2).arg(d.flat3).arg(d.b2).arg(d.b3));
         SankoOnionSkin::setDefaults();
+        SankoLightTable::setDefaults();
         for (Side side : {Side::Before, Side::After}) {
             sankoSettings().remove(SankoOnionSkin::countKey(side));
             sankoSettings().remove(SankoOnionSkin::colorKey(side));
             sankoSettings().remove(SankoOnionSkin::opacityKey(side));
         }
+        for (SankoLightTable::Side side : {SankoLightTable::Side::Before, SankoLightTable::Side::After}) {
+            sankoSettings().remove(SankoLightTable::colorKey(side));
+            sankoSettings().remove(SankoLightTable::opacityKey(side));
+        }
         if (r.canvas->isOnionSkinEnabled())
             keyClaimed(&r.window, Qt::Key_O);
+        if (r.storyboard->isLightTableOn())
+            keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier);
         r.storyboard->onionSkinSettingsChanged();
+        r.storyboard->lightTableSettingsChanged();
         pump(150);
     }
 
@@ -41323,6 +41365,11 @@ void runSlidersPass(const QString &scratch)
         r.storyboard->layerRowClickedForTest(ground);
         goTo(0, 2);
         pump(200);
+        // (Changed with OS-1, 2026-11-27: (sl4) ends by switching the onion skin and the Light Table off, and since
+        // OS-1 a switch says so in the bar - "Onion Skin off" held the bar here. Its time is up first, so the bar
+        // shows the run's note this check reads. Nothing else moved.)
+        r.canvas->expireNoteForTest();
+        pump(100);
         const QString middle = r.canvas->noteBarText();
         goTo(0, 4);
         pump(200);
@@ -41388,6 +41435,787 @@ void runSlidersPass(const QString &scratch)
                   .arg(audioText.brightest.name()));
     }
 
+    r.window.markCleanForTest();
+}
+
+// ---- (os) OS-1: THE LIGHT TABLE FOR PANELS, THE ONION SKIN FOR FRAMES, EACH ITS OWN SWITCH (2026-11-27) ----
+// The user's answers after hand test SL, Figma OS-1 745:757 and their icon frame 749:892. Three panels of grey
+// art, so every colour seen on the canvas is a ghost's: panel 1 (A) a Ground square at (700, 380) and a Boat that
+// moves from (300, 200) at its first frame to (500, 300) at its last; panel 2 (B) a Gull square at (480, 120),
+// given a run of three frames here (frame 1 the square, frame 2 a stroke on row 0, frame 3 a stroke on row 3);
+// panel 3 (C) a Kite that moves from (820, 100) at its first frame to (820, 400) at its last - one frame, no run.
+namespace os {
+const QColor kArt(70, 70, 70);
+
+QString writeOsProject(const QString &dir)
+{
+    using lmui::kSize;
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/Ghosts.sankotv");
+    Scene *scene = new Scene;
+    scene->number = 1;
+    auto square = [](const QString &name, const QPointF &c, int side) {
+        Layer layer = makeRasterLayer(name, kSize);
+        QPainter p(&layer.image);
+        p.fillRect(QRectF(c - QPointF(side / 2.0, side / 2.0), QSizeF(side, side)), kArt);
+        p.end();
+        return layer;
+    };
+    auto key = [](double at, double dx, double dy) {
+        shotcam::LayerKey k;
+        k.at = at;
+        k.pose.dx = dx;
+        k.pose.dy = dy;
+        k.ease = shotcam::Ease::Linear;
+        return k;
+    };
+    Panel *a = makeBlankPanel(kSize);
+    a->layers.removeLast();
+    a->layers.append(square(QStringLiteral("Ground"), {700, 380}, 30));
+    Layer boat = square(QStringLiteral("Boat"), {200, 200}, 20);
+    boat.animate = true;
+    boat.pivot = QPointF(200, 200);
+    boat.keys = {key(0.0, 100, 0), key(0.5, 300, 100)};
+    a->layers.append(boat);
+    a->activeLayerIndex = 1;
+    a->setLength(24, 24);
+    scene->panels.append(a);
+    Panel *b = makeBlankPanel(kSize);
+    b->layers.removeLast();
+    b->layers.append(square(QStringLiteral("Gull"), {480, 120}, 20));
+    b->activeLayerIndex = 1;
+    b->setLength(24, 24);
+    scene->panels.append(b);
+    Panel *c = makeBlankPanel(kSize);
+    c->layers.removeLast();
+    Layer kite = square(QStringLiteral("Kite"), {820, 100}, 20);
+    kite.animate = true;
+    kite.pivot = QPointF(820, 100);
+    kite.keys = {key(0.0, 0, 0), key(0.5, 0, 300)};
+    c->layers.append(kite);
+    c->activeLayerIndex = 1;
+    c->setLength(24, 24);
+    scene->panels.append(c);
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Ghosts");
+    data.fps = 24;
+    data.canvasSize = kSize;
+    data.scenes = {scene};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete scene;
+    return path;
+}
+
+// The most coloured pixel of the canvas's picture within 8 px of a stage point: grey art and white paper have
+// none, so it is a ghost's colour or nothing.
+struct Seen
+{
+    int spread = -1;
+    int hue = -1;
+    QColor colour;
+};
+Seen seenNear(const QImage &img, const QTransform &view, const QPointF &stage)
+{
+    Seen s;
+    const QPoint c = view.map(stage).toPoint();
+    for (int dy = -8; dy <= 8; ++dy)
+        for (int dx = -8; dx <= 8; ++dx) {
+            const QPoint p = c + QPoint(dx, dy);
+            if (!img.valid(p))
+                continue;
+            const QColor px(img.pixel(p));
+            const int spread = qMax(px.red(), qMax(px.green(), px.blue())) - qMin(px.red(), qMin(px.green(), px.blue()));
+            if (spread > s.spread) {
+                s.spread = spread;
+                s.colour = px;
+                s.hue = px.hsvHue();
+            }
+        }
+    return s;
+}
+bool hueIn(const Seen &s, int lo, int hi) { return s.spread >= 20 && s.hue >= lo && s.hue <= hi; }
+bool reddish(const Seen &s) { return hueIn(s, 0, 8) || hueIn(s, 350, 359); }  // the Light Table's before, #ff4d4d
+bool greenish(const Seen &s) { return hueIn(s, 120, 165); }                  // its after, #4dff91 (hue 143)
+bool bluish(const Seen &s) { return hueIn(s, 200, 225); }                    // the onion skin's before, #4d9fff (213)
+bool orangish(const Seen &s) { return hueIn(s, 12, 30); }                    // its after, #f27a3d (20)
+bool clearOf(const Seen &s) { return s.spread >= 0 && s.spread < 8; }
+QString said(const Seen &s) { return QStringLiteral("%1 (spread %2, hue %3)").arg(s.colour.name()).arg(s.spread).arg(s.hue); }
+} // namespace os
+
+void runOsPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace os;
+    using camtool::grabCanvas;
+    out() << "--- (os) OS-1: the Light Table for panels, the Onion Skin for frames, each its own switch ---" << Qt::endl;
+    // A computer that has never switched either: no switch, the defaults' colours.
+    auto forgetSettings = [] {
+        sankoSettings().remove(SankoOnionSkin::switchKey());
+        sankoSettings().remove(SankoLightTable::switchKey());
+        for (SankoLightTable::Side side : {SankoLightTable::Side::Before, SankoLightTable::Side::After}) {
+            sankoSettings().remove(SankoLightTable::colorKey(side));
+            sankoSettings().remove(SankoLightTable::opacityKey(side));
+        }
+        SankoLightTable::setDefaults();
+        SankoOnionSkin::setDefaults();
+    };
+    forgetSettings();
+    const QString project = writeOsProject(scratch + QStringLiteral("/os"));
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    Scene *scene = r.ok ? r.window.scenesForTest().value(0) : nullptr;
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    QAction *prefsAct = nullptr, *viewLight = nullptr, *viewOnion = nullptr;
+    for (QAction *a : r.window.findChildren<QAction *>()) {
+        if (a->text() == QLatin1String("Preferences..."))
+            prefsAct = a;
+        if (a->objectName() == QLatin1String("viewLightTable"))
+            viewLight = a;
+        if (a->objectName() == QLatin1String("viewOnionSkin"))
+            viewOnion = a;
+    }
+    QPushButton *ltButton = r.ok ? r.storyboard->lightTableButtonForTest() : nullptr;
+    QAbstractButton *osButton = r.ok ? r.timeline->onionSkinButtonForTest() : nullptr;
+    QAbstractButton *magnifier = r.ok ? r.timeline->zoomToFramesButtonForTest() : nullptr;
+    if (!r.ok || !scene || scene->panels.size() != 3 || !brushBtn || !prefsAct || !viewLight || !viewOnion || !ltButton
+        || !osButton || !magnifier) {
+        check(QStringLiteral("(os) the fixture opens, with the Brush, Preferences, View > Light Table and View > Onion "
+                             "Skin, the Light Table's button and the Onion Skin's"),
+              false,
+              QStringLiteral("rig %1, panels %2, View entries %3 %4, buttons %5 %6").arg(r.ok)
+                  .arg(scene ? scene->panels.size() : -1).arg(viewLight != nullptr).arg(viewOnion != nullptr)
+                  .arg(ltButton != nullptr).arg(osButton != nullptr));
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pb = scene->panels.at(1);
+    auto startsOf = [](const Panel *panel, int layer) {
+        QStringList s;
+        for (const LayerDrawing &d : panel->layers.at(layer).drawings)
+            s << QString::number(d.start);
+        return s.join(QLatin1Char(','));
+    };
+    auto goTo = [&](int flat, int frame) {
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(150);
+    };
+    auto ghostsText = [&] {
+        QStringList s;
+        for (const DrawingCanvas::OnionGhost &g : r.canvas->drawingGhostsForTest())
+            s << QStringLiteral("%1%2@%3").arg(g.before ? QLatin1Char('b') : QLatin1Char('a')).arg(g.drawing + 1)
+                     .arg(qRound(g.opacity * 100));
+        return s.join(QLatin1Char(' '));
+    };
+    auto shiftL = [&] { return keyClaimed(&r.window, Qt::Key_L, Qt::ShiftModifier); };
+    auto keyO = [&] { return keyClaimed(&r.window, Qt::Key_O); };
+    auto bar = [&] { return r.canvas->noteBarText(); };
+    auto barGrey = [&] { return r.canvas->noteBarKind() == DrawingCanvas::NoteKind::Said; };
+
+    // Panel 2's Gull gets its run: frame 1 the square, frame 2 (frames 2-3) a stroke on row 0, frame 3 (from frame 4
+    // to the panel's end) a stroke on row 3.
+    clickThumb(r, 1);
+    r.storyboard->layerRowClickedForTest(1);
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600);
+    goTo(1, 0);
+    const bool n1 = keyClaimed(&r.window, Qt::Key_N);
+    stroke(r.canvas, 0);
+    r.canvas->flushPaintCommit();
+    pump(250);
+    const bool n2 = keyClaimed(&r.window, Qt::Key_N);
+    stroke(r.canvas, 3);
+    r.canvas->flushPaintCommit();
+    pump(250);
+    const bool runOk = n1 && n2 && startsOf(pb, 1) == QLatin1String("0,2,4");
+    const QTransform view = r.canvas->viewTransformForTest();
+    const QPointF ground(700, 380), boatFirst(300, 200), boatLast(500, 300), kiteFirst(820, 100), kiteLast(820, 400),
+        gullSquare(480, 120), row0(240, 180), row3(240, 300);
+
+    // (os1) THE LIGHT TABLE ALONE (answers 1 and 2): Shift+L on panel 2 - panel 1 as it ENDS in red, panel 3 as it
+    // BEGINS in green, under the drawing; no onion skin.
+    {
+        goTo(1, 4);
+        const bool keyOn = shiftL();
+        pump(150);
+        const QImage on = grabCanvas(r.canvas);
+        const Seen g = seenNear(on, view, ground), bl = seenNear(on, view, boatLast), bf = seenNear(on, view, boatFirst),
+                   kf = seenNear(on, view, kiteFirst), kl = seenNear(on, view, kiteLast);
+        const QString noteOn = bar();
+        const bool greyOn = barGrey();
+        check(QStringLiteral("(os1) THE LIGHT TABLE ALONE (Shift+L): on panel 2, panel 1 AS IT ENDS in red - its Ground, and its "
+                             "Boat where its keys leave it, not where it starts - and panel 3 AS IT BEGINS in green - its "
+                             "Kite where it starts, not where it ends; no onion skin; the bar says in grey \"Light Table on: "
+                             "the panels before and after\""),
+              runOk && keyOn && r.storyboard->isLightTableOn() && r.canvas->lightTableShownForTest()
+                  && !r.canvas->isOnionSkinEnabled() && ghostsText().isEmpty() && reddish(g) && reddish(bl) && clearOf(bf)
+                  && greenish(kf) && clearOf(kl) && noteOn == QLatin1String("Light Table on: the panels before and after")
+                  && greyOn,
+              QStringLiteral("the run %1, the key %2; Ground %3, Boat's last place %4, its first %5; Kite's first %6, its "
+                             "last %7; onion %8 [%9]; the bar '%10' (grey %11)")
+                  .arg(runOk).arg(keyOn).arg(said(g), said(bl), said(bf), said(kf), said(kl))
+                  .arg(r.canvas->isOnionSkinEnabled()).arg(ghostsText()).arg(noteOn).arg(greyOn));
+        const bool keyOff = shiftL();
+        pump(150);
+        const QImage off = grabCanvas(r.canvas);
+        const Seen g2 = seenNear(off, view, ground), bl2 = seenNear(off, view, boatLast), kf2 = seenNear(off, view, kiteFirst);
+        check(QStringLiteral("(os1) control: Shift+L again - the Light Table off, the bar says \"Light Table off\", and the "
+                             "places it coloured are clear"),
+              keyOff && !r.storyboard->isLightTableOn() && !r.canvas->lightTableShownForTest() && clearOf(g2) && clearOf(bl2)
+                  && clearOf(kf2) && bar() == QLatin1String("Light Table off"),
+              QStringLiteral("Ground %1, Boat %2, Kite %3; the bar '%4'").arg(said(g2), said(bl2), said(kf2), bar()));
+    }
+
+    // (os2) THE ONION SKIN ALONE: only the selected layer's frames - on a run's first frame the frame after and no
+    // panel; on a layer with one frame nothing, and the bar says so in grey (answer 4).
+    {
+        goTo(1, 0);
+        const bool keyOn = keyO();
+        pump(150);
+        const QString ghosts = ghostsText();
+        const QImage first = grabCanvas(r.canvas);
+        const Seen r0 = seenNear(first, view, row0), g = seenNear(first, view, ground), bl = seenNear(first, view, boatLast),
+                   bf = seenNear(first, view, boatFirst);
+        const QString noteRun = bar();
+        check(QStringLiteral("(os2) THE ONION SKIN ALONE (O), ON A RUN'S FIRST FRAME: the frame after in orange and nothing "
+                             "before it - no panel: panel 1's Ground and Boat are not on the canvas; the bar says in grey "
+                             "\"Onion Skin on: Gull's frames before and after\""),
+              keyOn && r.canvas->isOnionSkinEnabled() && ghosts == QLatin1String("a2@30") && orangish(r0) && clearOf(g)
+                  && clearOf(bl) && clearOf(bf) && !r.canvas->lightTableShownForTest()
+                  && noteRun == QLatin1String("Onion Skin on: Gull's frames before and after") && barGrey(),
+              QStringLiteral("the key %1; ghosts [%2]; row 0 %3; Ground %4, Boat %5 / %6; the bar '%7'").arg(keyOn)
+                  .arg(ghosts).arg(said(r0), said(g), said(bl), said(bf), noteRun));
+        shiftL();
+        const Seen g2 = seenNear(grabCanvas(r.canvas), view, ground);
+        shiftL();
+        check(QStringLiteral("(os2) control: with the Light Table on as well, panel 1's Ground is seen at the same place, in "
+                             "red - the measure sees a panel where there is one"),
+              reddish(g2), said(g2));
+        // A layer with one frame: panel 3's Kite. O off, then on again there.
+        clickThumb(r, 2);
+        r.storyboard->layerRowClickedForTest(1);
+        goTo(2, 0);
+        keyO();
+        const bool onAgain = keyO();
+        pump(150);
+        const QString noteOne = bar();
+        const bool grey = barGrey();
+        const QImage one = grabCanvas(r.canvas);
+        const Seen gs = seenNear(one, view, gullSquare), r3 = seenNear(one, view, row3), r0b = seenNear(one, view, row0);
+        check(QStringLiteral("(os2) A LAYER WITH ONE FRAME (panel 3's Kite): O says in the bar's grey \"Onion Skin on. Kite has "
+                             "one frame: nothing for the onion skin\", and nothing is shown - no frame, no panel (panel "
+                             "2's Gull and its strokes are not on the canvas)"),
+              onAgain && r.canvas->isOnionSkinEnabled()
+                  && noteOne == QLatin1String("Onion Skin on. Kite has one frame: nothing for the onion skin") && grey
+                  && ghostsText().isEmpty() && clearOf(gs) && clearOf(r3) && clearOf(r0b),
+              QStringLiteral("the bar '%1' (grey %2); ghosts [%3]; the Gull %4, row 3 %5, row 0 %6").arg(noteOne).arg(grey)
+                  .arg(ghostsText()).arg(said(gs), said(r3), said(r0b)));
+        shiftL();
+        const Seen r3b = seenNear(grabCanvas(r.canvas), view, row3), gs2 = seenNear(grabCanvas(r.canvas), view, gullSquare);
+        shiftL();
+        keyO();
+        check(QStringLiteral("(os2) control: with the Light Table on there, panel 2 is seen as it ends - its frame 3's stroke "
+                             "on row 3, in red, and not its frame 1's square"),
+              reddish(r3b) && clearOf(gs2), QStringLiteral("row 3 %1, the Gull's square %2").arg(said(r3b), said(gs2)));
+    }
+
+    // (os3) BOTH ON (answer D): the frames over the drawing, the panels under it - four colours - and neither switch
+    // turns the other off.
+    {
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1);
+        goTo(1, 2); // the Gull's frame 2: frame 1 before, frame 3 after
+        keyO();
+        shiftL();
+        pump(150);
+        const QImage both = grabCanvas(r.canvas);
+        const Seen gs = seenNear(both, view, gullSquare), r3 = seenNear(both, view, row3), g = seenNear(both, view, ground),
+                   kf = seenNear(both, view, kiteFirst);
+        check(QStringLiteral("(os3) BOTH ON: on panel 2's frame 2 the frames - frame 1 in blue, frame 3 in orange - and the "
+                             "panels - panel 1 in red, panel 3 in green: four colours, two jobs"),
+              r.canvas->isOnionSkinEnabled() && r.storyboard->isLightTableOn() && bluish(gs) && orangish(r3) && reddish(g)
+                  && greenish(kf),
+              QStringLiteral("frame 1's square %1, frame 3's stroke %2, panel 1's Ground %3, panel 3's Kite %4")
+                  .arg(said(gs), said(r3), said(g), said(kf)));
+        keyO(); // the onion skin off
+        const QImage ltOnly = grabCanvas(r.canvas);
+        const bool ltStayed = r.storyboard->isLightTableOn() && reddish(seenNear(ltOnly, view, ground))
+            && clearOf(seenNear(ltOnly, view, gullSquare));
+        keyO(); // on again
+        shiftL(); // the Light Table off
+        const QImage osOnly = grabCanvas(r.canvas);
+        const bool osStayed = r.canvas->isOnionSkinEnabled() && ghostsText() == QLatin1String("a3@30 b1@30")
+            && bluish(seenNear(osOnly, view, gullSquare)) && clearOf(seenNear(osOnly, view, ground));
+        check(QStringLiteral("(os3) NEITHER TURNS THE OTHER OFF: O off leaves the Light Table on (panel 1 still red, frame 1 "
+                             "gone); the Light Table off leaves the onion skin on (frames 1 and 3 still there, panel 1 "
+                             "gone)"),
+              ltStayed && osStayed, QStringLiteral("Light Table kept %1; onion skin kept %2 [%3]").arg(ltStayed).arg(osStayed)
+                                        .arg(ghostsText()));
+        keyO(); // both off
+        const QImage none = grabCanvas(r.canvas);
+        check(QStringLiteral("(os3) control: both off - the four places are clear"),
+              clearOf(seenNear(none, view, gullSquare)) && clearOf(seenNear(none, view, row3))
+                  && clearOf(seenNear(none, view, ground)) && clearOf(seenNear(none, view, kiteFirst)),
+              QStringLiteral("%1, %2, %3, %4").arg(said(seenNear(none, view, gullSquare)), said(seenNear(none, view, row3)),
+                                                   said(seenNear(none, view, ground)), said(seenNear(none, view, kiteFirst))));
+    }
+
+    // (os4) THE KEYS AND THE VIEW MENU (answer 2; Figma 745:757 section 3): each switch ticked in View while it is
+    // on, whichever way it was turned, its button lit with it.
+    {
+        const QString lightText = viewLight->text(), onionText = viewOnion->text();
+        viewLight->trigger();
+        pump(120);
+        const bool menuLight = r.storyboard->isLightTableOn() && viewLight->isChecked() && ltButton->isChecked();
+        const QString noteMenu = bar();
+        viewOnion->trigger();
+        pump(120);
+        const bool menuOnion = r.canvas->isOnionSkinEnabled() && viewOnion->isChecked() && osButton->isChecked();
+        shiftL();
+        const bool keyLightOff = !r.storyboard->isLightTableOn() && !viewLight->isChecked() && !ltButton->isChecked();
+        keyO();
+        const bool keyOnionOff = !r.canvas->isOnionSkinEnabled() && !viewOnion->isChecked() && !osButton->isChecked();
+        ltButton->click();
+        pump(120);
+        const bool buttonLight = r.storyboard->isLightTableOn() && viewLight->isChecked();
+        osButton->click();
+        pump(120);
+        const bool buttonOnion = r.canvas->isOnionSkinEnabled() && viewOnion->isChecked();
+        ltButton->click();
+        osButton->click();
+        pump(120);
+        check(QStringLiteral("(os4) THE KEYS AND THE VIEW MENU: View > \"Light Table  Shift+L\" and View > \"Onion Skin  O\", "
+                             "each ticked while its switch is on - turned from the menu, from its key, from its button - "
+                             "and the buttons lit with them; the menu's switch says so in the bar"),
+              lightText == QLatin1String("Light Table\tShift+L") && onionText == QLatin1String("Onion Skin\tO")
+                  && viewLight->isCheckable() && viewOnion->isCheckable() && menuLight && menuOnion && keyLightOff
+                  && keyOnionOff && buttonLight && buttonOnion && !r.storyboard->isLightTableOn()
+                  && !r.canvas->isOnionSkinEnabled()
+                  && noteMenu == QLatin1String("Light Table on: the panels before and after"),
+              QStringLiteral("texts '%1' / '%2'; from the menu %3 %4 (bar '%5'); keys off %6 %7; buttons %8 %9")
+                  .arg(QString(lightText).replace(QLatin1Char('\t'), QLatin1Char(' ')),
+                       QString(onionText).replace(QLatin1Char('\t'), QLatin1Char(' ')))
+                  .arg(menuLight).arg(menuOnion).arg(noteMenu).arg(keyLightOff).arg(keyOnionOff).arg(buttonLight)
+                  .arg(buttonOnion));
+        // Control: L alone is still the Lasso's, and leaves the Light Table as it was.
+        keyClaimed(&r.window, Qt::Key_L);
+        const bool lasso = r.canvas->tool() == DrawingCanvas::Lasso;
+        check(QStringLiteral("(os4) control: L alone chooses the Lasso and leaves the Light Table off"),
+              lasso && !r.storyboard->isLightTableOn(),
+              QStringLiteral("tool %1, Light Table %2").arg(int(r.canvas->tool())).arg(r.storyboard->isLightTableOn()));
+        brushBtn->click();
+        pump(80);
+    }
+
+    // (os5) THE TWO BUTTONS' LOOK (the user's Figma 749:892, answer 5): the Onion Skin's on the LAYER row at x 50,
+    // 20 x 20, between Zoom to Frames and FRAMES, there while the lane is; on, the accent border and the accent at 28 %
+    // behind the Light Table's bulb in white (9 x 14.5 at (5.5, 2.75)), and no other colour. The Light Table's in the
+    // panel strip: the same bulb, white; on, the purple border and a purple background.
+    {
+        const QColor accent(0x7c, 0x6e, 0xf6);
+        // Its place, with the Gull's run on the row; and on panel 3's one-frame Kite it is not there.
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1);
+        goTo(1, 2);
+        pump(150);
+        const QRect at = osButton->geometry(), mag = magnifier->geometry();
+        const bool shownRun = osButton->isVisible();
+        const QRect lane = r.timeline->drawingsLaneForTest();
+        const QImage row = r.surface->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        const int labelW = AnimaticTimeline::labelColumnWidthForTest();
+        const sl::TextBox frames = sl::textIn(row, QRect(at.right() + 1, lane.top(), labelW - at.right() - 3, lane.height()),
+                                              QColor(row.pixel(labelW - 4, lane.center().y())));
+        clickThumb(r, 2);
+        r.storyboard->layerRowClickedForTest(1);
+        pump(150);
+        const bool hiddenOne = !osButton->isVisible();
+        clickThumb(r, 1);
+        r.storyboard->layerRowClickedForTest(1);
+        pump(150);
+        // Its two looks, the pointer elsewhere.
+        hover(r, r.animatic, false);
+        const QImage offImg = osButton->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        osButton->click();
+        pump(120);
+        const bool clickOn = r.canvas->isOnionSkinEnabled();
+        const QImage onImg = osButton->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        struct Look
+        {
+            int white = 0, foreign = 0, purpleEdge = 0;
+            QRect bulb;
+            QColor edge, inside;
+        };
+        auto lookOf = [&](const QImage &img) {
+            Look l;
+            const qreal dpr = img.devicePixelRatio();
+            auto px = [&](qreal x, qreal y) { return QColor(img.pixel(qRound(x * dpr), qRound(y * dpr))); };
+            l.edge = px(10, 0.4);
+            l.inside = px(2.5, 10);
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    const QColor c(img.pixel(x, y));
+                    const int spread = qMax(c.red(), qMax(c.green(), c.blue())) - qMin(c.red(), qMin(c.green(), c.blue()));
+                    if (qGray(c.rgb()) > 200 && spread < 24) {
+                        ++l.white;
+                        const QRect p(qRound(x / dpr), qRound(y / dpr), 1, 1);
+                        l.bulb = l.bulb.isNull() ? p : l.bulb.united(p);
+                    }
+                    // Any colour but the accent's hue (purple, 240-260) and greys: the ghosts' red, green, blue, orange.
+                    if (spread >= 24 && (c.hsvHue() < 235 || c.hsvHue() > 262))
+                        ++l.foreign;
+                    if ((x < dpr || y < dpr || x >= img.width() - dpr || y >= img.height() - dpr)
+                        && sl::channelGap(c, accent) <= 24)
+                        ++l.purpleEdge;
+                }
+            return l;
+        };
+        const Look on = lookOf(onImg), off = lookOf(offImg);
+        const QString tipOs = osButton->toolTip(), tipLt = ltButton->toolTip();
+        check(QStringLiteral("(os5) THE ONION SKIN'S BUTTON (Figma 749:892): on the LAYER row at x 50, 20 x 20, level with Zoom "
+                             "to Frames and left of FRAMES, there while the lane is (not on panel 3's one-frame Kite); a "
+                             "click switches the onion skin; on, a purple border and a purple background behind the "
+                             "Light Table's bulb in white, inside 5.5-14.5 x 2.75-17.25, and no other colour; its tip "
+                             "names it, its key, and the Light Table's"),
+              shownRun && at == QRect(50, mag.y(), 20, 20) && mag.x() == 27 && frames.count > 20
+                  && frames.box.left() > at.right() + 4 && hiddenOne && clickOn && sl::channelGap(on.edge, accent) <= 24
+                  && on.purpleEdge > 40 && on.inside.blue() > on.inside.red() + 12 && on.white > 20 && on.bulb.left() >= 5
+                  && on.bulb.right() <= 15 && on.bulb.top() >= 2 && on.bulb.bottom() <= 18 && on.foreign == 0
+                  && tipOs.contains(QLatin1String("Onion Skin (O)")) && tipOs.contains(QLatin1String("Light Table's (Shift+L)")),
+              QStringLiteral("at %1,%2 %3x%4 (Zoom to Frames %5,%6), shown %7, FRAMES from x %8, hidden on the Kite %9, "
+                             "the click %10; on: edge %11 (%12 purple edge px), inside %13, %14 white px in %15,%16 %17x%18, "
+                             "%19 of another colour; tip '%20'")
+                  .arg(at.x()).arg(at.y()).arg(at.width()).arg(at.height()).arg(mag.x()).arg(mag.y()).arg(shownRun)
+                  .arg(frames.box.left()).arg(hiddenOne).arg(clickOn).arg(on.edge.name()).arg(on.purpleEdge)
+                  .arg(on.inside.name()).arg(on.white).arg(on.bulb.x()).arg(on.bulb.y()).arg(on.bulb.width())
+                  .arg(on.bulb.height()).arg(on.foreign).arg(tipOs));
+        check(QStringLiteral("(os5) control: off, the same button has no purple border and no purple behind - and the same "
+                             "white bulb"),
+              off.purpleEdge == 0 && sl::channelGap(off.edge, QColor(0x1c, 0x1e, 0x25)) <= 8 && off.white == on.white
+                  && off.bulb == on.bulb && off.foreign == 0,
+              QStringLiteral("edge %1 (%2 purple edge px); %3 white px in %4,%5 %6x%7; %8 of another colour")
+                  .arg(off.edge.name()).arg(off.purpleEdge).arg(off.white).arg(off.bulb.x()).arg(off.bulb.y())
+                  .arg(off.bulb.width()).arg(off.bulb.height()).arg(off.foreign));
+        osButton->click();
+        pump(120);
+        // The Light Table's button.
+        const QImage ltOff = ltButton->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        ltButton->click();
+        pump(120);
+        const QImage ltOn = ltButton->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        ltButton->click();
+        pump(120);
+        auto ltLook = [&](const QImage &img) {
+            Look l;
+            l.edge = QColor(img.pixel(img.width() / 2, 0));
+            l.inside = QColor(img.pixel(qRound(4 * img.devicePixelRatio()), img.height() / 2));
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    const QColor c(img.pixel(x, y));
+                    const int spread = qMax(c.red(), qMax(c.green(), c.blue())) - qMin(c.red(), qMin(c.green(), c.blue()));
+                    if (qGray(c.rgb()) > 235 && spread < 16) {
+                        ++l.white;
+                        l.bulb = l.bulb.isNull() ? QRect(x, y, 1, 1) : l.bulb.united(QRect(x, y, 1, 1));
+                    }
+                    if (spread >= 24 && (c.hsvHue() < 235 || c.hsvHue() > 262))
+                        ++l.foreign;
+                }
+            return l;
+        };
+        const Look lon = ltLook(ltOn), loff = ltLook(ltOff);
+        // The four looks kept beside the run, to be set by the user's Figma frame for the report.
+        onImg.save(scratch + QStringLiteral("/os/look_onion_on.png"));
+        offImg.save(scratch + QStringLiteral("/os/look_onion_off.png"));
+        ltOn.save(scratch + QStringLiteral("/os/look_lighttable_on.png"));
+        ltOff.save(scratch + QStringLiteral("/os/look_lighttable_off.png"));
+        check(QStringLiteral("(os5) THE LIGHT TABLE'S BUTTON in the panel strip: the same bulb in white, nothing added; on, "
+                             "the purple border and a purple background; its tip names it, its key, and the Onion Skin's"),
+              sl::channelGap(lon.edge, accent) <= 30 && lon.inside.blue() > lon.inside.red() + 12 && lon.white > 20
+                  && lon.foreign == 0 && tipLt.contains(QLatin1String("Light Table (Shift+L)"))
+                  && tipLt.contains(QLatin1String("Onion Skin's (O)")),
+              QStringLiteral("on: edge %1, inside %2, %3 white px, %4 of another colour; tip '%5'").arg(lon.edge.name())
+                  .arg(lon.inside.name()).arg(lon.white).arg(lon.foreign).arg(tipLt));
+        // (The white count may differ by a few edge pixels: the bulb's antialiased edge is blended into purple on, into
+        // #111111 off - so the same bulb is the same box, and the count within 4. First written as an equal count, which
+        // failed on 34 against 36 with the same pixmap drawn in both: my control was too strict, the button was right.)
+        check(QStringLiteral("(os5) control: off, the Light Table's button is the strip's others' - its border #2a2a2a, no "
+                             "purple behind - with the same white bulb"),
+              sl::channelGap(loff.edge, QColor(0x2a, 0x2a, 0x2a)) <= 12 && sl::channelGap(loff.inside, QColor(0x11, 0x11, 0x11)) <= 8
+                  && loff.bulb == lon.bulb && qAbs(loff.white - lon.white) <= 4 && loff.foreign == 0,
+              QStringLiteral("edge %1, inside %2, %3 white px in %4,%5 %6x%7 (on: %8 in %9,%10 %11x%12), %13 of another colour")
+                  .arg(loff.edge.name()).arg(loff.inside.name()).arg(loff.white).arg(loff.bulb.x()).arg(loff.bulb.y())
+                  .arg(loff.bulb.width()).arg(loff.bulb.height()).arg(lon.white).arg(lon.bulb.x()).arg(lon.bulb.y())
+                  .arg(lon.bulb.width()).arg(lon.bulb.height()).arg(loff.foreign));
+    }
+
+    // (os6) A RIGHT-CLICK OPENS ITS PAGE (answer 3 B).
+    {
+        auto pageOnRightClick = [&](QWidget *button, bool *dialogSeen) {
+            QString page;
+            *dialogSeen = false;
+            QTimer::singleShot(400, &r.window, [&] {
+                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!dialog)
+                    return;
+                *dialogSeen = true;
+                if (auto *list = dialog->findChild<QListWidget *>())
+                    if (list->currentItem())
+                        page = list->currentItem()->text();
+                dialog->close();
+            });
+            const QPointF c(button->width() / 2.0, button->height() / 2.0);
+            libbox::pointerTo(button, c, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+            libbox::pointerTo(button, c, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton);
+            libbox::pointerTo(button, c, QEvent::MouseButtonRelease, Qt::NoButton, Qt::RightButton);
+            pump(600);
+            return page;
+        };
+        bool seenLt = false, seenOs = false;
+        const QString ltPage = pageOnRightClick(ltButton, &seenLt);
+        const bool ltSame = !r.storyboard->isLightTableOn();
+        const QString osPage = pageOnRightClick(osButton, &seenOs);
+        const bool osSame = !r.canvas->isOnionSkinEnabled();
+        check(QStringLiteral("(os6) A RIGHT-CLICK OPENS ITS PAGE: on the Light Table's button, Preferences at \"Light Table\"; "
+                             "on the Onion Skin's, at \"Onion Skin\"; neither switch changes"),
+              seenLt && ltPage == QLatin1String("Light Table") && ltSame && seenOs && osPage == QLatin1String("Onion Skin")
+                  && osSame,
+              QStringLiteral("Light Table's: dialog %1 at '%2', switch kept %3; Onion Skin's: dialog %4 at '%5', kept %6")
+                  .arg(seenLt).arg(ltPage).arg(ltSame).arg(seenOs).arg(osPage).arg(osSame));
+        // Control: a left click opens nothing - it switches.
+        libbox::pointerTo(ltButton, QPointF(10, 10), QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(ltButton, QPointF(10, 10), QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(200);
+        const bool noDialog = QApplication::activeModalWidget() == nullptr;
+        const bool switched = r.storyboard->isLightTableOn();
+        ltButton->click();
+        pump(120);
+        check(QStringLiteral("(os6) control: a left click on the Light Table's button opens no Preferences - it switches the "
+                             "Light Table"),
+              noDialog && switched, QStringLiteral("no dialog %1, switched %2").arg(noDialog).arg(switched));
+    }
+
+    // (os7) REMEMBERED ON THIS COMPUTER, NEVER IN THE PROJECT (answer 3 C): a new start of SankoTV - a second window
+    // made now, its page reading the settings - starts as the switches were left.
+    {
+        keyO();
+        shiftL();
+        const bool saved = sankoSettings().value(SankoOnionSkin::switchKey()).toBool()
+            && sankoSettings().value(SankoLightTable::switchKey()).toBool();
+        bool onion2 = false, light2 = false, button2 = false;
+        {
+            MainWindow second;
+            auto *c2 = second.findChild<DrawingCanvas *>();
+            auto *p2 = second.findChild<StoryboardPage *>();
+            onion2 = c2 && c2->isOnionSkinEnabled();
+            light2 = c2 && c2->isLightTableEnabled();
+            button2 = p2 && p2->lightTableButtonForTest() && p2->lightTableButtonForTest()->isChecked();
+        }
+        pump(150);
+        const QString copy = scratch + QStringLiteral("/os/Ghosts saved.sankotv");
+        QFile::remove(copy);
+        const bool wrote = r.window.saveProjectForTest(copy);
+        QFile file(copy);
+        QByteArray text;
+        if (file.open(QIODevice::ReadOnly))
+            text = file.readAll();
+        const bool inFile = text.contains("onionSkin") || text.contains("lightTable") || text.contains("onion")
+            || text.contains("Light Table");
+        check(QStringLiteral("(os7) REMEMBERED ON THIS COMPUTER: switched on, both are written to SankoTV's settings, and a new "
+                             "start (a second window made now) starts with both on, the Light Table's button lit; the "
+                             "project file says nothing of either"),
+              saved && onion2 && light2 && button2 && wrote && !text.isEmpty() && !inFile,
+              QStringLiteral("saved %1; the new start: onion %2, Light Table %3, its button %4; the file written %5 (%6 bytes), "
+                             "naming them %7")
+                  .arg(saved).arg(onion2).arg(light2).arg(button2).arg(wrote).arg(text.size()).arg(inFile));
+        keyO();
+        shiftL();
+        bool onion3 = true, light3 = true;
+        {
+            MainWindow third;
+            auto *c3 = third.findChild<DrawingCanvas *>();
+            onion3 = !c3 || c3->isOnionSkinEnabled();
+            light3 = !c3 || c3->isLightTableEnabled();
+        }
+        pump(150);
+        check(QStringLiteral("(os7) control: switched off, the settings say off and a new start starts with both off"),
+              !sankoSettings().value(SankoOnionSkin::switchKey()).toBool()
+                  && !sankoSettings().value(SankoLightTable::switchKey()).toBool() && !onion3 && !light3,
+              QStringLiteral("the new start: onion %1, Light Table %2").arg(onion3).arg(light3));
+    }
+
+    // (os8) PREFERENCES > LIGHT TABLE (answer 3 A): made like the Onion Skin page, with standard Sanko sliders and
+    // "Use the default"; opening it changes nothing; a colour shows at once on the canvas.
+    {
+        // Preferences, opened as the menu opens it; `onPage` runs while it is up, on the page named, then it closes.
+        auto withPreferences = [&](const QString &pageName, const std::function<void(QDialog *, QWidget *)> &onPage) {
+            bool ran = false;
+            QTimer::singleShot(400, &r.window, [&] {
+                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!dialog)
+                    return;
+                auto *list = dialog->findChild<QListWidget *>();
+                auto *pages = dialog->findChild<QStackedWidget *>();
+                QWidget *page = nullptr;
+                if (list && pages)
+                    for (int i = 0; i < list->count(); ++i)
+                        if (list->item(i)->text() == pageName) {
+                            list->setCurrentRow(i);
+                            QCoreApplication::processEvents();
+                            page = pages->currentWidget();
+                        }
+                onPage(dialog, page);
+                ran = true;
+                dialog->close();
+            });
+            prefsAct->trigger();
+            pump(300);
+            return ran;
+        };
+        auto pressSlider = [&](QWidget *s, int x) {
+            const QPointF p(x, SankoStandardSlider::kTrackTop + SankoStandardSlider::kTrackHeight / 2);
+            libbox::pointerTo(s, p, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+            libbox::pointerTo(s, p, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+            libbox::pointerTo(s, p, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+            QCoreApplication::processEvents();
+        };
+        using SankoLightTable::Side;
+        clickThumb(r, 1);
+        goTo(1, 4);
+        shiftL(); // on: the canvas shows what the page does
+        struct Page
+        {
+            QStringList names, texts;
+            bool hueKinds = false, keptDefault = false, nothingSaved = false, followed = false, defaulted = false;
+            int beforeHue = -1, afterHue = -1, pressed = -1, savedOpacity = -1;
+            QString beforeSwatch, afterSwatch, afterNow, savedAfter, beforeNow, canvasAfter;
+        } p;
+        const bool ran = withPreferences(QStringLiteral("Light Table"), [&](QDialog *, QWidget *page) {
+            if (!page)
+                return;
+            QList<SankoStandardSlider *> sliders = page->findChildren<SankoStandardSlider *>();
+            for (SankoStandardSlider *s : sliders)
+                p.names << s->objectName();
+            for (QLabel *l : page->findChildren<QLabel *>())
+                p.texts << l->text();
+            if (auto *d = page->findChild<QPushButton *>(QStringLiteral("prefsLightDefault")))
+                p.texts << d->text();
+            auto *bHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsLightBeforeHue"));
+            auto *aHue = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsLightAfterHue"));
+            auto *aOp = page->findChild<SankoStandardSlider *>(QStringLiteral("prefsLightAfterOpacity"));
+            auto *def = page->findChild<QPushButton *>(QStringLiteral("prefsLightDefault"));
+            if (!bHue || !aHue || !aOp || !def)
+                return;
+            p.hueKinds = bHue->maximum() == 359 && aHue->maximum() == 359;
+            p.keptDefault = SankoLightTable::isDefault();
+            p.nothingSaved = !sankoSettings().contains(SankoLightTable::colorKey(Side::Before))
+                && !sankoSettings().contains(SankoLightTable::colorKey(Side::After));
+            p.beforeHue = bHue->value();
+            p.afterHue = aHue->value();
+            p.beforeSwatch = bHue->swatch().name();
+            p.afterSwatch = aHue->swatch().name();
+            pressSlider(aHue, int(aHue->xForValue(300)));
+            p.pressed = aHue->value();
+            p.afterNow = SankoLightTable::choice(Side::After).color.name();
+            p.savedAfter = sankoSettings().value(SankoLightTable::colorKey(Side::After)).toString();
+            p.beforeNow = SankoLightTable::choice(Side::Before).color.name();
+            pressSlider(aOp, int(aOp->xForValue(60)));
+            p.savedOpacity = sankoSettings().value(SankoLightTable::opacityKey(Side::After)).toInt();
+            pump(60);
+            const Seen kf = seenNear(grabCanvas(r.canvas), view, kiteFirst);
+            p.canvasAfter = said(kf);
+            p.followed = kf.spread >= 20 && kf.hue >= 285 && kf.hue <= 315;
+            def->click();
+            QCoreApplication::processEvents();
+            p.defaulted = SankoLightTable::isDefault()
+                && sankoSettings().value(SankoLightTable::colorKey(Side::After)).toString()
+                       == QColor(SankoLightTable::kAfterDefault).name()
+                && sankoSettings().value(SankoLightTable::opacityKey(Side::After)).toInt() == 35;
+        });
+        shiftL(); // off
+        const int wantBefore = QColor(SankoLightTable::kBeforeDefault).hsvHue();
+        const int wantAfter = QColor(SankoLightTable::kAfterDefault).hsvHue();
+        check(QStringLiteral("(os8) PREFERENCES > LIGHT TABLE: the panel before (as it ends) and the panel after (as it "
+                             "begins), each a hue slider and a standard opacity slider; opened, it changes nothing - red "
+                             "and green stay, nothing is written, the draggers on their hues; the after hue pressed at 300 "
+                             "makes panel 3's ghost magenta on the canvas, saved, the before colour untouched, the opacity "
+                             "saved; \"Use the default (red before, green after)\" brings back red, green and 35 %"),
+              ran
+                  && p.names == QStringList({QStringLiteral("prefsLightBeforeHue"), QStringLiteral("prefsLightBeforeOpacity"),
+                                             QStringLiteral("prefsLightAfterHue"), QStringLiteral("prefsLightAfterOpacity")})
+                  && p.hueKinds && p.keptDefault && p.nothingSaved && p.beforeHue == wantBefore && p.afterHue == wantAfter
+                  && p.beforeSwatch == QColor(SankoLightTable::kBeforeDefault).name()
+                  && p.afterSwatch == QColor(SankoLightTable::kAfterDefault).name() && qAbs(p.pressed - 300) <= 2
+                  && p.afterNow == QColor::fromHsv(p.pressed, 255, 255).name() && p.savedAfter == p.afterNow
+                  && p.beforeNow == QColor(SankoLightTable::kBeforeDefault).name() && p.savedOpacity == 60 && p.followed
+                  && p.defaulted && p.texts.contains(QStringLiteral("Panel before (as it ends)"))
+                  && p.texts.contains(QStringLiteral("Panel after (as it begins)"))
+                  && p.texts.contains(QStringLiteral("Use the default (red before, green after)")),
+              QStringLiteral("the dialog %1; sliders [%2]; hue kinds %3; opened: default %4, nothing saved %5, draggers %6 / %7 "
+                             "(want %8 / %9), swatches %10 / %11; pressed to %12: after %13 (saved '%14'), before %15, "
+                             "opacity saved %16; panel 3's ghost %17; the default %18; texts [%19]")
+                  .arg(ran).arg(p.names.join(QLatin1Char(','))).arg(p.hueKinds).arg(p.keptDefault).arg(p.nothingSaved)
+                  .arg(p.beforeHue).arg(p.afterHue).arg(wantBefore).arg(wantAfter).arg(p.beforeSwatch).arg(p.afterSwatch)
+                  .arg(p.pressed).arg(p.afterNow).arg(p.savedAfter).arg(p.beforeNow).arg(p.savedOpacity)
+                  .arg(p.canvasAfter).arg(p.defaulted).arg(p.texts.join(QStringLiteral(" | "))));
+        check(QStringLiteral("(os8) control: the Onion Skin's colours did not move with the Light Table's"),
+              SankoOnionSkin::isDefault(), QStringLiteral("the onion skin at its defaults %1").arg(SankoOnionSkin::isDefault()));
+    }
+
+    // (os9) THE ZOOM TO FRAMES TIP WITHOUT QT'S WARNING (the user's word): the tip's frame up with one line ("New Frame
+    // (N)", the + beside it) is given the Zoom to Frames tip, which wraps - as in hand test I2-2, where Qt said twice
+    // "QWindowsWindow::setGeometry: Unable to set geometry 500x27 ... Resulting geometry: 500x42".
+    {
+        SankoTipFrame frame;
+        frame.setTipText(QStringLiteral("New Frame (N)"));
+        frame.move(r.window.mapToGlobal(QPoint(40, 600)));
+        frame.showFaded();
+        pump(250);
+        const QSize oneLine = frame.size();
+        int warnings = -1;
+        {
+            camtool::WarningCapture capture;
+            frame.setTipText(magnifier->toolTip());
+            pump(250);
+            warnings = capture.count(QStringLiteral("Unable to set geometry"));
+        }
+        const QSize twoLines = frame.size();
+        auto *label = frame.findChild<QLabel *>();
+        const int wanted = label ? label->heightForWidth(SankoTipFrame::kMaxWidth) + 12 : -1;
+        const bool whole = label && label->height() >= label->heightForWidth(label->width());
+        check(QStringLiteral("(os9) THE ZOOM TO FRAMES TIP: a tip up with one line given the Zoom to Frames tip, which wraps, "
+                             "is set once to its two lines, 500 wide - and Qt says nothing (no \"Unable to set geometry\")"),
+              warnings == 0 && twoLines.width() == SankoTipFrame::kMaxWidth + 20 && twoLines.height() == wanted
+                  && twoLines.height() > oneLine.height() + 10 && whole,
+              QStringLiteral("Qt's warnings %1; one line %2x%3, then %4x%5 (want %6 high); the label whole %7")
+                  .arg(warnings).arg(oneLine.width()).arg(oneLine.height()).arg(twoLines.width()).arg(twoLines.height())
+                  .arg(wanted).arg(whole));
+        // Control: the capture hears Qt's warnings - one made here is counted.
+        int planted = -1;
+        {
+            camtool::WarningCapture capture;
+            qWarning("QWindowsWindow::setGeometry: Unable to set geometry (planted by the check)");
+            planted = capture.count(QStringLiteral("Unable to set geometry"));
+        }
+        frame.setTipText(QStringLiteral("New Frame (N)"));
+        pump(150);
+        const QSize back = frame.size();
+        frame.hide();
+        check(QStringLiteral("(os9) control: a warning made here is heard by the same capture, and the frame given one line "
+                             "again is one line's size again"),
+              planted == 1 && back == oneLine,
+              QStringLiteral("heard %1; back to %2x%3 (one line %4x%5)").arg(planted).arg(back.width()).arg(back.height())
+                  .arg(oneLine.width()).arg(oneLine.height()));
+    }
+
+    if (r.canvas->isOnionSkinEnabled())
+        keyO();
+    if (r.storyboard->isLightTableOn())
+        shiftL();
+    forgetSettings();
     r.window.markCleanForTest();
 }
 
@@ -42684,13 +43512,15 @@ void runSafeSavePass(const QString &scratch)
         const bool afterDelete = window.keepPreviousVersionForTest();
         const bool nothingAtTheClick = stateOf(f.work) == diskBefore && QFileInfo::exists(previousFile);
         // (Changed with batch I-2, 2026-11-26: "Onion Skin" joined the list after Keyframes. Nothing else moved.)
-        check(QStringLiteral("(ss11) PREFERENCES > SAVING: the last page, \"Saving\", after Camera, Keyframes, Onion Skin, "
-                             "Playback and Recovery - \"After each save\", \"Keep the previous saved version\" (chosen, the "
-                             "default) with its note, \"Delete the previous pictures right away\" with its note; "
-                             "choosing the second sets the preference and changes nothing on disk at the click"),
+        // (Changed with OS-1, 2026-11-27: "Light Table" joined after Keyframes. Nothing else moved.)
+        check(QStringLiteral("(ss11) PREFERENCES > SAVING: the last page, \"Saving\", after Camera, Keyframes, Light Table, "
+                             "Onion Skin, Playback and Recovery - \"After each save\", \"Keep the previous saved version\" "
+                             "(chosen, the default) with its note, \"Delete the previous pictures right away\" with its "
+                             "note; choosing the second sets the preference and changes nothing on disk at the click"),
               first.categories == QStringList({QStringLiteral("Camera"), QStringLiteral("Keyframes"),
-                                               QStringLiteral("Onion Skin"), QStringLiteral("Playback"),
-                                               QStringLiteral("Recovery"), QStringLiteral("Saving")})
+                                               QStringLiteral("Light Table"), QStringLiteral("Onion Skin"),
+                                               QStringLiteral("Playback"), QStringLiteral("Recovery"),
+                                               QStringLiteral("Saving")})
                   && first.found && first.keepChecked && !first.deleteChecked
                   && first.notes.contains(QStringLiteral("After each save"))
                   && first.notes.contains(QStringLiteral("Keep the previous saved version"))
@@ -44046,6 +44876,14 @@ int main(int argc, char **argv)
               << Qt::endl;
         return g_failures;
     }
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("os")) {
+        runOsPass(scratch); // OS-1: the Light Table and the Onion Skin, each its own switch (2026-11-27)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("i2b")) {
         runI2bPass(scratch); // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -44362,6 +45200,7 @@ int main(int argc, char **argv)
     runI2Pass(scratch);           // batch I-2: frame-by-frame drawings in a layer (2026-11-26)
     runI2bPass(scratch);          // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
     runSlidersPass(scratch);      // the sliders round: Preferences' sliders, "frame", FRAMES (2026-11-27)
+    runOsPass(scratch);           // OS-1: the Light Table for panels, the Onion Skin for frames (2026-11-27)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

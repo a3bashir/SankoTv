@@ -1,5 +1,107 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-27 (16:5x): OS-1 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST OS1 - THE LIGHT TABLE FOR PANELS, THE ONION SKIN FOR FRAMES, EACH ITS OWN SWITCH, THE USER'S ICON (FIGMA 749:892), PREFERENCES > LIGHT TABLE, THE ZOOM TO FRAMES TIP'S QT WARNING FIXED; FIGMA OS-1 (745:757) MARKED BUILT; NEXT: LEFT / RIGHT AS PROPOSED WITH THE USER'S ANSWERS, AND THE TWO BULBS IN THEIR NEIGHBOURS' COLOUR AND LINE
+THE USER'S WORD (pasted 2026-11-27, about 16:38): "Hand test OS-1 done: all steps looked right. Read every Dev Recorder
+session made after 15:09 on 27 November, oldest first (two, because of the restart in step 9). Confirm from system.txt
+that it ran the Nov 27 2026 15:09:33 build (git bad310850+dirty) and that the title bar named "TEST COPY - small pirate,
+OS-1", then report pass, fail or "not tested" per step of handtest_OS1.md, and whether Qt's tooltip warning appears. If
+it ran the right build and nothing failed: 1. Commit and push OS-1 with its HANDOFF notes, matching its hash list, git
+status clean. Mark Figma OS-1 (745:757) BUILT. 2. Then the next round. Build: A. Left/Right as you proposed, with my
+answers: 1. Left/Right step one frame back or forward wherever the pointer is in the workspace, except while typing in a
+text field. At a panel's edge they step into the panel before or after. Held, they keep stepping. 2. Shift+Left/
+Shift+Right: the selected layer's previous or next frame (on a one-frame layer, the previous or next panel). Up/Down: the
+previous or next panel. Home, End and Ctrl+Left/Ctrl+Right stay as they are. 3. While the film plays, Left/Right pause it
+first, then step. If a panel or tool already uses the arrow keys (for example the Layers list), keep its own use there
+and tell me in the report. B. The two bulb icons match the icons around them: - The Onion Skin bulb on the timeline's
+LAYER row: the same colour and line thickness as the nearby Eye and Audio Speaker icons on the timeline. - The Light
+Table bulb in the panel strip: the same colour and line thickness as the strip's Duplicate and Delete icons. - Read the
+colour and line thickness from those icons' own SVGs and code; don't guess them. Keep the bulb's shape and proportions
+from my Figma 749:892 and each button's size. - On is still shown only by the purple border and purple background;
+nothing is added to the icons. - In the report, send a picture of each bulb beside its neighbours, off and on, at 4x.
+Checks with controls and red runs, none judged by the clock, quick check, full gate before stopping (every family green
+in both builds), a fresh TEST COPY, the exe stamp and a short hand-test list. Don't commit until my hand test passes.
+Don't use Figma or any other window while the quick check or the gate runs. If anything failed or the build is wrong,
+commit nothing and report. ALL DONE when finished, and send a notification."
+HAND TEST OS1 (read 2026-11-27 16:4x; report, crops, the timeline, the switches and the live settings in
+Documents\SankoTV-Design\batch-OS1-2026-11-27\handtest_OS1\): ONE session, not two - 20261127-162216 (16:22:16 to
+16:38:26, 970.0 s); no quit and new start in it, and no SankoTV running at 16:39. Release, built Nov 27 2026 15:09:33,
+git bad310850+dirty; the title bar "SANKO TV — TEST COPY - small pirate, OS-1" (on the Dell this time). NO STEP FAILED:
+0 PASS; 1 PASS for the buttons, the tips NOT TESTED (the pointer never rested on a bulb for the tip's delay); 2, 3, 4,
+5, 6, 8 PASS; 7 (right-click) NOT TESTED; 9 Close Project and reopen PASS (twice, both bulbs lit after), THE RESTART NOT
+TESTED; 10 NOT TESTED AS WRITTEN (the + tip came, the magnifier's never did); 11 the Alt-drag PASS (the name follows Alt
+at the release), N on the last frame and the Undo tip NOT TESTED. QT'S WARNING: none captured in the session, but the
+Zoom to Frames tip never opened in it, so only the gate's (os9) shows the fix. The recorder's `checked` on a View menu
+action is the state before the click. Copy discarded at both Unsaved Changes. Live settings at 16:39 (WMI, read-only):
+lightTable/on true, onionSkin/on false, both pages at their defaults.
+WHAT THIS COMMIT HOLDS (OS-1, as built and gated on the user's word of about 14:00 - the sliders section below, its points
+2 and 3; the 12 files matched sha_OS1_gate.txt just before the commit):
+WHAT CHANGED (12 files, hash list app/build/_probe/split/sha_OS1_gate.txt: AnimaticTimeline.cpp
+/ .h, DrawingCanvas.cpp / .h, MainWindow.cpp / .h, SankoOnionSkin.h, SankoLightTable.h (new, LF), SankoTip.cpp (LF),
+StoryboardPage.cpp / .h, tests/ProjectLifecycleTest.cpp):
+1. THE ONION SKIN SHOWS ONLY THE SELECTED LAYER'S FRAMES. StoryboardPage::updateOnionGhost no longer flattens the previous
+panel: on a run's first frame nothing before it, on a layer with one frame nothing. DrawingCanvas lost the onion's panel
+ghost (setPreviousPixmap, m_ghost..., buildGhost, refreshOnionColors, recolourPreviousGhost, previousGhost...ForTest).
+2. THE LIGHT TABLE SHOWS BOTH SIDES (answer 1): the panel before AS IT ENDS (flattenedPixmap(lastPlaceOf), what the onion
+showed there since 2026-11-26) and the panel after AS IT BEGINS, each in Preferences > Light Table's colour at its opacity
+(SankoLightTable.h: red #ff4d4d, green #4dff91, 35 % by default). A length change of the panel before refreshes it.
+Counters: StoryboardPage::lightTableFlattensForTest, DrawingCanvas::lightTableBuildsForTest; lightTableShownForTest.
+3. THE SWITCHES: O (as before), SHIFT+L (new; L alone stays the Lasso), the panel strip's Light Table button, the LAYER
+row's new Onion Skin button, View > "Light Table  Shift+L" / "Onion Skin  O" (ticked while on; the keys shown, not made
+twice). setOnionSkinOn / setLightTableOn; NEITHER TURNS THE OTHER OFF (D). REMEMBERED ON THIS COMPUTER (C): sankoSettings
+onionSkin/on, lightTable/on, read by restoreGhostSwitches at the page's start; DrawingCanvas::resetViewForNewProject no
+longer turns them off (another project keeps them). A switch says which in the bar's grey: "Light Table on: the panels
+before and after" / "Light Table off" / "Onion Skin on: Bird's frames before and after" / "Onion Skin off"; on a layer
+with one frame (answer 4): "Onion Skin on. Bird has one frame: nothing for the onion skin".
+4. THE ICONS (answer 5, the user's Figma 749:892 at 1/4): the LAYER row's OnionSkinButton (AnimaticTimeline.cpp), 20 x 20
+at x 50 beside Zoom to Frames, there while the lane is; painted: off #1c1e25 (14 % accent under the pointer), on the
+accent at 28 % with a 1 px accent border inside, corners 4; the Light Table's icon (icons/lighttable.svg, its #CCCCCC
+made #FFFFFF in the bytes read - SankoLightTable::whiteIconSvg) at 9 x 14.5 at (5.5, 2.75). The strip's Light Table
+button: the same icon white (stripIconPixmap), on = the 1.5 px accent border AND the accent at 28 % behind. No ghost
+colour, no frames mark, nothing else in either. Tooltips name each, its key, and the other's.
+5. A RIGHT-CLICK ON EITHER BUTTON OPENS ITS PAGE (B): StoryboardPage::preferencesPageRequested -> MainWindow::
+openPreferencesAt (m_prefsStartPage). PREFERENCES > LIGHT TABLE (A), between Keyframes and Onion Skin: "Panel before (as
+it ends)" / "Panel after (as it begins)", each a hue SankoStandardSlider and an opacity one (prefsLightBefore/AfterHue /
+Opacity), the note, "Use the default (red before, green after)" (prefsLightDefault); the hue set quietly on opening;
+lightTableSettingsChanged(Opacity | Color | Everything) flattens nothing. Preferences > Onion Skin lost the line "The
+before colour is also the previous panel's ghost."
+6. THE ZOOM TO FRAMES TIP'S QT WARNING (I2-2: "Unable to set geometry 500x27 ... Resulting geometry: 500x42", twice, each
+time the tip was up with "New Frame (N)" and given the long wrapped tip): SankoTipFrame's layout is SetNoConstraint and
+setTipText works out the size (the label's, wrapped at 480 by heightForWidth, plus the padding) and resizes once.
+CHECKS: the new slice os (runOsPass, its own three-panel fixture of grey art, so every colour seen is a ghost's), 23
+checks: (os1) Light Table alone + control; (os2) Onion Skin alone on a run's first frame + control, a one-frame layer's
+grey note + control; (os3) both on, neither turns the other off + control; (os4) keys and View menu + control (L is the
+Lasso); (os5) the Onion Skin button's place and two looks + control, the Light Table button's + control; (os6) right-click
+opens its page + control; (os7) remembered by a new start (a second MainWindow), never in the project file + control;
+(os8) Preferences > Light Table + control; (os9) the tip without Qt's warning + control. Older checks changed (old and
+new verbatim in Documents\SankoTV-Design\batch-OS1-2026-11-27\changed_checks_OS1_old_new.md): (g) onion skin / light
+table now NOT reset by Open / New / Close (and turned off at the pass's end), (ep4) and (sm8) the overlay is the Light
+Table's, (dr14) no panel's ghost on a run's first drawing, (fr3) the panel-before-as-it-ends ghost via Shift+L, (sl4)(a)
+the Light Table page's drags and the switch for the control, (sl5) the switch's note ended first (expireNoteForTest),
+(sl7) twelve standard sliders, four hue, (kp1) (dr15) (ss11) "Light Table" in the list.
+RED RUNS (batch-OS1-2026-11-27\red_runs\, README.md): A (the panel before at its first frame, the onion off turning the
+Light Table off, the View tick not following, no right-click, no restore at a start, the one-frame note amber, the old
+SankoTipFrame sizing) - 10 of 23 failed, (os9) with "Qt's warnings 1": the check reproduces I2-2's warning on the old
+code; B (the onion turning the panels on, a blue frames mark on the button, no purple behind the strip button, the Light
+Table page's hue without its blocker) - 12 of 23 failed. All markers out, the 12 files back at their pre-red hashes, the
+slice green 23/23.
+QUICK CHECK (Release, 14:43-15:04, nothing else running): Camera 354/354; Lifecycle 2013 of 2014 - (sl5) failed: the bar
+read "Onion Skin off", left by (sl4)'s switch (the new note, as asked); the check now ends that note first; sl 14/14.
+FULL GATE OS1 (15:07-16:09, clean builds, nothing else running; log app/build/_probe/split/fullgate_OS1.log, copied to
+batch-OS1-2026-11-27): FAMILIES FAILING 0 in Release and 0 in Debug - Lifecycle 2014/2014 (SL's 1991 + the 23 os
+checks), Camera 354, BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46, QuickShapeGeometryLock 19,
+PaintPixelLock 13, CanvasBrushLock 3, each in both builds. The 12 files still match sha_OS1_gate.txt after it. THE EXE
+for the hand test: app/build/Release/SankoTV.exe of 15:09:53, stamped "Nov 27 2026 15:09:33" / "bad310850+dirty",
+sha256 ccddb55246a37107a35f6b3d8f6434a36a2ae004568c47df5c0233159ad2d05d (both exes' in sha_OS1_exes.txt there).
+MY MISTAKES: (1) my (os5) control for the strip button asked for the same white-pixel count on and off - 34 against 36
+with the same pixmap, the antialiased edge over purple and over #111111; now the same box and a count within 4; (2) (sl5)
+above - I did not foresee that a switch's note would hold the bar for the next check; (3) a stray `sed -i ... /dev/null`
+typed while looking at three lines (a no-op on /dev/null; no file touched).
+THE TEST COPY: "TEST COPY - small pirate, OS-1" (C:\SankoTV-TestCopies; 117 files, version 7, Bird 24 frames on 2s, every
+named file present; the original's 94 files hashed before and after, unchanged).
+HAND TEST OS1: Documents\SankoTV-Design\handtest_OS1.md. LEFT / RIGHT (point 3, nothing built): batch-OS1-2026-11-27\
+left_right_proposal.md - today the previous / next panel, only with the pointer over the timeline or the preview;
+proposed: one frame back / forward everywhere, Shift+arrows the layer's frames, Up / Down the panels.
+
 ## 2026-11-27 (14:1x): THE SLIDERS ROUND COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST SL - PREFERENCES > CAMERA'S GUIDES (OPACITY AND LINE THICKNESS), PREFERENCES > ONION SKIN'S HUE AND OPACITY SLIDERS WITH NO STALL, THE STANDARD SANKO SLIDER, "FRAME" EVERYWHERE, THE FRAMES LABEL; NEXT: OS-1 (LIGHT TABLE AND ONION SKIN, FIGMA 745:757) AS APPROVED, THE ZOOM TO FRAMES TIP'S QT WARNING, AND A PROPOSAL FOR LEFT / RIGHT
 THE USER'S WORD (pasted 2026-11-27, about 14:00): "Hand test SL done: all steps looked right. Read every Dev Recorder
 session made after 12:30 on 27 November, oldest first. Confirm from system.txt that it ran the Nov 27 2026 12:30:10 build

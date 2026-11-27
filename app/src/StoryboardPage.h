@@ -677,19 +677,34 @@ public:
     // Edit > Preferences > Onion Skin changed. WHAT changed decides the work (2026-11-27, the
     // user's word after hand test I2-1: the sliders "with no stalls while I drag" - a drag of
     // an opacity had flattened the previous panel and tinted every ghost again at each step):
-    //   Opacity    - nothing is built. The drawings' ghosts are the pictures already held, at
-    //                their new opacities; the previous panel's reads its own when painted.
+    //   Opacity    - nothing is built: the drawings' ghosts are the pictures already held, at
+    //                their new opacities.
     //   Color      - the ghosts that are up are coloured again where they lie (their alpha
-    //                kept): no panel is flattened, no drawing's pixels are read.
-    //   Everything - a count, or the defaults: the panels are asked again, as before.
+    //                kept): no drawing's pixels are read.
+    //   Everything - a count, or the defaults: the drawings are asked again, as before.
     enum class OnionChange { Opacity, Color, Everything };
     void onionSkinSettingsChanged(OnionChange what = OnionChange::Everything);
-    // The checks': since the page was made, how many times a previous panel was flattened for
-    // its ghost, how many ghosts of drawings were built from their pixels, and how many were
-    // coloured again where they lay.
-    int onionFlattensForTest() const { return m_onionFlattens; }
+    // Edit > Preferences > Light Table changed (OS-1): no panel is flattened for it - an
+    // opacity is read when the ghosts are painted, a colour (or the defaults) colours the two
+    // ghosts again where they lie.
+    enum class LightTableChange { Opacity, Color, Everything };
+    void lightTableSettingsChanged(LightTableChange what = LightTableChange::Everything);
+    // THE TWO SWITCHES (OS-1, 2026-11-27; the user's answers after hand test SL): the Onion
+    // Skin (O, the LAYER row's button, View > Onion Skin) shows the selected layer's frames
+    // before and after; the Light Table (Shift+L, the panel strip's button, View > Light
+    // Table) the panel before as it ends and the panel after as it begins. Neither turns the
+    // other off. Each is remembered on this computer (sankoSettings), never in the project; a
+    // switch says which it was in the bottom bar's grey.
+    void setOnionSkinOn(bool on);
+    void setLightTableOn(bool on);
+    bool isLightTableOn() const;
+    QPushButton *lightTableButtonForTest() const { return m_lightTableButton; }
+    // The checks': since the page was made, how many ghosts of drawings were built from their
+    // pixels, how many were coloured again where they lay, and how many times a neighbouring
+    // panel was flattened for the Light Table.
     int onionBuildsForTest() const { return m_onionBuilds; }
     int onionRecoloursForTest() const { return m_onionRecolours; }
+    int lightTableFlattensForTest() const { return m_lightTableFlattens; }
     // Everything that shows a layer's motion, after a key or the playhead moved.
     void refreshLayerMotionUi();
     // The Dev Recorder's layerMotion event for a step just made on `layerIndex` of `panel`.
@@ -748,6 +763,12 @@ signals:
     // panel, the playhead's frame, the drawing shown and every drawing's first frame (the Dev
     // Recorder's layerDrawing event).
     void layerDrawingEdited(const QVariantMap &event);
+    // A switch went on or off, by whatever means (OS-1): the View menu's ticks follow.
+    void onionSkinSwitched(bool on);
+    void lightTableSwitched(bool on);
+    // A right-click on the Light Table's or the Onion Skin's button: Preferences at that page
+    // ("Light Table", "Onion Skin").
+    void preferencesPageRequested(const QString &page);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -960,17 +981,20 @@ private:
     // after a change of drawing; the Dev Recorder's line; the onion skin's ghosts kept by the
     // pixels they were made from.
     double placeInPanel(const Panel *panel) const;
-    double lastPlaceOf(const Panel *panel) const; // its last frame: the previous panel's ghost
+    double lastPlaceOf(const Panel *panel) const; // its last frame: the Light Table's panel before
     void settleDrawingsAtPlayhead(Panel *panel);
     void refreshLayerThumbs();
     void reportLayerDrawing(const QString &what, const Panel *panel, int layerIndex);
     void updateDrawingGhosts();
-    // The previous panel's ghost is the onion skin's here: the selected layer has one drawing,
-    // or is on its run's first. After the selected layer or its drawing changed: whichever
-    // ghosts that needs.
-    bool panelGhostWanted() const;
-    bool m_panelGhostShown = true;
+    // After the selected layer or its drawing changed: the drawings' ghosts again. (Until
+    // OS-1 also the previous panel's, on a run's first drawing.)
     void refreshOnionForDrawing();
+    // The bottom bar's grey note for a switch just turned (OS-1).
+    void sayOnionSkinSwitched(bool on);
+    void sayLightTableSwitched(bool on);
+    // The switches as last left on this computer, at the page's start (OS-1, answer C).
+    void restoreGhostSwitches();
+    int m_lightTableFlattens = 0;
     struct GhostEntry
     {
         qint64 key = 0;
@@ -982,7 +1006,6 @@ private:
     QVector<GhostEntry> m_ghostCache;
     quint64 m_ghostClock = 0;
     QPixmap drawingGhostFor(const LayerPixels &px, const QColor &tint, bool before);
-    int m_onionFlattens = 0;
     int m_onionBuilds = 0;
     int m_onionRecolours = 0;
     // The selected key, if it is still there.
@@ -1316,7 +1339,7 @@ private:
     QPushButton *m_dupPanelButton = nullptr;
     QPushButton *m_clearPanelButton = nullptr; // clears the drawing, asks first
     QPushButton *m_deletePanelButton = nullptr;
-    QPushButton *m_lightTableButton = nullptr; // toggles neighbour-panel ghosts
+    QPushButton *m_lightTableButton = nullptr; // toggles neighbour-panel ghosts (the Light Table's switch)
 
     QUndoStack *m_undoStack = nullptr; // app-wide history (owned by MainWindow)
 

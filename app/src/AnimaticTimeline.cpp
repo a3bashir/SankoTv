@@ -2,6 +2,7 @@
 #include "SankoIcons.h"
 #include "SankoKeyColors.h" // the keys' colours, Preferences > Keyframes (batch I-1b round 2)
 #include "SankoOnionSkin.h" // the onion skin's colours on the drawings lane's blocks (batch I-2)
+#include "SankoLightTable.h" // the Light Table's icon, the Onion Skin button's too (OS-1)
 #include "SankoTip.h" // sankoHideTipSoon: the hovers' grace (batch C)
 #include "SankoTheme.h"
 #include "SankoTimelineTheme.h"
@@ -38,6 +39,7 @@
 #include <QSignalBlocker>
 #include <QWheelEvent>
 #include <QSlider>
+#include <QSvgRenderer>
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
@@ -48,6 +50,55 @@
 #include <functional>
 
 namespace {
+
+// THE ONION SKIN'S BUTTON (OS-1, 2026-11-27): the user's Figma frame 749:892, "LAYER row button:
+// onion (on)", drawn at four times the size - an 80 x 80 frame, its fill the accent at 28 %, a
+// 4 px accent stroke inside, corners of 16; in it the Light Table's icon (lighttable.svg) in
+// white, 36 x 58 at (22, 11). Here at its size, 20 x 20: the fill, a 1 px border inside, corners
+// of 4, the icon 9 x 14.5 at (5.5, 2.75). Off it is the row's other buttons' (the + and Zoom to
+// Frames): #1c1e25, the accent at 14 % over it under the pointer, no border. Painted here, so
+// what is drawn is the frame and nothing else.
+class OnionSkinButton : public QToolButton
+{
+public:
+    explicit OnionSkinButton(QWidget *parent) : QToolButton(parent)
+    {
+        setAttribute(Qt::WA_Hover, true); // drawn again as the pointer comes and goes
+        m_icon.load(SankoLightTable::whiteIconSvg());
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box(0.0, 0.0, 20.0, 20.0);
+        const QColor accent(0x7c, 0x6e, 0xf6);
+        p.setPen(Qt::NoPen);
+        if (isChecked()) {
+            QColor fill = accent;
+            fill.setAlphaF(0.28f);
+            p.setBrush(fill);
+            p.drawRoundedRect(box, 4.0, 4.0);
+            p.setPen(QPen(accent, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 3.5, 3.5); // the stroke inside
+        } else {
+            p.setBrush(QColor(0x1c, 0x1e, 0x25));
+            p.drawRoundedRect(box, 4.0, 4.0);
+            if (underMouse()) {
+                QColor hover = accent;
+                hover.setAlphaF(0.14f); // kFlatHoverBg
+                p.setBrush(hover);
+                p.drawRoundedRect(box, 4.0, 4.0);
+            }
+        }
+        m_icon.render(&p, QRectF(5.5, 2.75, 9.0, 14.5));
+    }
+
+private:
+    QSvgRenderer m_icon;
+};
 
 // THE LABEL COLUMN, from the redesign (Figma 380:644): the painted column
 // is 134 px wide (kLabelColW) with its separator line at x 134, and the
@@ -767,6 +818,23 @@ void AnimaticTimeline::buildTrackControls()
                                           .arg(kFlatHoverBg));
     connect(m_zoomFramesButton, &QToolButton::clicked, this, [this] { zoomToFrames(); });
     m_zoomFramesButton->hide();
+    // THE ONION SKIN'S BUTTON (OS-1; see OnionSkinButton above): beside Zoom to Frames, there
+    // while the lane is. Its tip says its name, its key and what it shows, and that the panels
+    // are the Light Table's (Figma 745:757 section 1).
+    m_onionButton = new OnionSkinButton(m_canvas);
+    m_onionButton->setObjectName(QStringLiteral("layerOnionSkin"));
+    m_onionButton->setCheckable(true);
+    m_onionButton->setCursor(Qt::PointingHandCursor);
+    m_onionButton->setFocusPolicy(Qt::NoFocus);
+    m_onionButton->setFixedSize(20, 20);
+    m_onionButton->setToolTip(QStringLiteral(
+        "<b>Onion Skin (O)</b> | The frames before and after this one on the selected layer: before in blue, "
+        "after in orange (Preferences > Onion Skin). Right-click: its Preferences. Panels are the Light "
+        "Table's (Shift+L)."));
+    m_onionButton->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_onionButton, &QToolButton::clicked, this, [this](bool on) { emit onionSkinButtonClicked(on); });
+    connect(m_onionButton, &QWidget::customContextMenuRequested, this, [this] { emit onionSkinPageRequested(); });
+    m_onionButton->hide();
 
     // The volume popup: a vertical slider, a child of the canvas, hidden
     // until the speaker opens it; placed by layoutVolumePopup (x 34 of the
@@ -1398,9 +1466,12 @@ void AnimaticTimeline::layoutNewDrawingButton()
     // At the row's left: beside the drawings lane when there is one, else in the row.
     const bool can = m_layerRowShown && m_selected >= 0 && layerRowLabel() != QLatin1String("LAYER");
     m_newDrawingButton->setVisible(can);
-    // Zoom to Frames beside it, while there is a lane to zoom to.
+    // Zoom to Frames beside it, while there is a lane to zoom to; the Onion Skin's switch next
+    // (OS-1), while there are frames for it.
     if (m_zoomFramesButton)
         m_zoomFramesButton->setVisible(can && m_layerRowRun);
+    if (m_onionButton)
+        m_onionButton->setVisible(can && m_layerRowRun);
     if (!can)
         return;
     // (Centred on the lane: 41 px since 2026-11-26.)
@@ -1409,6 +1480,8 @@ void AnimaticTimeline::layoutNewDrawingButton()
     m_newDrawingButton->move(4, y);
     if (m_zoomFramesButton)
         m_zoomFramesButton->move(4 + 20 + 3, y);
+    if (m_onionButton)
+        m_onionButton->move(4 + 2 * (20 + 3), y); // x 50
 }
 
 // ZOOM TO FRAMES (the user's note 7, 2026-11-26): the timeline zoomed so each drawing of the lane
@@ -1460,11 +1533,20 @@ void AnimaticTimeline::setSelectedDrawing(int drawingIndex)
 
 void AnimaticTimeline::setOnionSkinShown(bool on)
 {
+    if (m_onionButton && m_onionButton->isChecked() != on) { // the switch's state, whoever turned it (OS-1)
+        const QSignalBlocker quiet(m_onionButton);
+        m_onionButton->setChecked(on);
+    }
     if (m_onionShown == on)
         return;
     m_onionShown = on;
     if (m_canvas)
         m_canvas->update();
+}
+
+QAbstractButton *AnimaticTimeline::onionSkinButtonForTest() const
+{
+    return m_onionButton;
 }
 
 QRect AnimaticTimeline::drawingsLaneForTest() const
