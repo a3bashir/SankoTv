@@ -1192,26 +1192,55 @@ void DrawingCanvas::showDrawingForUndo(Panel *panel, const QString &layerId, con
 
 QString DrawingCanvas::runNoteText() const
 {
+    // THE FILM'S FRAME (round FC-a, the user's word after hand test LT): while the preview is up,
+    // the panel it shows names its layer's frame - the page works it out; null: not up.
+    if (m_previewNoteProvider) {
+        const QString film = m_previewNoteProvider();
+        if (!film.isNull())
+            return film;
+    }
     const Layer *layer = m_panel ? m_panel->activeLayer() : nullptr;
     if (!layer || !m_panel->layerHasRun(*layer))
         return QString();
-    const int count = layer->drawingCount();
-    const int shown = qBound(0, layer->shown, count - 1);
+    // TWO FRAMES OR MORE SELECTED on the FRAMES lane (round FC-a): the selection, not the frame.
+    if (!m_frameSelectionNote.isEmpty())
+        return m_frameSelectionNote;
+    const MotionView v = motionView();
+    return runNoteFor(*layer, layer->shown, v.valid ? v.fps : layer->runRate);
+}
+
+QString DrawingCanvas::runNoteFor(const Layer &layer, int shownIndex, int fps)
+{
+    const int count = layer.drawingCount();
+    const int shown = qBound(0, shownIndex, count - 1);
     const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
     // "Bird · frame 3 of 24 · held 2 frames" (the user's wording, 2026-11-27: "frame" everywhere;
     // until then "Bird · drawing 3 of 24 · 2 frames" and "... · holds to the panel's end").
-    QString text = layer->name + dot + QStringLiteral("frame %1 of %2").arg(shown + 1).arg(count);
+    QString text = layer.name + dot + QStringLiteral("frame %1 of %2").arg(shown + 1).arg(count);
     if (shown + 1 < count) {
         // Its length in the project's frames (the run's are counted at its own rate).
-        const MotionView v = motionView();
-        const double perRunFrame = double(v.valid ? v.fps : layer->runRate) / qMax(1, layer->runRate);
-        const int frames = qMax(1, int(std::lround((layer->drawingStart(shown + 1) - layer->drawingStart(shown))
+        const double perRunFrame = double(fps) / qMax(1, layer.runRate);
+        const int frames = qMax(1, int(std::lround((layer.drawingStart(shown + 1) - layer.drawingStart(shown))
                                                    * perRunFrame)));
         text += dot + (frames == 1 ? QStringLiteral("held 1 frame") : QStringLiteral("held %1 frames").arg(frames));
     } else {
         text += dot + QStringLiteral("held to the panel's end");
     }
     return text;
+}
+
+void DrawingCanvas::setFrameSelectionNote(const QString &note)
+{
+    if (note == m_frameSelectionNote)
+        return;
+    m_frameSelectionNote = note;
+    refreshNoteBar();
+}
+
+void DrawingCanvas::setPreviewNoteProvider(std::function<QString()> provider)
+{
+    m_previewNoteProvider = std::move(provider);
+    refreshNoteBar();
 }
 
 void DrawingCanvas::setLightTableEnabled(bool enabled)

@@ -127,8 +127,17 @@ public:
     QString shownDrawingIdOf(const Panel *panel, const QString &layerId) const;
     void showDrawingForUndo(Panel *panel, const QString &layerId, const QString &drawingId);
     // "Seagull · drawing 3 of 10 · 2 frames": the active layer's drawing under the playhead,
-    // for the status bar; empty for a layer without a run.
+    // for the status bar; empty for a layer without a run. While the film is up, the previewed
+    // panel's (the provider's); with two frames or more selected, the selection's note (round FC-a).
     QString runNoteText() const;
+    // The words for drawing `shown` of `layer`'s run, its length counted at `fps`.
+    static QString runNoteFor(const Layer &layer, int shown, int fps);
+    // "Bird  ·  frames 2 to 4 selected  ·  6 frames long" - the page's, while two or more frames
+    // are selected on the FRAMES lane; empty: none (round FC-a).
+    void setFrameSelectionNote(const QString &note);
+    QString frameSelectionNoteForTest() const { return m_frameSelectionNote; }
+    // The film's frame note: the page's previewRunNoteText - a null string while the film is not up.
+    void setPreviewNoteProvider(std::function<QString()> provider);
 
     // Light table: the neighbouring panels behind the current drawing - the panel before as
     // it ends, the panel after as it begins (OS-1, 2026-11-27), each in its colour at its
@@ -1790,6 +1799,8 @@ private:
     int m_notePendingMs = 0;
     bool m_notePendingWarning = false;
     QString m_noteBarText;        // what the bar says now (syncNoteBar)
+    QString m_frameSelectionNote; // the frames selected, two or more (round FC-a; setFrameSelectionNote)
+    std::function<QString()> m_previewNoteProvider; // the film's frame note (round FC-a)
     NoteKind m_noteBarKind = NoteKind::Tool;
     QString m_noteBarTip;
     int m_noteBarAmberFrom = -1;  // the Camera tool's "Soft" warning in its note: amber from here

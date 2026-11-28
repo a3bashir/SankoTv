@@ -8354,12 +8354,15 @@ bool StoryboardPage::deleteSelectedCameraKey()
 void StoryboardPage::timelineDelete()
 {
     if (m_layerKeyFocus.row) {
-        // A block of the drawings lane is the selected thing (batch I-2): Del deletes that
-        // drawing - one step, no box - and the row stays chosen.
-        if (m_layerKeyFocus.drawing >= 0) {
-            const int li = m_layerKeyFocus.layer, di = m_layerKeyFocus.drawing;
-            deleteDrawing(li, di);
-            setLayerKeyFocus(true);
+        // Frames of the FRAMES lane are the selected thing (batch I-2; several since round FC-a):
+        // Del deletes them - one step, no box - and the row stays chosen, in its lane.
+        if (!m_layerKeyFocus.drawingIds.isEmpty()) {
+            int li = -1;
+            const QVector<int> sel = usableFrameSelection(nullptr, &li);
+            if (!sel.isEmpty())
+                deleteFrames(li, sel);
+            const int flat = m_layerKeyFocus.flat, layer = m_layerKeyFocus.layer;
+            setFrameSelection(flat, layer, {}, -1);
             return;
         }
         Panel *panel = nullptr;
@@ -9741,7 +9744,10 @@ protected:
         auto *key = static_cast<QKeyEvent *>(event);
         if (key->key() == Qt::Key_Alt && !key->isAutoRepeat()) // never taken: the menu bar's too
             m_page->noteAltKey(receiver, event->type() == QEvent::KeyPress);
-        return m_page->routeToolbarsKey(receiver, key) || m_page->routeCanvasKey(receiver, key);
+        // ...then, what no one else took: Esc for the frames selected, and Space - never a
+        // button's press (round FC-a, the user's word after hand test LT).
+        return m_page->routeToolbarsKey(receiver, key) || m_page->routeCanvasKey(receiver, key)
+            || m_page->routeFramesEsc(receiver, key) || m_page->keepSpaceFromButton(receiver, key);
     }
 
 private:
@@ -9794,6 +9800,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         // Layer motion (batch I-1): the diamonds' key at the playhead, the slider, the row.
         if (!m_animatic->previewVisible())
             refreshLayerMotionUi();
+        else if (m_canvas)
+            m_canvas->refreshNoteBar(); // the film's frame note follows it (previewRunNoteText)
     });
     // The Camera bar is disabled while the preview covers the canvas.
     connect(m_animatic, &AnimaticPage::previewShownChanged, this, [this] {
@@ -9802,6 +9810,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         // Back in the workspace (batch I-2): the canvas shows the drawing where the film stopped.
         if (!m_animatic->previewVisible())
             refreshLayerMotionUi();
+        if (m_canvas)
+            m_canvas->refreshNoteBar(); // the film's frame note, or the canvas's again
     });
     // An undo or redo of a stroke on a drawing the layer does not show (batch I-2): the
     // playhead goes to that drawing, so the step lands where it is seen.
@@ -9913,10 +9923,9 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         connect(timeline, &AnimaticTimeline::onionSkinPageRequested, this,
                 [this] { emit preferencesPageRequested(QStringLiteral("Onion Skin")); });
     }
-    connect(m_animatic, &AnimaticPage::drawingBlockPressed, this, [this](int layer, int drawing) {
-        goToDrawing(layer, drawing);
-        setLayerKeyFocus(true, currentFlatIndex(), layer, -1, drawing);
-    });
+    // A press on the lane: a frame (a click, Shift+click, Ctrl+click - round FC-a) or, -1, the
+    // lane off a frame.
+    connect(m_animatic, &AnimaticPage::drawingBlockPressed, this, &StoryboardPage::framesLanePressed);
     connect(m_animatic, &AnimaticPage::drawingCutMoveRequested, this,
             [this](int layer, int drawing, int startFrame, bool alone) {
                 moveDrawingCut(layer, drawing, startFrame, alone);
@@ -10028,6 +10037,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     addKey(QKeySequence(Qt::Key_Escape), true, [this] {
         if (m_stageModeOn) // Stage mode's (batch 6c), wherever the pointer rests
             m_canvas->stageModeKey(false);
+        else if (!m_animatic->previewVisible() && clearFrameSelection())
+            return; // the frames selected on the FRAMES lane, in the workspace (round FC-a)
         else
             m_animatic->leavePreview();
     }, true);
@@ -10173,14 +10184,85 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
         // A SPACE PRESSED ON THE WAY (the batch A hand test, at 108 s: Space went down while
         // the pen was crossing a floating toolbar towards the canvas, 22 ms before it got
         // there, and the pen touched down 240 ms after). Still down when the pointer comes
-        // over the canvas, it is the canvas's from then (pointerArrivedOverCanvas). Not when
-        // a button has the keyboard: a button takes Space as its own press.
-        if (space && !event->isAutoRepeat() && !overPreview && m_canvas->isVisible()
-            && !widget->inherits("QAbstractButton"))
+        // over the canvas, it is the canvas's from then (pointerArrivedOverCanvas). (Until round
+        // FC-a not when a button had the keyboard: a button took Space as its own press. No
+        // button takes it now - keepSpaceFromButton - so the Space is the pan's there too.)
+        if (space && !event->isAutoRepeat() && !overPreview && m_canvas->isVisible())
             m_spaceDownAway = true;
         return false;
     }
     return m_canvas->routedKey(event);
+}
+
+// ESC CLEARS THE FRAMES SELECTED (round FC-a, answer 2): see the header. Over the timeline its Esc
+// shortcut does it (the film's first, when it is up); elsewhere in the workspace this does, for an
+// Esc no one used - only where the key was sent, in this page's window, never a field's, a
+// list's, a combo's or the menu bar's, and after the canvas's own (a move or a paste cancelled).
+bool StoryboardPage::routeFramesEsc(QObject *receiver, QKeyEvent *event)
+{
+    if (event->key() != Qt::Key_Escape || event->type() != QEvent::KeyPress || !receiver->isWidgetType()
+        || !isVisible() || m_layerKeyFocus.drawingIds.isEmpty())
+        return false;
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier | Qt::ShiftModifier))
+        return false;
+    auto *widget = static_cast<QWidget *>(receiver);
+    const QWidget *focus = widget->window()->focusWidget();
+    if (focus ? focus != widget : widget != widget->window())
+        return false;
+    if (widget->window() != window())
+        return false; // a dialog's, a menu's, a popover's own Esc
+    for (const char *typing : {"QLineEdit", "QTextEdit", "QPlainTextEdit", "QAbstractSpinBox", "QComboBox",
+                               "QAbstractItemView", "QMenuBar"})
+        if (widget->inherits(typing))
+            return false;
+    return clearFrameSelection();
+}
+
+// SPACE NEVER PRESSES A BUTTON (the user's word after hand test LT, 2026-11-28: "Space over the
+// bottom bar pressed the panel strip's focused "+" and added panels. Space must never press a
+// focused button, anywhere. Keep Space's own uses"). Space's own uses have had it by now - the
+// film's and the timeline's Space are shortcuts (taken before any widget sees the key), the
+// canvas's pan was routed just before (routeCanvasKey) - so a Space still going to a button, or
+// to a drop-down list (whose Space opens its list, as a press would), is no one's: it is taken
+// here and does nothing. Its release too, so that no button is left half-pressed. In every
+// window: a dialog's buttons as well (Enter still presses a dialog's default one). Only where the
+// key was sent - the widget with its window's keyboard. A text field keeps its Space.
+bool StoryboardPage::keepSpaceFromButton(QObject *receiver, QKeyEvent *event)
+{
+    if (event->key() != Qt::Key_Space || !receiver->isWidgetType())
+        return false;
+    auto *widget = static_cast<QWidget *>(receiver);
+    const QWidget *focus = widget->window()->focusWidget();
+    if (focus != widget)
+        return false;
+    const auto *combo = qobject_cast<const QComboBox *>(widget);
+    if (!qobject_cast<const QAbstractButton *>(widget) && !(combo && !combo->isEditable()))
+        return false;
+    event->accept();
+    if (event->type() == QEvent::KeyPress && !event->isAutoRepeat())
+        ++m_spaceKeptFromButtons; // (one a press: its release and repeats are taken, not counted)
+    return true;
+}
+
+// THE PREVIEW'S FRAME NOTE (the user's word after hand test LT): with the film up, the panel under
+// the playhead - the one the preview shows, the canvas's own too (its drawings stay where the
+// workspace left them while the film is up) - its selected layer and that layer's frame at the
+// playhead, worked out as the canvas works out its own (DrawingCanvas::runNoteFor). A null string
+// with no film up: the canvas's own note.
+QString StoryboardPage::previewRunNoteText() const
+{
+    if (!m_animatic || !m_animatic->previewVisible())
+        return QString();
+    const Panel *panel = m_animatic->playheadPanel();
+    if (!panel)
+        return QString();
+    const Layer *layer = panel->activeLayer();
+    if (!layer || !panel->layerHasRun(*layer))
+        return QStringLiteral(""); // nothing of a run to name: no frame note (not the canvas's)
+    const int fps = cameraFps();
+    const int frames = qMax(1, shotcam::panelFrames(*panel, fps));
+    const double at = shotcam::panelAt(qBound(0, m_animatic->playheadFrameInPanel(), frames - 1), frames);
+    return DrawingCanvas::runNoteFor(*layer, panel->drawingAtPlace(*layer, at), fps);
 }
 
 // TAB (batch C): see the header. Only where the key was sent (the widget with its window's
@@ -11552,6 +11634,8 @@ QWidget *StoryboardPage::createBottomBar()
                                    m_canvas->noteBarTip(), m_canvas->noteBarAmberFrom());
         };
         connect(m_canvas, &DrawingCanvas::noteBarChanged, this, follow);
+        // While the film is up its frame note is the previewed panel's (round FC-a).
+        m_canvas->setPreviewNoteProvider([this] { return previewRunNoteText(); });
         follow();
     }
 
@@ -13057,7 +13141,12 @@ bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
 void StoryboardPage::editCopy()
 {
     if (m_layerKeyFocus.row) {
-        copyLayerKey();
+        // Frames selected on the FRAMES lane are copied (round FC-a); else the selected key - and
+        // with neither, the lane last pressed says what to tap.
+        if (!m_layerKeyFocus.drawingIds.isEmpty() || (m_layerKeyFocus.lane && m_layerKeyFocus.key < 0))
+            copyFrames();
+        else
+            copyLayerKey();
         return;
     }
     if (m_canvas && m_canvas->hasSelection()) {
@@ -13075,7 +13164,10 @@ void StoryboardPage::editCopy()
 void StoryboardPage::editCut()
 {
     if (m_layerKeyFocus.row) {
-        cutLayerKey();
+        if (!m_layerKeyFocus.drawingIds.isEmpty() || (m_layerKeyFocus.lane && m_layerKeyFocus.key < 0))
+            cutFrames();
+        else
+            cutLayerKey();
         return;
     }
     if (m_canvas && m_canvas->hasSelection()) {
@@ -13096,7 +13188,14 @@ void StoryboardPage::editCut()
 void StoryboardPage::editPaste()
 {
     if (m_layerKeyFocus.row) {
-        pasteLayerKey();
+        // What was copied last on the row: frames (round FC-a) or a key. With nothing copied, the
+        // lane last pressed says which is missing.
+        const bool frames = m_rowClipLast == RowClip::Frames
+            || (m_rowClipLast == RowClip::None && m_layerKeyFocus.lane);
+        if (frames)
+            pasteFrames(false);
+        else
+            pasteLayerKey();
         return;
     }
     if (m_lastClipSource == ClipSource::Canvas && m_canvas)
@@ -13934,6 +14033,7 @@ void StoryboardPage::rebuildLayerPanel()
     if (m_syncLayerOpacity)
         m_syncLayerOpacity(active ? pct : -1); // <0 => disabled
     m_updatingLayerUi = false;
+    syncFrameSelection(); // frames of another layer or panel are no longer selected (round FC-a)
     if (m_animatic)
         m_animatic->refreshLayerRow(); // the LAYER row: shown or not, the selected layer (batch I-1)
 
@@ -14226,6 +14326,7 @@ void StoryboardPage::updateLayerSelectionUi()
     if (m_syncLayerOpacity)
         m_syncLayerOpacity(active ? pct : -1);
     m_updatingLayerUi = false;
+    syncFrameSelection(); // another layer: its frames are not the ones selected (round FC-a)
     if (m_animatic)
         m_animatic->refreshLayerRow(); // the LAYER row shows the selected layer (batch I-1)
     refreshOnionForDrawing(); // the onion skin is the selected layer's (batch I-2)
@@ -15568,6 +15669,7 @@ void StoryboardPage::refreshLayerMotionUi()
     }
     if (m_canvas)
         m_canvas->refreshMotion();
+    syncFrameSelection(); // a step undone, another panel: the selection as it still stands (round FC-a)
     if (m_animatic)
         m_animatic->refreshLayerRow();
 }
@@ -15718,23 +15820,180 @@ void StoryboardPage::onLayerRowMenu(const QPoint &globalPos)
     menu.exec(globalPos);
 }
 
-void StoryboardPage::setLayerKeyFocus(bool row, int flat, int layer, int key, int drawing)
+void StoryboardPage::setLayerKeyFocus(bool row, int flat, int layer, int key)
 {
     const bool wasReady = layerKeyPasteReady();
-    const int wasDrawing = m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1;
+    const bool hadFrames = m_layerKeyFocus.row && !m_layerKeyFocus.drawingIds.isEmpty();
     m_layerKeyFocus = LayerKeyFocus();
     if (row) {
         m_layerKeyFocus.row = true;
         m_layerKeyFocus.flat = flat;
         m_layerKeyFocus.layer = layer;
         m_layerKeyFocus.key = key;
-        m_layerKeyFocus.drawing = drawing; // a block of the drawings lane (batch I-2)
     }
     if (layerKeyPasteReady() != wasReady)
         emit layerKeyPasteChanged();
-    // The selected block is drawn so on the row (batch I-2).
-    if (m_animatic && wasDrawing != (m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1))
-        m_animatic->setSelectedDrawing(m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1);
+    if (hadFrames)
+        syncFrameSelection(); // no block is drawn selected any more, and the bar's note goes
+}
+
+// THE FRAMES LANE'S SELECTION (round FC-a): the row is chosen, in its lane, with those drawings.
+void StoryboardPage::setFrameSelection(int flat, int layer, const QVector<int> &drawings, int anchor)
+{
+    const bool wasReady = layerKeyPasteReady();
+    m_layerKeyFocus = LayerKeyFocus();
+    m_layerKeyFocus.row = true;
+    m_layerKeyFocus.flat = flat;
+    m_layerKeyFocus.layer = layer;
+    m_layerKeyFocus.lane = true;
+    int si = -1, pi = -1;
+    if (flatToScenePanel(flat, &si, &pi)) {
+        const Panel *panel = m_scenes.at(si)->panels.at(pi);
+        if (layer >= 0 && layer < panel->layers.size()) {
+            const Layer &l = panel->layers.at(layer);
+            QVector<int> sorted = drawings;
+            std::sort(sorted.begin(), sorted.end());
+            sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+            for (int i : std::as_const(sorted))
+                if (i >= 0 && i < l.drawings.size())
+                    m_layerKeyFocus.drawingIds << l.drawings.at(i).id;
+            if (anchor >= 0 && anchor < l.drawings.size() && !m_layerKeyFocus.drawingIds.isEmpty())
+                m_layerKeyFocus.anchorId = l.drawings.at(anchor).id;
+        }
+    }
+    if (layerKeyPasteReady() != wasReady)
+        emit layerKeyPasteChanged();
+    syncFrameSelection();
+}
+
+int StoryboardPage::frameSelectionAnchor() const
+{
+    if (!m_layerKeyFocus.row || m_layerKeyFocus.anchorId.isEmpty())
+        return -1;
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(m_layerKeyFocus.flat, &si, &pi))
+        return -1;
+    const Panel *panel = m_scenes.at(si)->panels.at(pi);
+    const int li = m_layerKeyFocus.layer;
+    return li >= 0 && li < panel->layers.size() ? panel->layers.at(li).drawingIndexOf(m_layerKeyFocus.anchorId) : -1;
+}
+
+QVector<int> StoryboardPage::usableFrameSelection(Panel **panelOut, int *layerOut) const
+{
+    QVector<int> out;
+    if (!m_layerKeyFocus.row || m_layerKeyFocus.drawingIds.isEmpty() || m_layerKeyFocus.flat != currentFlatIndex())
+        return out;
+    Panel *panel = currentPanel();
+    const int li = m_layerKeyFocus.layer;
+    if (!panel || li < 0 || li >= panel->layers.size() || li != panel->activeLayerIndex
+        || !panel->layerHasRun(panel->layers.at(li)))
+        return out;
+    const Layer &layer = panel->layers.at(li);
+    for (const QString &id : m_layerKeyFocus.drawingIds) {
+        const int i = layer.drawingIndexOf(id);
+        if (i < 0)
+            return QVector<int>(); // a drawing gone (undone, deleted): the selection with it
+        out << i;
+    }
+    std::sort(out.begin(), out.end());
+    if (panelOut)
+        *panelOut = panel;
+    if (layerOut)
+        *layerOut = li;
+    return out;
+}
+
+void StoryboardPage::syncFrameSelection()
+{
+    if (m_layerKeyFocus.row && !m_layerKeyFocus.drawingIds.isEmpty() && usableFrameSelection().isEmpty()) {
+        // Another panel or layer, or a drawing of it gone: nothing is selected now; the row stays chosen.
+        m_layerKeyFocus.drawingIds.clear();
+        m_layerKeyFocus.anchorId.clear();
+    }
+    if (m_animatic)
+        m_animatic->setSelectedDrawings(usableFrameSelection());
+    if (m_canvas)
+        m_canvas->setFrameSelectionNote(frameSelectionNote());
+}
+
+QString StoryboardPage::frameSelectionNote() const
+{
+    Panel *panel = nullptr;
+    int li = -1;
+    const QVector<int> sel = usableFrameSelection(&panel, &li);
+    if (sel.size() < 2)
+        return QString(); // one frame: the run's own note says it ("Bird · frame 2 of 7 · held 2 frames")
+    Layer counted = panel->layers.at(li);
+    counted.countRunAt(cameraFps());
+    const int frames = qMax(1, shotcam::panelFrames(*panel, cameraFps()));
+    int length = 0;
+    for (int i : sel) {
+        const int end = i + 1 < counted.drawings.size() ? qMin(frames, counted.drawingStart(i + 1)) : frames;
+        length += qMax(0, end - counted.drawingStart(i));
+    }
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    bool run = true;
+    for (int k = 1; k < sel.size(); ++k)
+        if (sel.at(k) != sel.at(k - 1) + 1)
+            run = false;
+    QString which;
+    if (run) {
+        which = QStringLiteral("frames %1 to %2 selected").arg(sel.first() + 1).arg(sel.last() + 1);
+    } else {
+        QStringList numbers;
+        for (int i : sel)
+            numbers << QString::number(i + 1);
+        const QString last = numbers.takeLast();
+        which = QStringLiteral("frames %1 and %2 selected").arg(numbers.join(QStringLiteral(", ")), last);
+    }
+    return counted.name + dot + which + dot
+        + (length == 1 ? QStringLiteral("1 frame long") : QStringLiteral("%1 frames long").arg(length));
+}
+
+// A press on the FRAMES lane (the timeline's drawingBlockPressed): see the header.
+void StoryboardPage::framesLanePressed(int layerIndex, int drawingIndex, Qt::KeyboardModifiers mods)
+{
+    const int flat = currentFlatIndex();
+    if (drawingIndex < 0) {
+        setFrameSelection(flat, layerIndex, {}, -1); // the lane off a frame: none selected
+        return;
+    }
+    const QVector<int> now = usableFrameSelection();
+    const bool same = !now.isEmpty() && m_layerKeyFocus.layer == layerIndex;
+    if (mods.testFlag(Qt::ShiftModifier) && same && frameSelectionAnchor() >= 0) {
+        // The run from the anchor to this one, whole frames; the anchor stays where the run began.
+        const int a = frameSelectionAnchor();
+        QVector<int> run;
+        for (int i = qMin(a, drawingIndex); i <= qMax(a, drawingIndex); ++i)
+            run << i;
+        setFrameSelection(flat, layerIndex, run, a);
+        return;
+    }
+    if (mods.testFlag(Qt::ControlModifier) && same) {
+        // One frame more, or one less; the anchor is the one clicked (or, taken away, the first left).
+        QVector<int> next = now;
+        int anchor = drawingIndex;
+        if (next.contains(drawingIndex)) {
+            next.removeAll(drawingIndex);
+            anchor = next.isEmpty() ? -1 : (frameSelectionAnchor() != drawingIndex ? frameSelectionAnchor() : next.first());
+        } else {
+            next << drawingIndex;
+        }
+        setFrameSelection(flat, layerIndex, next, anchor);
+        return;
+    }
+    // A click (or the first frame of a Shift / Ctrl selection): that frame alone, the playhead to it.
+    goToDrawing(layerIndex, drawingIndex);
+    setFrameSelection(currentFlatIndex(), layerIndex, {drawingIndex}, drawingIndex);
+}
+
+bool StoryboardPage::clearFrameSelection()
+{
+    if (!m_layerKeyFocus.row || m_layerKeyFocus.drawingIds.isEmpty())
+        return false;
+    const bool had = !usableFrameSelection().isEmpty();
+    setFrameSelection(m_layerKeyFocus.flat, m_layerKeyFocus.layer, {}, -1);
+    return had;
 }
 
 bool StoryboardPage::focusedLayerKey(Panel **panel, int *flat, int *layer, int *key) const
@@ -15788,9 +16047,13 @@ void StoryboardPage::noteLayerRowPress(QObject *receiver, QEvent *event)
         // the last thing pressed and Ctrl+V pastes the copied key there. No key is the selected
         // one any more - the playhead has left it, and nothing on the row marks it - so Ctrl+C,
         // Ctrl+X and Del have no key to take until one is tapped again. (A selected block of
-        // the drawings lane the same way, batch I-2: Del never takes a drawing the playhead left.)
-        if (m_layerKeyFocus.key >= 0 || m_layerKeyFocus.drawing >= 0)
+        // the drawings lane the same way, batch I-2: Del never takes a drawing the playhead left;
+        // the frames selected too, round FC-a. The row stays chosen, in its lane: Ctrl+V pastes there.)
+        if (m_layerKeyFocus.key >= 0 || !m_layerKeyFocus.drawingIds.isEmpty()) {
+            const bool lane = m_layerKeyFocus.lane;
             setLayerKeyFocus(true);
+            m_layerKeyFocus.lane = lane;
+        }
         return;
     }
     setLayerKeyFocus(false);
@@ -15808,6 +16071,7 @@ void StoryboardPage::copyLayerKey()
     const shotcam::LayerKey &key = layer.keys.at(ki);
     const bool wasReady = layerKeyPasteReady();
     m_layerKeyClip.has = true;
+    m_rowClipLast = RowClip::Key; // Ctrl+V on the row pastes the key (round FC-a: or the frames copied last)
     m_layerKeyClip.key = key;
     m_layerKeyClip.place = layer.pivot + QPointF(key.pose.dx, key.pose.dy); // frame space
     if (layerKeyPasteReady() != wasReady)
@@ -16543,22 +16807,453 @@ void StoryboardPage::onDrawingsLaneMenu(int layerIndex, int drawingIndex, const 
     QAction *fresh = menu.addAction(QStringLiteral("New Frame\tN"));
     fresh->setObjectName(QStringLiteral("layerDrawingNew"));
     connect(fresh, &QAction::triggered, this, [this] { newDrawing(false); });
-    QAction *copy = menu.addAction(QStringLiteral("Duplicate Frame"));
-    copy->setObjectName(QStringLiteral("layerDrawingNewFrom"));
-    connect(copy, &QAction::triggered, this, [this] { newDrawing(true); });
-    menu.addSeparator();
-    QAction *del = menu.addAction(QStringLiteral("Delete Frame\tDel"));
-    del->setObjectName(QStringLiteral("layerDrawingDelete"));
-    del->setEnabled(panel->layerHasRun(panel->layers.at(layerIndex)) && drawingIndex >= 0);
-    connect(del, &QAction::triggered, this, [this, layerIndex, drawingIndex] {
-        deleteDrawing(layerIndex, drawingIndex);
-        setLayerKeyFocus(true);
-    });
+    // ROUND FC-a (Figma FC-1 section 2): on a frame or a selection, its Copy, Cut, the two Pastes
+    // and Delete, counted ("Copy 3 Frames"); off a frame, New Frame and Paste Frames at the Playhead.
+    // The Pastes are greyed until frames are copied, their reason a hover tooltip (the user's rule).
+    const QVector<int> sel = drawingIndex >= 0 ? usableFrameSelection() : QVector<int>();
+    const int n = qMax(1, int(sel.size()));
+    const QString frames = n == 1 ? QStringLiteral("Frame") : QStringLiteral("%1 Frames").arg(n);
+    if (drawingIndex >= 0) {
+        QAction *copy = menu.addAction(QStringLiteral("Duplicate Frame"));
+        copy->setObjectName(QStringLiteral("layerDrawingNewFrom"));
+        connect(copy, &QAction::triggered, this, [this] { newDrawing(true); });
+        menu.addSeparator();
+        QAction *copyFramesAct = menu.addAction(QStringLiteral("Copy %1\tCtrl+C").arg(frames));
+        copyFramesAct->setObjectName(QStringLiteral("layerFramesCopy"));
+        connect(copyFramesAct, &QAction::triggered, this, [this] { copyFrames(); });
+        QAction *cutFramesAct = menu.addAction(QStringLiteral("Cut %1\tCtrl+X").arg(frames));
+        cutFramesAct->setObjectName(QStringLiteral("layerFramesCut"));
+        connect(cutFramesAct, &QAction::triggered, this, [this] { cutFrames(); });
+    }
+    QAction *paste = menu.addAction(QStringLiteral("Paste Frames at the Playhead\tCtrl+V"));
+    paste->setObjectName(QStringLiteral("layerFramesPaste"));
+    sankoGreyWithReason(&menu, paste, QStringLiteral("No frames are copied yet."), !m_frameClip.has);
+    connect(paste, &QAction::triggered, this, [this] { pasteFrames(false); });
+    if (drawingIndex >= 0) {
+        QAction *over = menu.addAction(QStringLiteral("Paste Frames Over the Playhead"));
+        over->setObjectName(QStringLiteral("layerFramesPasteOver"));
+        sankoGreyWithReason(&menu, over, QStringLiteral("No frames are copied yet."), !m_frameClip.has);
+        connect(over, &QAction::triggered, this, [this] { pasteFrames(true); });
+        menu.addSeparator();
+        QAction *del = menu.addAction(QStringLiteral("Delete %1\tDel").arg(frames));
+        del->setObjectName(QStringLiteral("layerDrawingDelete"));
+        del->setEnabled(panel->layerHasRun(panel->layers.at(layerIndex)));
+        connect(del, &QAction::triggered, this, [this, layerIndex, drawingIndex] {
+            const QVector<int> now = usableFrameSelection();
+            deleteFrames(layerIndex, now.isEmpty() ? QVector<int>{drawingIndex} : now);
+            setFrameSelection(currentFlatIndex(), layerIndex, {}, -1);
+        });
+    }
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
         return;
     }
     menu.exec(globalPos);
+}
+
+// --- COPYING FRAMES (round FC-a): see the header. -------------------------------------------
+
+// A copied drawing's pixels on `panel`: at their place in the camera's frame (frame space), on
+// that panel's stage. Shared, nothing copied, when the stage is the one they were on; else folded
+// by the frame they were drawn in (tiles are frame space) and read at this stage. Nothing in
+// them: a blank picture, as New Frame's.
+LayerPixels StoryboardPage::placedOnPanel(const FrameClipEntry &entry, const Panel &panel)
+{
+    LayerPixels px = entry.px ? *entry.px : LayerPixels();
+    const QRect stage(-panel.frameAt(), panel.canvasSize());
+    const bool sameStage = entry.frameAt == panel.frameAt() && entry.canvas == panel.canvasSize();
+    if (!px.image.isNull() && !px.tilesCurrent() && !sameStage) {
+        const QImage image = layertiles::foldable(px.image)
+            ? px.image
+            : px.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        px.tiles = layertiles::fold(image, entry.frameAt, 0u, {}, px.image.cacheKey());
+        px.image = QImage();
+        px.tilesOf = 0;
+    } else if (!px.image.isNull() && !sameStage) {
+        px.image = QImage(); // its tiles say the same, placed by the frame
+        px.tilesOf = 0;
+    }
+    if (px.tiles)
+        px.stageRect = stage;
+    if (!px.hasPixels()) {
+        px.image = makeLayerImage(panel.canvasSize());
+        px.stageRect = stage;
+    }
+    return px;
+}
+
+namespace {
+QString framesWord(int n)
+{
+    return n == 1 ? QStringLiteral("1 frame") : QStringLiteral("%1 frames").arg(n);
+}
+} // namespace
+
+bool StoryboardPage::copyFrames()
+{
+    Panel *panel = nullptr;
+    int li = -1;
+    const QVector<int> sel = usableFrameSelection(&panel, &li);
+    if (sel.isEmpty()) {
+        sayWarning(QStringLiteral("No frame is selected: tap a frame on the FRAMES lane to copy it."));
+        return false;
+    }
+    if (m_canvas)
+        m_canvas->settleForLayerChange(); // a stroke still on its way lands on its drawing first
+    const int fps = cameraFps();
+    const int frames = qMax(1, shotcam::panelFrames(*panel, fps));
+    const Layer &layer = panel->layers.at(li);
+    Layer counted = layer;
+    counted.countRunAt(fps);
+    FrameClip clip;
+    clip.has = true;
+    clip.fps = fps;
+    clip.layerName = layer.name;
+    for (int i : sel) {
+        FrameClipEntry e;
+        e.px = std::make_shared<const LayerPixels>(layer.pixelsOf(i)); // shared pixels, as Duplicate Frame's copy
+        e.frameAt = panel->frameAt();
+        e.canvas = panel->canvasSize();
+        const int end = i + 1 < counted.drawings.size() ? qMin(frames, counted.drawingStart(i + 1)) : frames;
+        e.length = qMax(1, end - counted.drawingStart(i)); // the last one as long as it holds
+        clip.frames << e;
+    }
+    const bool wasReady = layerKeyPasteReady();
+    m_frameClip = clip;
+    m_rowClipLast = RowClip::Frames;
+    if (layerKeyPasteReady() != wasReady)
+        emit layerKeyPasteChanged();
+    sayNote(QStringLiteral("Copied %1 of %2 (%3 long)")
+                .arg(framesWord(int(clip.frames.size())), layer.name, framesWord(clip.totalLength())));
+    return true;
+}
+
+bool StoryboardPage::cutFrames()
+{
+    Panel *panel = nullptr;
+    int li = -1;
+    const QVector<int> sel = usableFrameSelection(&panel, &li);
+    if (sel.isEmpty()) {
+        sayWarning(QStringLiteral("No frame is selected: tap a frame on the FRAMES lane to cut it."));
+        return false;
+    }
+    const Layer &layer = panel->layers.at(li);
+    if (layer.locked) {
+        sayEditRefused(QStringLiteral("%1 is locked").arg(layer.name), QCursor::pos());
+        return false;
+    }
+    if (sel.size() >= layer.drawings.size()) { // a layer keeps at least one frame (answer 3)
+        sayWarning(QStringLiteral("%1 keeps at least one frame: copy them instead, or Clear Layer").arg(layer.name));
+        return false;
+    }
+    // What holds over them, for the note - worked out before they go.
+    Layer counted = layer;
+    counted.countRunAt(cameraFps());
+    bool run = true;
+    for (int k = 1; k < sel.size(); ++k)
+        if (sel.at(k) != sel.at(k - 1) + 1)
+            run = false;
+    if (!copyFrames())
+        return false;
+    const int length = m_frameClip.totalLength();
+    const QString name = layer.name;
+    const QString step = sel.size() == 1 ? QStringLiteral("Cut Frame") : QStringLiteral("Cut Frames");
+    if (!takeFrames(panel, li, sel, step))
+        return false;
+    QString held;
+    if (run && sel.first() > 0)
+        held = QStringLiteral("frame %1 holds over their %2").arg(sel.first()).arg(framesWord(length));
+    else if (run)
+        held = QStringLiteral("the frame after them takes their %1").arg(framesWord(length));
+    else
+        held = QStringLiteral("the frame before each holds over it");
+    sayNote(QStringLiteral("Cut %1 of %2: %3").arg(framesWord(int(sel.size())), name, held));
+    setFrameSelection(currentFlatIndex(), li, {}, -1); // the row stays chosen, for a paste
+    return true;
+}
+
+bool StoryboardPage::deleteFrames(int layerIndex, QVector<int> drawings)
+{
+    std::sort(drawings.begin(), drawings.end());
+    drawings.erase(std::unique(drawings.begin(), drawings.end()), drawings.end());
+    if (drawings.size() == 1)
+        return deleteDrawing(layerIndex, drawings.first()); // one frame: Delete Frame, as it always was
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_undoStack || layerIndex < 0 || layerIndex >= panel->layers.size()
+        || drawings.isEmpty())
+        return false;
+    const Layer &target = panel->layers.at(layerIndex);
+    if (!panel->layerHasRun(target) || drawings.first() < 0 || drawings.last() >= target.drawings.size())
+        return false;
+    if (target.locked) {
+        sayEditRefused(QStringLiteral("%1 is locked").arg(target.name), QCursor::pos());
+        return false;
+    }
+    if (drawings.size() >= target.drawings.size()) {
+        sayWarning(QStringLiteral("Delete %1 Frames: %2 keeps at least one frame. Clear Layer empties it.")
+                       .arg(drawings.size()).arg(target.name));
+        return false;
+    }
+    return takeFrames(panel, layerIndex, drawings, QStringLiteral("Delete Frames"));
+}
+
+// The drawings `drawings` (ascending, fewer than the layer has) taken out of the run, each as
+// Delete Frame takes one: the one before holds over its frames, the first ones' go to the first
+// left. One undo step `step`.
+bool StoryboardPage::takeFrames(Panel *panel, int layerIndex, const QVector<int> &drawings, const QString &step)
+{
+    m_canvas->settleForLayerChange();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[layerIndex];
+    layer.countRunAt(cameraFps());
+    // The drawing the layer shows stays one of the run's: if it goes, the nearest kept before it
+    // (else after it) is shown first.
+    if (drawings.contains(layer.shown)) {
+        int keep = -1;
+        for (int i = layer.shown - 1; i >= 0 && keep < 0; --i)
+            if (!drawings.contains(i))
+                keep = i;
+        for (int i = layer.shown + 1; i < layer.drawings.size() && keep < 0; ++i)
+            if (!drawings.contains(i))
+                keep = i;
+        layer.show(keep);
+    }
+    const QString shownId = layer.drawings.at(layer.shown).id;
+    QVector<LayerDrawing> kept;
+    for (int i = 0; i < layer.drawings.size(); ++i)
+        if (!drawings.contains(i))
+            kept << layer.drawings.at(i);
+    layer.drawings = kept;
+    layer.shown = qMax(0, layer.drawingIndexOf(shownId));
+    layer.drawings[0].start = 0;
+    if (layer.drawings.size() == 1) {
+        layer.drawings.clear(); // one drawing left: a layer as any other, that drawing its own pixels
+        layer.shown = 0;
+    }
+    settleDrawingsAtPlayhead(panel);
+    panel->unfoldNow();
+    pushLayerCommand(panel, before, beforeActive, step);
+    m_layerFolder->sweep();
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+    refreshLayerMotionUi();
+    refreshOnionForDrawing();
+    m_canvas->refreshNoteBar();
+    reportLayerDrawing(step, panel, layerIndex);
+    return true;
+}
+
+bool StoryboardPage::pasteFrames(bool over)
+{
+    if (!m_frameClip.has || m_frameClip.frames.isEmpty()) {
+        sayWarning(QStringLiteral("No frames are copied yet."));
+        return false;
+    }
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_undoStack || !m_animatic || m_animatic->playheadPanel() != panel) {
+        sayWarning(QStringLiteral("Put the playhead on the panel to paste the frames into."));
+        return false;
+    }
+    if (m_animatic->previewVisible())
+        return false; // as New Frame: the film's frame is not the workspace's
+    const int li = panel->activeLayerIndex;
+    if (li < 0 || li >= panel->layers.size())
+        return false;
+    {
+        const Layer &target = panel->layers.at(li);
+        if (isGroupLayer(target) || target.type == QLatin1String("background")) {
+            sayWarning(isGroupLayer(target)
+                           ? QStringLiteral("A folder has no frames: choose a layer in the Layers panel to paste the frames on.")
+                           : QStringLiteral("The paper has no frames: choose a layer in the Layers panel to paste the frames on."));
+            return false;
+        }
+        if (target.locked) {
+            sayEditRefused(QStringLiteral("%1 is locked").arg(target.name), QCursor::pos());
+            return false;
+        }
+    }
+    const int fps = cameraFps();
+    const DrawingCanvas::MotionView v = motionView();
+    const int frames = v.valid ? v.frames : qMax(1, shotcam::panelFrames(*panel, fps));
+    const int playhead = qBound(0, v.valid ? v.frame : 0, frames - 1);
+    // Each copied frame's length at this project's rate (the copy's rate may be another project's).
+    QVector<int> lengths;
+    int pasted = 0;
+    for (const FrameClipEntry &e : std::as_const(m_frameClip.frames)) {
+        const int n = qMax(1, int(std::lround(double(e.length) * fps / qMax(1, m_frameClip.fps))));
+        lengths << n;
+        pasted += n;
+    }
+    // The run as it will be, worked out on a copy in the project's frames: every drawing as an item
+    // (one of the layer's, a copied one, or the rest of a split one) with its start.
+    Layer probe = panel->layers.at(li);
+    if (!probe.hasRun()) {
+        probe.drawings = {LayerDrawing()};
+        probe.shown = 0;
+        probe.runRate = fps;
+    } else {
+        probe.countRunAt(fps);
+    }
+    enum Kind { Own, Copied, Rest };
+    struct Item
+    {
+        Kind kind;
+        int index; // the layer's drawing (Own, Rest) or the copy's (Copied)
+        int start;
+        bool mustShow; // it is seen now (or is new): it may not be pushed past the panel's end
+    };
+    QVector<Item> items;
+    const int count = int(probe.drawings.size());
+    auto addCopied = [&](int at) {
+        for (int k = 0; k < lengths.size(); ++k) {
+            items.append({Copied, k, at, true});
+            at += lengths.at(k);
+        }
+    };
+    const int end = playhead + pasted;
+    int split = -1;
+    bool after = false;       // frames after the pasted ones that moved later
+    bool restDropped = false; // the split frame held to the end: its rest gave way to them
+    if (!over) {
+        const int cur = probe.drawingAt(playhead);
+        for (int i = 0; i < cur; ++i)
+            items.append({Own, i, probe.drawingStart(i), probe.drawingStart(i) < frames});
+        if (probe.drawingStart(cur) == playhead) {
+            addCopied(playhead);
+            for (int i = cur; i < count; ++i) {
+                items.append({Own, i, probe.drawingStart(i) + pasted, probe.drawingStart(i) < frames});
+                after = true;
+            }
+        } else {
+            split = cur; // inside it: its first part, the pasted frames, the rest of it
+            items.append({Own, cur, probe.drawingStart(cur), true});
+            addCopied(playhead);
+            // The rest of the frame that holds to the panel's end is only that hold: it gives it up
+            // first - kept while it fits before the end, dropped when it would start past it.
+            const bool holdsToEnd = cur + 1 >= count || probe.drawingStart(cur + 1) >= frames;
+            if (!holdsToEnd) {
+                items.append({Rest, cur, end, true});
+                after = true;
+            } else if (end < frames) {
+                items.append({Rest, cur, end, false});
+                after = true;
+            } else {
+                restDropped = true;
+            }
+            for (int i = cur + 1; i < count; ++i)
+                items.append({Own, i, probe.drawingStart(i) + pasted, probe.drawingStart(i) < frames});
+        }
+    } else {
+        // OVER: what started before the playhead stays; the pasted frames cover their length;
+        // what was seen where they end shows from there; nothing later moves.
+        for (int i = 0; i < count && probe.drawingStart(i) < playhead; ++i)
+            items.append({Own, i, probe.drawingStart(i), probe.drawingStart(i) < frames});
+        addCopied(playhead);
+        const int a = probe.drawingAt(end);
+        if (probe.drawingStart(a) >= playhead)
+            items.append({Own, a, end, false}); // it started under them: from where they end
+        else if (end < frames)
+            items.append({Rest, a, end, false}); // it spans them: its rest, after them
+        for (int i = a + 1; i < count; ++i)
+            items.append({Own, i, probe.drawingStart(i), probe.drawingStart(i) < frames});
+    }
+    // NEVER PAST THE PANEL'S END: the frame that holds to the end gives up its hold first; only what
+    // would be pushed out of sight refuses the paste.
+    int overflow = 0;
+    bool copiedOut = false;
+    for (const Item &item : std::as_const(items))
+        if (item.mustShow && item.start > frames - 1) {
+            if (item.start - (frames - 1) > overflow)
+                overflow = item.start - (frames - 1);
+            copiedOut = copiedOut || item.kind == Copied;
+        }
+    if (overflow > 0) {
+        sayWarning(copiedOut || over
+                       ? QStringLiteral("Not enough room: the pasted frames would pass the panel's end by %1 - lengthen "
+                                        "the panel, or put the playhead earlier").arg(framesWord(overflow))
+                       : QStringLiteral("Not enough room: the frames after the playhead would pass the panel's end by %1 "
+                                        "- paste over, or lengthen the panel").arg(framesWord(overflow)));
+        return false;
+    }
+
+    m_canvas->settleForLayerChange(); // whatever is live lands on the drawing it was made on
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    Layer &layer = panel->layers[li];
+    if (!layer.hasRun()) {
+        // A layer with one frame becomes a run: that frame is its first.
+        LayerDrawing first;
+        first.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        layer.drawings = {first};
+        layer.shown = 0;
+        layer.runRate = fps;
+    } else {
+        layer.countRunAt(fps);
+    }
+    // Every drawing's pixels in its own place while the run is made again; the one at the playhead
+    // goes back onto the layer at the end.
+    layer.drawings[layer.shown].px = static_cast<const LayerPixels &>(layer);
+    QVector<LayerDrawing> made;
+    QVector<int> pastedAt;
+    for (const Item &item : std::as_const(items)) {
+        LayerDrawing d;
+        if (item.kind == Own) {
+            d = layer.drawings.at(item.index);
+        } else {
+            d.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            d.px = item.kind == Copied ? placedOnPanel(m_frameClip.frames.at(item.index), *panel)
+                                       : layer.drawings.at(item.index).px; // the rest: the same picture
+            if (item.kind == Copied)
+                pastedAt << int(made.size());
+        }
+        d.start = item.start;
+        made << d;
+    }
+    made[0].start = 0;
+    int shown = 0;
+    for (int i = 1; i < made.size() && made.at(i).start <= playhead; ++i)
+        shown = i;
+    static_cast<LayerPixels &>(layer) = made.at(shown).px;
+    made[shown].px = LayerPixels();
+    layer.drawings = made;
+    layer.shown = shown;
+    if (layer.drawings.size() == 1) {
+        layer.drawings.clear();
+        layer.shown = 0;
+    }
+    settleDrawingsAtPlayhead(panel);
+    panel->unfoldNow();
+    const QString step = over ? QStringLiteral("Paste Frames Over") : QStringLiteral("Paste Frames");
+    pushLayerCommand(panel, before, beforeActive, step);
+    m_layerFolder->sweep();
+    m_canvas->refreshTransformBox();
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+    refreshLayerMotionUi();
+    refreshOnionForDrawing();
+    m_canvas->refreshNoteBar();
+    reportLayerDrawing(step, panel, li);
+    // The pasted frames are the selection now: what was pasted, ready to copy or delete again.
+    setFrameSelection(currentFlatIndex(), li, pastedAt, pastedAt.value(0, -1));
+    const QString what = framesWord(int(lengths.size()));
+    const QString name = panel->layers.at(li).name;
+    if (over)
+        sayNote(QStringLiteral("Pasted %1 over %2's frames %3 to %4: nothing after them moved")
+                    .arg(what, name).arg(playhead + 1).arg(end));
+    else if (split >= 0 && restDropped)
+        sayNote(QStringLiteral("Pasted %1 on %2 at frame %3: its frame %4 holds up to them, and they to the panel's end")
+                    .arg(what, name).arg(playhead + 1).arg(split + 1));
+    else if (split >= 0)
+        sayNote(QStringLiteral("Pasted %1 on %2 at frame %3, inside its frame %4: the rest of it and the frames after "
+                               "moved %5 later").arg(what, name).arg(playhead + 1).arg(split + 1).arg(framesWord(pasted)));
+    else if (after)
+        sayNote(QStringLiteral("Pasted %1 on %2 at frame %3: the frames after them moved %4 later")
+                    .arg(what, name).arg(playhead + 1).arg(framesWord(pasted)));
+    else
+        sayNote(QStringLiteral("Pasted %1 on %2 at frame %3").arg(what, name).arg(playhead + 1));
+    return true;
 }
 
 

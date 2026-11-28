@@ -634,8 +634,9 @@ public:
     bool layerRowFocusedForTest() const { return m_layerKeyFocus.row; }
     int layerRowFocusKeyForTest() const { return m_layerKeyFocus.row ? m_layerKeyFocus.key : -1; }
     bool layerKeyCopiedForTest() const { return m_layerKeyClip.has; }
-    // Edit > Paste works for a key now: the LAYER row is the last thing pressed and a key is copied.
-    bool layerKeyPasteReady() const { return m_layerKeyFocus.row && m_layerKeyClip.has; }
+    // Edit > Paste works for the LAYER row now: it is the last thing pressed and a key is copied -
+    // or frames (round FC-a).
+    bool layerKeyPasteReady() const { return m_layerKeyFocus.row && (m_layerKeyClip.has || m_frameClip.has); }
     // Any press: on the LAYER row it changes nothing here (the row says what it chose); anywhere
     // else - but a menu - it hands the edit keys back (CanvasKeyRouter).
     void noteLayerRowPress(QObject *receiver, QEvent *event);
@@ -692,7 +693,62 @@ public:
     bool layerListArrow(bool up);
     QScrollArea *layerListForTest() const { return m_layerListScroll; }
     void onDrawingsLaneMenu(int layerIndex, int drawingIndex, const QPoint &globalPos);
-    int selectedDrawingForTest() const { return m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1; }
+    // The frame a click, Shift+click or Ctrl+click chose (the anchor); -1 with none selected.
+    int selectedDrawingForTest() const
+    {
+        return m_layerKeyFocus.row && !m_layerKeyFocus.drawingIds.isEmpty() ? frameSelectionAnchor() : -1;
+    }
+    // --- COPYING FRAMES (round FC-a, 2026-11-28; Figma FC-1 757:757, approved with the user's
+    // eight answers - HANDOFF records them) ------------------------------------------------------
+    // SELECTING (answer 2): a click on a frame of the FRAMES lane selects it (the playhead to its
+    // first frame, as before); Shift+click selects the run from the anchor to it; Ctrl+click adds
+    // or takes away one frame (neither moves the playhead); a click on the lane off a frame, or
+    // anywhere else, selects none; Esc clears the selection. The selection is the LAYER row's,
+    // as a selected key is: while the row was the last thing pressed, Ctrl+C, Ctrl+X, Ctrl+V and
+    // Del are its; any other press hands them back. `drawingIndex` -1: the lane off a frame.
+    void framesLanePressed(int layerIndex, int drawingIndex, Qt::KeyboardModifiers mods);
+    // COPY: the selected frames as they are, and how long each is held (the last as long as it
+    // holds, to the panel's end); scattered frames one after another (answer 2). "Copied 3
+    // frames of Bird (6 frames long)". CUT (answer 3): copy, then each goes as Delete Frame - the
+    // frame before holds over it - as one step; a layer keeps at least one frame. DELETE: the same
+    // without the copy (Del, the menu). Each refusal is an amber note and changes nothing.
+    bool copyFrames();
+    bool cutFrames();
+    bool deleteFrames(int layerIndex, QVector<int> drawings);
+    // PASTE (answer 1): on the selected layer of the panel under the playhead (the panel on the
+    // canvas), at the playhead. Ctrl+V and "Paste Frames at the Playhead" INSERT: the frames after
+    // move later by the pasted length; a playhead inside a frame splits it there, as New Frame
+    // does (its first part, the pasted frames, then the rest of it - a copy of the same drawing -
+    // and the frames after). A layer with one frame becomes a run. Never past the panel's end: the
+    // last frame gives up its hold first; only when that is not enough is the paste refused.
+    // "Paste Frames Over the Playhead" (the menu only) covers the pasted length: what was there
+    // is gone for those frames and nothing moves. One step either way; the pasted frames are the
+    // selection after it. Each pasted drawing is a drawing of its own, at its place in the
+    // camera's frame.
+    bool pasteFrames(bool over);
+    QList<int> selectedDrawingsForTest() const
+    {
+        const QVector<int> now = usableFrameSelection();
+        return QList<int>(now.begin(), now.end());
+    }
+    QString frameSelectionNoteForTest() const { return frameSelectionNote(); }
+    bool framesCopiedForTest() const { return m_frameClip.has; }
+    int framesCopiedLengthForTest() const { return m_frameClip.has ? m_frameClip.totalLength() : 0; }
+    int framesCopiedCountForTest() const { return m_frameClip.has ? int(m_frameClip.frames.size()) : 0; }
+    // SPACE NEVER PRESSES A BUTTON (the user's word after hand test LT, 2026-11-28): a Space that
+    // reaches a button or a drop-down list with the keyboard - after the canvas, the film and the
+    // timeline have had their turn - is taken here and does nothing; anywhere, in any window.
+    bool keepSpaceFromButton(QObject *receiver, QKeyEvent *event);
+    int spaceKeptFromButtonsForTest() const { return m_spaceKeptFromButtons; }
+    bool spaceDownAwayForTest() const { return m_spaceDownAway; }
+    // ESC CLEARS THE FRAMES SELECTED (answer 2) where no one else uses it: not in a field, a
+    // dialog or a menu, and after the canvas's own Esc (a move or a paste being cancelled).
+    bool routeFramesEsc(QObject *receiver, QKeyEvent *event);
+    bool clearFrameSelection(); // true when frames were selected
+    // THE PREVIEW'S FRAME NOTE (the user's word after hand test LT): with the film up on another
+    // panel than the one on the canvas, the bar's frame note names that panel's selected layer and
+    // its frame at the playhead. A null string: the canvas's own note applies.
+    QString previewRunNoteText() const;
     // The drawing under the playhead onto every layer with a run of the panel on the canvas:
     // true when a layer changed drawing. Nothing is copied; the drawings left fold at rest.
     bool showDrawingsAtPlayhead();
@@ -991,12 +1047,69 @@ private:
     {
         bool row = false;
         int flat = -1, layer = -1, key = -1;
-        // A block of the drawings lane tapped (batch I-2): that drawing of the selected layer
-        // is the selected thing on the row, and Del is its. -1: none.
-        int drawing = -1;
+        // THE FRAMES SELECTED on the FRAMES lane (batch I-2: a block tapped; round FC-a, the user's
+        // answer 2 of 2026-11-28: a click one, Shift+click a run, Ctrl+click one more or one less):
+        // drawings of `layer` in panel `flat`, by their ids (LayerDrawing::id) - an undo, a paste
+        // or a delete moves the indices, never the ids, so a selection never passes to another
+        // drawing. Ctrl+C / X and Del are theirs. `anchorId`: the frame a Shift+click's run starts
+        // from (the last one clicked without Shift). `lane`: the last press on the row was in the
+        // FRAMES lane (which note a Ctrl+C with nothing selected says).
+        QStringList drawingIds;
+        QString anchorId;
+        bool lane = false;
     };
     LayerKeyFocus m_layerKeyFocus;
-    void setLayerKeyFocus(bool row, int flat = -1, int layer = -1, int key = -1, int drawing = -1);
+    void setLayerKeyFocus(bool row, int flat = -1, int layer = -1, int key = -1);
+    // The FRAMES lane's selection: those drawings (indices now) of `layer` in panel `flat` (empty:
+    // the row is chosen, in its lane, with no frame).
+    void setFrameSelection(int flat, int layer, const QVector<int> &drawings, int anchor);
+    // The anchor's index now; -1 when it is not a drawing of the selection's layer.
+    int frameSelectionAnchor() const;
+    // The selection as it can be used now: its panel the one on the canvas, its layer the selected
+    // one with a run, every index a drawing it has. Empty otherwise (and `panel` / `layer` unset).
+    QVector<int> usableFrameSelection(Panel **panel = nullptr, int *layer = nullptr) const;
+    // The timeline's blocks and the bar's note brought up to the selection (after any change of
+    // panel, layer or drawings): a selection that is no longer usable is dropped.
+    void syncFrameSelection();
+    // "Bird  ·  frames 2 to 4 selected  ·  6 frames long" while two or more are selected; else empty.
+    QString frameSelectionNote() const;
+    // THE COPIED FRAMES (round FC-a, Figma FC-1 757:757 with the user's eight answers): each one's
+    // pixels as they were (shared until either is drawn on) and how long it was held, in the
+    // project's frames at `fps`; frames Ctrl+clicked apart are copied one after another, in their
+    // order (answer 2). It lives while SankoTV runs - another panel, scene or project - and is not
+    // saved; Copy Key's is separate. `frameAt` / `canvas`: the stage the pixels were on, so that a
+    // full image is placed again by its frame (a pasted drawing keeps its place in the camera's
+    // frame, as a pasted key keeps its place).
+    struct FrameClipEntry
+    {
+        std::shared_ptr<const LayerPixels> px; // (a pointer: LayerPixels is the model's, not this header's)
+        QPoint frameAt;
+        QSize canvas;
+        int length = 1;
+    };
+    struct FrameClip
+    {
+        bool has = false;
+        QVector<FrameClipEntry> frames;
+        int fps = 24;
+        QString layerName;
+        int totalLength() const
+        {
+            int n = 0;
+            for (const FrameClipEntry &e : frames)
+                n += e.length;
+            return n;
+        }
+    };
+    FrameClip m_frameClip;
+    static LayerPixels placedOnPanel(const FrameClipEntry &entry, const Panel &panel);
+    // Drawings `drawings` (ascending, fewer than the run has) out of `layerIndex`'s run, each as
+    // Delete Frame takes one; one undo step `step`. The checks are the caller's.
+    bool takeFrames(Panel *panel, int layerIndex, const QVector<int> &drawings, const QString &step);
+    // Which of the LAYER row's two clipboards the last copy or cut filled: Ctrl+V on the row pastes
+    // that one.
+    enum class RowClip { None, Key, Frames };
+    RowClip m_rowClipLast = RowClip::None;
     // FRAME-BY-FRAME DRAWINGS (batch I-2): the playhead's place in `panel` (0 when it is on
     // another); every layer's drawing there, without any pixel work or refresh (a panel
     // about to go on the canvas, a history step's layers); the Layers panel's thumbnails
@@ -1399,6 +1512,7 @@ private:
     bool m_pointerLeftWindow = false;
     bool m_pointerOverCanvas = false;        // the canvas's keys are the canvas's (routeCanvasKey)
     bool m_spaceDownAway = false;            // a Space pressed off the canvas, still down
+    int m_spaceKeptFromButtons = 0;          // Spaces kept from a button or a drop-down (keepSpaceFromButton)
     qint64 m_testPointerDevice = -1;         // the gate's pen (setPointerDeviceForTest)
     void pointerArrivedOverCanvas();         // ...is the canvas's once the pointer comes
     bool m_timelineKeysArmed = false;

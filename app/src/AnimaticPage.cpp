@@ -718,10 +718,10 @@ void AnimaticPage::refreshLayerRow()
         m_display->update(); // a key changed under the preview (batch I-1)
 }
 
-void AnimaticPage::setSelectedDrawing(int drawingIndex)
+void AnimaticPage::setSelectedDrawings(const QVector<int> &drawingIndices)
 {
     if (m_timeline)
-        m_timeline->setSelectedDrawing(drawingIndex);
+        m_timeline->setSelectedDrawings(drawingIndices);
 }
 
 void AnimaticPage::setOnionSkinShown(bool on)

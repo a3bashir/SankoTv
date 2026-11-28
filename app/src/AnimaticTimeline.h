@@ -308,7 +308,8 @@ public:
     // cut alone - and a right-click asks for the lane's menu. The + at the row's left is New
     // Drawing. The edits are the workspace's (StoryboardPage), one request on release. The
     // SHOTS track gives the row its 18 px (never under 30 px itself).
-    void setSelectedDrawing(int drawingIndex); // the block drawn as selected; -1 none
+    // The blocks drawn as selected (round FC-a: several; each run of them outlined as one); none: empty.
+    void setSelectedDrawings(const QVector<int> &drawingIndices);
     void setOnionSkinShown(bool on);
     QRect drawingsLaneForTest() const;
     // Each block as drawn: "index", "start", "end" (frames of the panel; end exclusive),
@@ -412,7 +413,9 @@ signals:
     // The rows need another least height (a LAYER row came or went, or its drawings lane):
     // whoever sizes the timeline's section gives it the room (2026-11-26).
     void rowsMinimumChanged();
-    void drawingBlockPressed(int layerIndex, int drawingIndex);
+    // A press on the lane (round FC-a): a block with the keys held (Shift: a run, Ctrl: one more or
+    // less), or -1 - the lane off a block, or a cut dragged (the row chosen, no frame selected).
+    void drawingBlockPressed(int layerIndex, int drawingIndex, Qt::KeyboardModifiers mods);
     void drawingCutMoveRequested(int layerIndex, int drawingIndex, int startFrameInPanel, bool alone);
     void drawingsLaneContextMenuRequested(int layerIndex, int drawingIndex, const QPoint &globalPos);
     // Right-click on the SCENES track (Phase 1D): that scene's menu.
@@ -582,10 +585,11 @@ private:
     QToolButton *m_onionButton = nullptr; // the Onion Skin's switch on the LAYER row (OS-1)
     bool m_layerRowRun = false;
     bool m_onionShown = false;
-    int m_selectedDrawing = -1;
+    QVector<int> m_selectedDrawings; // ascending (round FC-a; one until then)
     int m_cutDragDrawing = -1, m_cutDragLayer = -1;
     int m_cutDragFrom = 0, m_cutDragFrame = 0; // frames of the panel
     bool m_cutDragAlone = false, m_cutDragActive = false;
+    Qt::KeyboardModifiers m_cutDragMods; // a tap on a cut selects as a tap on its block (Shift, Ctrl)
     QToolButton *m_newDrawingButton = nullptr;
     struct LayerMark
     {
@@ -844,7 +848,9 @@ private:
     // drag, anywhere on the rows or the ruler, moves the view left and right with the
     // pointer - through the scrollbar, as the user's scroll - and nothing else.
     double m_panStartGlobalX = 0.0;
+    double m_panStartGlobalY = 0.0;
     int m_panStartScroll = 0;
+    int m_panLaneBlock = -1, m_panLaneLayer = -1; // a Ctrl press on a frame: a Ctrl+click unless it moves (round FC-a)
     bool m_panScrolling = false; // a pan is moving the scrollbar: the user's scroll
     static bool panPress(const QMouseEvent *e);
     Drag m_drag = Drag::None;

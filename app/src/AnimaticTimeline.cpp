@@ -1232,7 +1232,7 @@ void AnimaticTimeline::refreshLayerRow()
         layoutTrackControls(); // the AUDIO row's controls move with it
     }
     if (!run) {
-        m_selectedDrawing = -1;
+        m_selectedDrawings.clear();
         m_hoverDrawing = -1;
         if (m_drag == Drag::DrawingCut)
             m_drag = Drag::None;
@@ -1322,7 +1322,7 @@ QVector<AnimaticTimeline::DrawingBlock> AnimaticTimeline::drawingBlocks() const
         block.x0 = contentXToScreen((b.startFrame + block.start) * ppf);
         block.x1 = contentXToScreen((b.startFrame + block.end) * ppf);
         block.shown = i == current;
-        block.selected = i == m_selectedDrawing;
+        block.selected = m_selectedDrawings.contains(i);
         block.hovered = i == m_hoverDrawing;
         block.tint = own;
         // The blocks the onion skin ghosts, in its colours (Preferences > Onion Skin).
@@ -1444,11 +1444,21 @@ void AnimaticTimeline::paintDrawingsLane(QPainter &p)
             p.setPen(block.shown ? QColor(Qt::white) : QColor(0xcf, 0xcb, 0xea));
             p.drawText(r.adjusted(5, 0, -3, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
         }
-        if (block.selected) {
-            p.setPen(QPen(SankoKeyColors::keyEdge(Row::Layer), 1.0));
-            p.setBrush(Qt::NoBrush);
-            p.drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5));
-        }
+    }
+    // THE SELECTION (round FC-a, Figma FC-1 section 1): each run of selected frames outlined as one,
+    // in the selected frame's outline - one frame alone as before; frames Ctrl+clicked apart each
+    // their own.
+    p.setPen(QPen(SankoKeyColors::keyEdge(Row::Layer), 1.0));
+    p.setBrush(Qt::NoBrush);
+    for (int i = 0; i < blocks.size(); ++i) {
+        if (!blocks.at(i).selected)
+            continue;
+        int j = i;
+        while (j + 1 < blocks.size() && blocks.at(j + 1).selected && blocks.at(j + 1).index == blocks.at(j).index + 1)
+            ++j;
+        const QRectF r(blocks.at(i).x0, lane.top(), blocks.at(j).x1 - blocks.at(i).x0, lane.height());
+        p.drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5));
+        i = j;
     }
     // The run as one band: a line along its top and its bottom (kDrawingsBandH: 3 px since
     // the user's proposal; 1 px before).
@@ -1523,11 +1533,13 @@ QVariantMap AnimaticTimeline::rowsForTest() const
             {QStringLiteral("canvas"), m_canvas ? m_canvas->height() : 0}};
 }
 
-void AnimaticTimeline::setSelectedDrawing(int drawingIndex)
+void AnimaticTimeline::setSelectedDrawings(const QVector<int> &drawingIndices)
 {
-    if (m_selectedDrawing == drawingIndex)
+    QVector<int> sorted = drawingIndices;
+    std::sort(sorted.begin(), sorted.end());
+    if (m_selectedDrawings == sorted)
         return;
-    m_selectedDrawing = drawingIndex;
+    m_selectedDrawings = sorted;
     if (m_canvas)
         m_canvas->update();
 }
@@ -4488,7 +4500,20 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     if (panPress(e) && m_drag == Drag::None) {
         m_drag = Drag::Pan;
         m_panStartGlobalX = e->globalPosition().x();
+        m_panStartGlobalY = e->globalPosition().y();
         m_panStartScroll = m_scrollX;
+        // CTRL+CLICK ON A FRAME (round FC-a, the user's answer 2: one frame more or one less): a
+        // Ctrl press on a block of the FRAMES lane is a pan only once it moves; let go where it
+        // was pressed, it is a Ctrl+click on that frame (canvasMouseRelease).
+        m_panLaneBlock = m_panLaneLayer = -1;
+        const QPoint at = e->position().toPoint();
+        if (e->button() == Qt::LeftButton && inDrawingsLane(at)) {
+            int layerIndex = -1;
+            if (runLayer(&layerIndex)) {
+                m_panLaneBlock = drawingBlockAt(at);
+                m_panLaneLayer = layerIndex;
+            }
+        }
         m_canvas->setCursor(Qt::ClosedHandCursor);
         e->accept();
         return;
@@ -4568,7 +4593,9 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         if (inDrawingsLane(pos)) {
             int layerIndex = -1;
             if (runLayer(&layerIndex)) {
-                emit layerRowPressed(-1, -1, -1);
+                // (Round FC-a: the press says itself what it chose - a block with Shift or Ctrl
+                // keeps the selection it adds to - so the row's "no key" goes only with a block's
+                // press or, -1, the lane off a block. A cut's press waits for its release.)
                 const int cut = drawingCutAt(pos);
                 if (cut >= 1) {
                     m_drag = Drag::DrawingCut;
@@ -4580,14 +4607,13 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
                             m_cutDragFrom = block.start;
                     m_cutDragFrame = m_cutDragFrom;
                     m_cutDragAlone = e->modifiers().testFlag(Qt::AltModifier);
+                    m_cutDragMods = e->modifiers();
                     m_cutDragActive = false;
                     m_layerPress = pos;
                     e->accept();
                     return;
                 }
-                const int block = drawingBlockAt(pos);
-                if (block >= 0)
-                    emit drawingBlockPressed(layerIndex, block);
+                emit drawingBlockPressed(layerIndex, drawingBlockAt(pos), e->modifiers());
             }
             e->accept();
             return;
@@ -4819,10 +4845,12 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
         if (inDrawingsLane(pos)) {
             int layerIndex = -1;
             if (runLayer(&layerIndex)) {
+                // A right-click on a selected frame keeps the selection - its menu acts on all of
+                // them (round FC-a); on another frame it selects that one, as a click does; off a
+                // frame, none.
                 const int block = drawingBlockAt(pos);
-                emit layerRowPressed(-1, -1, -1);
-                if (block >= 0)
-                    emit drawingBlockPressed(layerIndex, block);
+                if (block < 0 || !m_selectedDrawings.contains(block))
+                    emit drawingBlockPressed(layerIndex, block, Qt::NoModifier);
                 emit drawingsLaneContextMenuRequested(layerIndex, block, e->globalPos());
             }
             e->accept();
@@ -5337,6 +5365,13 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         if (e->button() == Qt::LeftButton || e->button() == Qt::MiddleButton) {
             m_drag = Drag::None;
             m_canvas->setCursor(Qt::ArrowCursor);
+            // A Ctrl press on a frame let go where it was pressed: a Ctrl+click on it (round FC-a).
+            constexpr double kClickSlop = 3.0;
+            if (e->button() == Qt::LeftButton && m_panLaneBlock >= 0
+                && qAbs(e->globalPosition().x() - m_panStartGlobalX) <= kClickSlop
+                && qAbs(e->globalPosition().y() - m_panStartGlobalY) <= kClickSlop && m_scrollX == m_panStartScroll)
+                emit drawingBlockPressed(m_panLaneLayer, m_panLaneBlock, e->modifiers() | Qt::ControlModifier);
+            m_panLaneBlock = m_panLaneLayer = -1;
         }
         return;
     }
@@ -5430,10 +5465,14 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         m_canvas->setCursor(Qt::ArrowCursor);
         m_canvas->update();
         hideChip();
-        if (moved)
-            emit drawingCutMoveRequested(layer, drawing, frame, alone);
-        else if (tapped)
-            emit drawingBlockPressed(layer, drawing); // a tap on a cut: the drawing that starts there
+        if (tapped) {
+            // A tap on a cut: the drawing that starts there, with the keys held at the press.
+            emit drawingBlockPressed(layer, drawing, m_cutDragMods & ~Qt::AltModifier);
+        } else {
+            if (moved)
+                emit drawingCutMoveRequested(layer, drawing, frame, alone);
+            emit drawingBlockPressed(layer, -1, Qt::NoModifier); // the row chosen, no frame (as before)
+        }
         return;
     }
     if (m_drag == Drag::LayerKey) { // batch I-1: one request on release, the workspace's step

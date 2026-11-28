@@ -1,6 +1,189 @@
 # SankoTV — Session Handoff Brief
 
-## 2026-11-28 (15:1x): ROUND LT COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST LT - UP / DOWN OVER THE LAYERS LIST SELECT LAYERS, THE THREE SHORT TIPS; FIGMA FC-1 (757:757) APPROVED WITH THE USER'S EIGHT ANSWERS (BELOW) - TO BE BUILT IN TWO ROUNDS, FC-a (SELECTING, COPY / CUT / PASTE OF FRAMES, AND TWO FIXES) NOW, FC-b (CYCLES) AFTER FC-a IS HAND-TESTED AND COMMITTED
+## 2026-11-28 (night): ROUND FC-a COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST FC-a - FRAMES SELECTED, COPIED, CUT AND PASTED; SPACE NEVER PRESSES A BUTTON; THE FILM'S FRAME NOTE. NEXT: ROUND FC-b (CYCLES, AND THE BRUSH LIBRARY FITS ITSELF ON THE SCREEN), THEN A FIGMA PROPOSAL FOR GROUP ANIMATION; THE NEW ROADMAP BELOW
+THE USER'S WORD (pasted 2026-11-28 about 19:05, verbatim):
+"Hand test FC-a done: all steps looked right. Read every Dev Recorder session made after 16:41 on 28 November, oldest
+first. Confirm from system.txt that it ran the Nov 28 2026 16:41:08 build (git 8a8fcab73+dirty) and that the title bar
+named "TEST COPY - small pirate, FC-a", then report pass, fail or "not tested" per step of handtest_FCa.md.
+Space: leave the Recent Projects list and open menus or lists as they are.
+If it ran the right build and nothing failed:
+1. Commit and push FC-a with its HANDOFF notes, matching its hash list, git status clean.
+2. Then build round FC-b: cycles, as in Figma FC-1 (757:757) section 4, with my answers already recorded in HANDOFF:
+   - the repeats stay linked to the frames I drew; Make Repeats into Frames makes them separate;
+   - a cycle made for a number of times or frames moves the frames after it later, as a paste does;
+   - copying part of a cycle pastes plain frames; a whole cycle copied with its repeats pastes as a cycle;
+   - Make Cycle... from the menu only, no key, greyed for frames picked with Ctrl+click;
+   - version 8 only for a project with a cycle.
+   Also in this round, the Brush Library's place: when there isn't room to show the Brush Library, it moves itself to fit
+inside the screen (for example opening above the toolbar, or shifting sideways) instead of moving the whole Brush
+Toolbar. The Brush Toolbar stays where it is, unless there is no other way to fit the Brush Library. My screenshot:
+Documents\SankoTV-Design\reference\brush_library_position.png.
+   Checks with controls and red runs, none judged by the clock, quick check, full gate before stopping (every family
+green in both builds), a fresh TEST COPY, the exe stamp and a short hand-test list that includes saving and reopening a
+project with a cycle. Don't commit until my hand test passes. Mark Figma FC-1 BUILT only when FC-b is committed.
+3. A proposal, before any building, for group animation. Propose in a Figma frame, in the area labelled "Claude Code
+please Start new design here 002", using SankoTV's existing UI, with a group like my "Ball": one layer for the outline and
+one for the fill colour.
+   What I want:
+   - An Animate diamond on the group itself, in the Layers panel.
+   - Group keys for position, rotation, scale and opacity, with the same five eases as layer keys.
+   - Every layer in the group follows the group's motion, so the outline and the fill stay aligned.
+   - Each layer in the group stays editable and can still have its own keys, added on top of the group's.
+   - The group's keys show on the timeline's LAYER row when the group is selected.
+   Show also: the pivot; what the LAYER row shows when a layer inside the group is selected; how the Move tool works on
+a group; groups inside groups; layers with different depths in one group; layers with frames in a group; what happens
+when a layer is moved into or out of an animated group; copy and paste of group keys, Duplicate Panel, undo and saving.
+   Screenshot it and stop for my approval. It will be built after Camera Phase 3.
+The roadmap order from now on. Replace the one in HANDOFF and your notes:
+1. Cycles (FC-b), which completes FC-1.
+2. Camera Phase 3, 3D assets in the camera: its own proposal before building.
+3. Group animation: built after I approve point 3's proposal.
+4. I-3 Screen layers: the last part of batch I, starting with a Figma proposal.
+5. Small fixes together: the Dev Recorder's lone-Alt logging and the memory measurement.
+6. Before selling: licences, code signing (item 15) and the rest of the pre-release list, once features are done.
+Don't use Figma or any other window while the quick check or the gate runs: do point 3's Figma work before the quick
+check starts or after the gate ends.
+If anything failed or the build is wrong, commit nothing and report.
+ALL DONE when finished, and send a notification."
+THE ROADMAP (the user's order from 2026-11-28 night on; it replaces the one in the LR section): 1. Cycles (FC-b), which
+completes FC-1. 2. Camera Phase 3, 3D assets in the camera - its own proposal before building. 3. Group animation -
+built after the user approves its Figma proposal (made now, in area 002). 4. I-3 Screen layers - the last part of batch
+I, starting with a Figma proposal. 5. Small fixes together: the Dev Recorder's lone-Alt logging and the memory
+measurement. 6. Before selling: licences, code signing (item 15) and the rest of the pre-release list, once features are
+done.
+SPACE (the user's word): the start screen's Recent Projects list and open menus or lists keep their own Space - leave them.
+HAND TEST FC-a READ: two sessions after 16:41 - 20261128-181500 (18:15:00, 1770.2 s, the list) and 20261128-185122
+(18:51:22, 702.9 s: the user's Ball - layers "ball" and "color_ball" on a panel of its own, animated and renamed; not
+part of the list); both Release, built Nov 28 2026 16:41:08, git 8a8fcab73+dirty; the title bar "SANKO TV — TEST COPY -
+small pirate, FC-a" (screenshots); both ended by quitting without saving (the copy's .sankotv is still 16:38:55). NO STEP
+FAILED: 0 PASS (the copy was open before the recorder started; OCEAN panel 1, Bird); 1 PASS for the menu (New Frame N,
+Duplicate Frame, Copy Frame Ctrl+C, Cut Frame Ctrl+X, the two Pastes greyed, Delete Frame Del), the greyed Pastes' tip
+NOT TESTED (the pointer stayed at the menu's corner for 15 s, never on them); 2 PASS (frame 2: "Bird · frame 2 of 24 ·
+held 2 frames", the playhead to it; Shift+click frame 4: "frames 2 to 4 selected · 6 frames long", one outline; Ctrl+clicks
+added and took away frames - "frames 2, 3, 4, 5, 6, 7 and 11 selected · 14 frames long", an outline per run; the playhead
+never moved with Shift or Ctrl), a Ctrl+drag pan NOT TESTED (the two Ctrl presses that moved moved 1 px and were clicks;
+the middle button panned); 3 Esc PASS ("frames 2 to 11 selected" -> none), the click on the lane right of panel 1's end
+NOT TESTED; 4 PASS ("Copied 3 frames of Bird (6 frames long)"); 5 PASS (frame 10 -> frame 19; "Pasted 3 frames on Bird
+at frame 19: the frames after them moved 6 frames later", Bird 27 frames 0..52; Ctrl+Z); 6 PASS (twice: "Pasted 3
+frames over Bird's frames 19 to 24: nothing after them moved", Bird's starts unchanged; Ctrl+Z); 7 PASS done another way
+(OCEAN's Layer 3 got a second frame first, New Frame at 32, and the paste went in at frame 1, a cut: 0,2,4,6,37, its
+drawings 6 frames later; the one-frame case was done on ISLAND BEACH panel 7: Layer 2 at frame 22, "... inside its frame
+1: the rest of it and the frames after moved 6 frames later", 0,21,23,25,27, and a new Layer 3 at frame 3, 0,2,...,10 -
+its drawing, Bird's four, its drawing); 8 PASS (ISLAND BEACH panel 7, Layer 2, frame 22 not 10: the bird at the frame's
+top left, as in OCEAN panel 1); 9 PASS ("Cut 2 frames of Bird: frame 1 holds over their 4 frames"; not undone - a Ctrl+V
+put them back inside frame 1, its note right, and Bird had 25 frames from then on); 10 PASS (Ctrl+X x3 and the menu's
+Cut 25 Frames: amber "Bird keeps at least one frame: copy them instead, or Clear Layer", nothing changed; "Copied 25
+frames of Bird (83 frames long)"; frame 2, Ctrl+V: amber "Not enough room: the frames after the playhead would pass the
+panel's end by 51 frames - paste over, or lengthen the panel" - 51, not 47, for step 9's 25 frames; nothing changed); 11
+PASS (frames 5 to 7, Del over the timeline: frame 4 holds over, 0,2,4,6,16,...; also the menu's Delete 2 Frames; Ctrl+Z
+each); 12 PARTLY TESTED (+ added P2, Ctrl+Z; 5 Spaces with the pointer on the bottom bar and 5 over the canvas did
+nothing - no panel, no film; BUT the + no longer had the keyboard focus - a click on the panel strip had moved it to the
+strip - so the fixed case, Space with a focused button, was NOT pressed; Space over the timeline played and paused, 7
+times, PASS; held over the canvas it panned, PASS); 13 PASS (played from frame 1, paused at 52, 79 and 47: "frame 25 of
+25 · held to the panel's end", "frame 23 of 25 · held 2 frames"; Left / Right while paused changed it - "frame 24 of 25",
+"frame 4 of 25 · held 4 frames"; paused on panel 2 no frame note: its layers have one frame each). SEEN, NOT A STEP: (a)
+Ctrl+V pressed 16 times with the Layers list or the panel strip last clicked did nothing and said nothing - frames paste
+only while the LAYER row or the FRAMES lane was the last thing pressed (told to the user); (b) Paste Over's note "over
+Bird's frames 19 to 24" counts the film's frames, the frame note "frame 2 of 24" counts Bird's (told to the user).
+Crops and timelines: Documents\SankoTV-Design\batch-FCa-2026-11-28\handtest_FCa\.
+
+## 2026-11-28 (evening): ROUND FC-a BUILT - FRAMES SELECTED, COPIED, CUT AND PASTED ON THE FRAMES LANE; SPACE NEVER PRESSES A BUTTON; THE FILM'S FRAME NOTE NAMES THE PREVIEWED PANEL'S LAYER. HAND-TESTED AND COMMITTED IN THIS COMMIT (THE SECTION ABOVE). FIGMA FC-1 STAYS UNMARKED UNTIL FC-b IS COMMITTED
+THE USER'S WORD: the LT commit section below (pasted 2026-11-28 about 15:00) - its point 2, the eight answers and the
+two fixes; the roadmap then was the LR section's (replaced 2026-11-28 night: the section above).
+WHAT CHANGED (the main tree, uncommitted; 9 files, hash list app/build/_probe/split/sha_FCa_gate.txt: StoryboardPage.h /
+.cpp, AnimaticTimeline.h / .cpp, AnimaticPage.h / .cpp, DrawingCanvas.h / .cpp, tests/ProjectLifecycleTest.cpp):
+1. SELECTING (answer 2). The LAYER row's hold (LayerKeyFocus) holds the frames selected, by their drawings' ids (an undo,
+paste or delete moves indices, never ids; a selection whose panel, layer or drawings are gone is dropped -
+usableFrameSelection / syncFrameSelection, called where the LAYER row is refreshed). A click on a frame: it alone, the
+playhead to it (as before); Shift+click: the run from the anchor (the last frame clicked without Shift); Ctrl+click: one
+frame more or less (neither moves the playhead). The timeline's Ctrl+drag pan (batch I-1b) took every Ctrl press on the
+rows: a Ctrl press on a frame is now a pan only once it moves, and let go where it was pressed it is the Ctrl+click
+(AnimaticTimeline canvasMouseRelease). A click on the lane off a frame, or any other press, selects none (the row stays
+chosen while it was the lane, for a paste); Esc clears it - the timeline's Esc shortcut (after the film's) and, elsewhere
+in the workspace, routeFramesEsc for an Esc no one used (never a field's, a list's, a menu's or a dialog's). Each run of
+selected frames is outlined as one in the selected frame's outline (#a79ef9); a right-click on a selected frame keeps the
+selection. The bar: "Bird  ·  frames 2 to 4 selected  ·  6 frames long" / "... frames 2, 4 and 6 selected ..." for two
+or more (one frame: the run's own note, as before).
+2. COPY / CUT / PASTE (answers 1, 2, 3). While the LAYER row was the last thing pressed, Ctrl+C / Ctrl+X / Del are the
+selected frames' (else the selected key's, as before); Ctrl+V pastes what was copied last on the row (frames or a key;
+RowClip). COPY: each frame's pixels (shared, as Duplicate Frame's) and its length in the project's frames (the last as
+long as it holds); scattered frames one after another, in order; "Copied 3 frames of Bird (6 frames long)". It lives
+while SankoTV runs, never saved. CUT: the copy, then each frame goes as Delete Frame takes one (the frame before holds
+over it) - one step "Cut Frames" ("Cut Frame" for one); "Cut 3 frames of Bird: frame 1 holds over their 6 frames"; a
+layer keeps at least one frame (amber). DEL: the same without the copy, "Delete Frames" (one frame: Delete Frame as it
+always was). PASTE (Ctrl+V, "Paste Frames at the Playhead"): on the selected layer of the panel on the canvas, the playhead
+on it; INSERTS - the frames after move later by the pasted length; inside a frame, that frame is split there (its first
+part, the pasted frames, the rest of it as a copy of the same picture, then the frames after); a layer with one frame
+becomes a run; never past the panel's end - the frame that holds to the end gives up its hold first (the rest of a split
+last frame is dropped when it would start past the end), else refused in amber ("Not enough room: the pasted frames would
+pass the panel's end by 1 frame - lengthen the panel, or put the playhead earlier" / "...the frames after the playhead
+would pass ... by 13 frames - paste over, or lengthen the panel"). "Paste Frames Over the Playhead" (the menu only,
+answer 1) covers the pasted length: what started under it is gone, what was seen where it ends shows from there, nothing
+moves. One step each ("Paste Frames", "Paste Frames Over"); the pasted frames are the selection after it. Each pasted
+drawing is a drawing of its own (new id, its own file when saved) at its place in the camera's frame: tiles are frame
+space, a full picture is folded by the frame it was drawn in (placedOnPanel) - a panel on its own stage shows it where it
+was drawn. Refusals in amber: "No frames are copied yet.", folder / paper ("A folder has no frames: choose a layer in the
+Layers panel to paste the frames on."), "<layer> is locked", "Put the playhead on the panel to paste the frames into."
+THE LANE'S MENU: on a frame or a selection New Frame N, Duplicate Frame | Copy N Frames Ctrl+C, Cut N Frames Ctrl+X, Paste
+Frames at the Playhead Ctrl+V, Paste Frames Over the Playhead | Delete N Frames Del ("Frame" for one); off a frame New
+Frame N and Paste Frames at the Playhead; the two Pastes greyed until frames are copied, "No frames are copied yet." their
+hover tip (sankoGreyWithReason). Edit > Paste is on while the row has the keys and frames or a key are copied.
+3. SPACE NEVER PRESSES A BUTTON (the user's word): keepSpaceFromButton, the last turn of CanvasKeyRouter - a Space (press,
+repeats, release) whose receiver is the focused QAbstractButton or non-editable QComboBox, in any window, is taken and
+does nothing. Space's own uses come first and stay: over the canvas the pan (held; a Space pressed elsewhere and still
+held when the pointer reaches the canvas pans from then - m_spaceDownAway is now set with a button focused too); over the
+timeline and over the preview Play / Pause; with the film up (playing, or paused in the preview) Play / Pause wherever the
+pointer is; in a text field a typed space (the film's Space off while typing). The start screen's Recent Projects list
+keeps Space = open the highlighted project (a list, not a button: told to the user). An open menu's Space is Qt's own (not
+a button: told to the user).
+4. THE FILM'S FRAME NOTE (the user's word): with the preview up, DrawingCanvas::runNoteText asks the page
+(previewRunNoteText): the panel under the playhead - the canvas's own too, whose drawings stay where the workspace left
+them while the film is up - its selected layer's frame at the playhead ("Gull  ·  frame 2 of 3  ·  held 6 frames");
+refreshed on every playhead move while the film is up and when it comes or goes. runNoteFor is the words, shared.
+Test hooks: selectedDrawingsForTest, frameSelectionNoteForTest, framesCopied{,Length,Count}ForTest,
+spaceKeptFromButtonsForTest, spaceDownAwayForTest; AnimaticTimeline::setSelectedDrawings (was setSelectedDrawing),
+drawingBlockPressed(layer, drawing, mods) (-1: the lane off a frame).
+CHECKS: the new slice fc (runFcPass, fixture Frames.sankotv - HARBOUR panel 1: the paper, Rock (one frame), Seagull (run
+0,4,8,12), Bird (run 0,2,...,12), Lock (locked), Cloud in the Sky folder; HARBOUR panel 2 on its own stage (40 px each
+side): Gull (0,6,12); ISLAND: Crab (0,12)), 33 checks: (fc0) the menu before any copy, Ctrl+V with nothing copied;
+(fc1) selecting; (fc2) one outline for a run (pixels); (fc3) none selected - off a frame, Esc over the timeline and the
+canvas + control (a field's Esc); (fc4) copy + control; (fc5) paste at a cut + control (Paste Over from the menu); (fc6)
+inside a frame; (fc7) a one-frame layer + control; (fc8) another panel on its own stage and another scene + control, and
+a frame just drawn on (the full picture; the layer folder held); (fc9) the end of the panel (the hold given up; refused)
++ control (Over); (fc10) the refusals + control; (fc11) cut, a layer keeps one frame, control Del; (fc12) scattered
+frames; (fc13) the menu on a selection and off a frame + control; (fc14) own ids, Duplicate Panel, saved and reopened;
+(fc15) Space + controls (the + clicked, Space over the timeline, the canvas's pan, a field); (fc16) the film's frame note
++ control. OLDER CHECKS CHANGED (Documents\SankoTV-Design\batch-FCa-2026-11-28\changed_checks_FCa_diff.txt, verbatim):
+(dr10) and (fr1) the lane's menu's entries; (fr2) its held Ctrl+X pressed the row's track, not a block (a frame tapped is
+selected now and Ctrl+X cut it - the slice's first run after the change failed (fr7) and (fr10), whose run had lost a
+frame).
+RED RUNS (batch-FCa-2026-11-28\red_runs\): R1 = A no Space kept from a button + B the canvas's note with the film up + J
+Esc clears nothing + K no Ctrl+click on a frame -> (fc15), (fc16), (fc3), (fc1) and (fc12), 5 of 32, every control
+passed; R2 = C every paste covers + F the frame after takes the cut frames' time + I one outline per frame -> (fc2), (fc5),
+(fc6), (fc8), (fc9) 2nd, (fc10) control, (fc11) x2, (fc12), (fc14); R3 = E1 a full picture folded at the target's frame + G
+no room check + H the menu as before FC-a -> fc: (fc0), (fc5) control, (fc9) x2, (fc13) x2; i2: (dr10); i2b: (fr1) - the
+changed checks' positive control. E1 failed nothing: the pastes copied folded drawings only; a check was added (a frame
+just drawn on) and red run E = E1 + E2 (folded tiles kept on the source's stage) failed both (fc8) checks (142 / 102 px
+where 182 is right). R3's first fc run HUNG after (fc11): G's pastes were never taken back and the run's state ran on;
+the checks now undo any paste a refusal should have stopped. Markers out, the sources at sha_FCa_prered2.txt's hashes, fc
+33 / 33; slices i2 36, i2b 23, i1b2 32, i1b 30, lr 22, lt 10, os 23, sl 14 green.
+MY MISTAKES: (1) the Ctrl+drag pan swallowed Ctrl+click (first run: (fc1), (fc12)) - fixed in the timeline; (2) a split
+last frame's rest counted as a frame to keep in sight (first run: (fc9) "by 3 frames" where the hold should give way) -
+fixed; (3) checks: an expected value miscounted ((fc10) control), the playhead's line read as the outline ((fc2)), a
+double-click made by two taps on one frame ((fc8) new check), keepSpaceFromButton counting the release too.
+QUICK CHECK (Release, all targets built 16:15, 16:15-16:38, nothing else running): Camera 354 / 354, Lifecycle 2079 / 2079
+(LT's 2046 + 33). THE TEST COPY: "TEST COPY - small pirate, FC-a" (C:\SankoTV-TestCopies; 117 files, version 7, Bird 24
+frames on 2s, named 104 missing 0; the original's 94 files hashed before and after, unchanged). HAND TEST FC-a:
+Documents\SankoTV-Design\handtest_FCa.md (13 steps). FULL GATE FCa (16:39-17:44, nothing windowed while it ran): every
+family green in both builds - Release and Debug each: Lifecycle 2079 (fc 33 / 33), Camera 354, BrushLibrary 187,
+CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46, QuickShape 19, PaintPixelLock 13, CanvasBrushLock 3; FAMILIES
+FAILING 0 and 0, TOTAL 3927 s. The one TESTWINDOW foreground loss in each Lifecycle run was to the checks' own window
+"SankoTV check - another program's window" (ProjectLifecycleTest.cpp), no outside program. sha_FCa_gate.txt checked
+after the gate: the 9 files OK. EXE STAMP: Release SankoTV.exe built 16:41:28 by the gate, system.txt stamp "Nov 28 2026
+16:41:08", git 8a8fcab73+dirty (in handtest_FCa.md); exe hashes, the gate log and every family's output in
+batch-FCa-2026-11-28 (sha_FCa_exes.txt, fullgate_FCa.log, gate_FCa_families\).
+
+## 2026-11-28 (15:1x): ROUND LT COMMITTED 8a8fcab73 ON THE USER'S WORD AFTER HAND TEST LT - UP / DOWN OVER THE LAYERS LIST SELECT LAYERS, THE THREE SHORT TIPS; FIGMA FC-1 (757:757) APPROVED WITH THE USER'S EIGHT ANSWERS (BELOW) - TO BE BUILT IN TWO ROUNDS, FC-a (SELECTING, COPY / CUT / PASTE OF FRAMES, AND TWO FIXES) NOW, FC-b (CYCLES) AFTER FC-a IS HAND-TESTED AND COMMITTED
 THE USER'S WORD (pasted 2026-11-28 about 15:00, verbatim):
 "Hand test LT done: all steps looked right. Read every Dev Recorder session made after 12:58 on 28 November, oldest
 first. Confirm from system.txt that it ran the Nov 28 2026 12:58:25 build (git dc6763121+dirty) and that the title bar
@@ -147,11 +330,9 @@ building any of point 3. The roadmap order from now on. Record it in HANDOFF and
 any other window while the quick check or the gate runs: do point 3's Figma work before the quick check starts or after
 the gate ends. If anything failed or the build is wrong, commit nothing and report. ALL DONE when finished, and send a
 notification."
-THE ROADMAP (the user's order from 2026-11-28 on): 1. Copy / paste of frames and cycles - build after the user approves
-the Figma proposal. 2. Camera Phase 3, 3D assets in the camera - its own proposal before building. 3. I-3 Screen layers
-- the last part of batch I, starting with a Figma proposal. 4. Small fixes together: the Dev Recorder's lone-Alt logging
-and the memory measurement. 5. Before selling: licences, code signing (item 15) and the rest of the pre-release list,
-once features are done.
+THE ROADMAP of 2026-11-28 noon (copy / paste of frames and cycles; Camera Phase 3; I-3 Screen layers; small fixes;
+before selling) was REPLACED on 2026-11-28 night by the user's new order: see "THE ROADMAP" in the FC-a commit section
+at the top (group animation is now point 3, after Camera Phase 3).
 HAND TEST LR (read 2026-11-28 about 12:00; report, crops and the arrow runs in Documents\SankoTV-Design\
 batch-LR-2026-11-27\handtest_LR\): TWO sessions - 20261128-110617 (11:06:17, 2013.9 s, the list) and 20261128-114000
 (11:40:00, 8.1 s, the restart of step 13); both Release, built Nov 27 2026 17:54:10, git 9eadf310d+dirty; the title bar

@@ -38962,13 +38962,18 @@ void runI2Pass(const QString &scratch)
         const QString copyStep = stack->undoText();
         check(QStringLiteral("(dr10) THE + AND THE LANE'S MENU: the + at the row's left, pressed through the window "
                              "system, makes a drawing at the playhead (frame 12); a right-click on a block opens the "
-                             "lane's menu - New Frame, Duplicate Frame, Delete Frame - and Duplicate Frame, pressed "
-                             "there, makes a drawing that holds the same stroke as the one it was made from"),
+                             "lane's menu - New Frame, Duplicate Frame, Copy Frame, Cut Frame, the two Pastes, Delete "
+                             "Frame - and Duplicate Frame, pressed there, makes a drawing that holds the same stroke as "
+                             "the one it was made from"),
               // (CHANGED 2026-11-26, the user's note 8: it read "New Drawing, New Drawing from This One,
               // Delete Drawing - and New Drawing from This One, pressed there", and its step was so named.)
+              // (CHANGED 2026-11-28, round FC-a - Figma FC-1 section 2: the menu read "New Frame, Duplicate Frame,
+              // Delete Frame" and its entries were layerDrawingNew, layerDrawingNewFrom, layerDrawingDelete.)
               plusShown && afterPlus == QLatin1String("0,2,3,6,8,12,22") && m.opened
                   && m.name == QLatin1String("layerDrawingMenu")
                   && m.entries == QStringList({QStringLiteral("layerDrawingNew"), QStringLiteral("layerDrawingNewFrom"),
+                                               QStringLiteral("layerFramesCopy"), QStringLiteral("layerFramesCut"),
+                                               QStringLiteral("layerFramesPaste"), QStringLiteral("layerFramesPasteOver"),
                                                QStringLiteral("layerDrawingDelete")})
                   && m.found && m.enabled && strokeHere > 50 && copyInk == strokeHere
                   && copyStep == QLatin1String("Duplicate Frame") && stack->index() == before + 2,
@@ -39967,11 +39972,16 @@ void runI2bPass(const QString &scratch)
         bool oldName = false;
         for (const QString &t : lane + layerMenu)
             oldName = oldName || t.contains(QLatin1String("Drawing"));
-        check(QStringLiteral("(fr1) THE ENTRIES' NAMES: the lane's menu says New Frame (N), Duplicate Frame and Delete Frame "
-                             "(Del); the Layers panel's layer menu has New Frame (N) and Duplicate Frame; the + says "
-                             "\"New Frame (N)\"; the undo steps are \"New Frame\", \"Duplicate Frame\" and \"Delete "
-                             "Frame\"; no entry says \"Drawing\""),
+        check(QStringLiteral("(fr1) THE ENTRIES' NAMES: the lane's menu says New Frame (N), Duplicate Frame, Copy Frame, Cut "
+                             "Frame, the two Pastes and Delete Frame (Del); the Layers panel's layer menu has New Frame (N) "
+                             "and Duplicate Frame; the + says \"New Frame (N)\"; the undo steps are \"New Frame\", "
+                             "\"Duplicate Frame\" and \"Delete Frame\"; no entry says \"Drawing\""),
+              // (CHANGED 2026-11-28, round FC-a - Figma FC-1 section 2: the lane's menu was "New Frame (N), Duplicate
+              // Frame and Delete Frame (Del)", the list {"New Frame\tN", "Duplicate Frame", "Delete Frame\tDel"}.)
               runOk && lane == QStringList({QStringLiteral("New Frame\tN"), QStringLiteral("Duplicate Frame"),
+                                            QStringLiteral("Copy Frame\tCtrl+C"), QStringLiteral("Cut Frame\tCtrl+X"),
+                                            QStringLiteral("Paste Frames at the Playhead\tCtrl+V"),
+                                            QStringLiteral("Paste Frames Over the Playhead"),
                                             QStringLiteral("Delete Frame\tDel")})
                   && layerMenu.contains(QStringLiteral("New Frame\tN")) && layerMenu.contains(QStringLiteral("Duplicate Frame"))
                   && plusTip == QLatin1String("New Frame (N)") && undoNew == QLatin1String("New Frame")
@@ -40090,11 +40100,13 @@ void runI2bPass(const QString &scratch)
         keyClaimed(&r.window, Qt::Key_Z, Qt::ControlModifier);
         const int panelsBack = int(scene->panels.size());
         // Cut where it changes nothing however often it runs: the LAYER row has the edit keys and no key is
-        // selected (a block of the lane was pressed), so each Cut is one amber note.
+        // selected (the row's own track was pressed), so each Cut is one amber note.
+        // (CHANGED 2026-11-28, round FC-a: it pressed a block of the lane - "realTap(blockCentre(1))" - when Ctrl+X
+        // there was the key's and changed nothing; since FC-a a frame tapped is selected and Ctrl+X cuts it.)
         clickThumb(r, 0);
         r.storyboard->layerRowClickedForTest(ground);
         goTo(0, 0);
-        realTap(blockCentre(1));
+        realTap(QPointF(blockCentre(1).x(), r.timeline->layerRowForTest().top() + 8));
         hold(Qt::Key_X, Qt::ControlModifier);
         const QString cutSaid = said();
         QObject::disconnect(c1);
@@ -43506,6 +43518,1140 @@ void runLtPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// ---- (fc) ROUND FC-a (2026-11-28; Figma FC-1 757:757, approved with the user's eight answers) ----------
+// Frames selected on the FRAMES lane - a click one, Shift+click a run, Ctrl+click one more or less, a click
+// off a frame or Esc none - copied, cut and pasted (Ctrl+V inserts at the playhead, the frames after move
+// later; Paste Frames Over in the menu covers), within a layer, onto another, onto another panel (one with
+// its own stage: the pasted drawing keeps its place in the camera's frame) and another scene; a paste never
+// pushes a frame past the panel's end. And the two fixes of the round: Space never presses a button; the
+// film's frame note names the previewed panel's layer.
+namespace fc {
+const QSize kSize(960, 540);
+constexpr int kMargin = 40; // panel 2's own stage margin, each side
+
+// HARBOUR panel 1 (24 frames at 24): 0 the paper, 1 Rock (one frame), 2 Seagull (a run at 0, 4, 8, 12), 3 Bird
+// (a run at 0, 2, 4, 6, 8, 10, 12 - the last holds to the panel's end), 4 Lock (locked), 5 Cloud in 6 Sky (a
+// folder); Bird selected. HARBOUR panel 2, its own stage (40 px of margin each side): Gull (a run at 0, 6, 12).
+// ISLAND's one panel: Crab (a run at 0, 12). Every drawing a square of its own colour at its own place.
+QString writeFcProject(const QString &dir)
+{
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/Frames.sankotv");
+    auto square = [](QImage &image, const QPointF &c, int side, const QColor &colour) {
+        QPainter p(&image);
+        p.fillRect(QRectF(c - QPointF(side / 2.0, side / 2.0), QSizeF(side, side)), colour);
+        p.end();
+    };
+    // A layer with a run: drawing k at `starts[k]`, a `side` px square of colourOf(k) at centreOf(k) (stage px).
+    auto runLayer = [&](const QString &name, const QSize &size, const QVector<int> &starts,
+                        const std::function<QPointF(int)> &centreOf, const std::function<QColor(int)> &colourOf,
+                        int side) {
+        Layer layer = makeRasterLayer(name, size);
+        layer.runRate = 24;
+        for (int k = 0; k < starts.size(); ++k) {
+            LayerDrawing d;
+            d.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            d.start = starts.at(k);
+            QImage image = makeLayerImage(size);
+            square(image, centreOf(k), side, colourOf(k));
+            if (k == 0)
+                layer.image = image; // the drawing the layer shows: its own pixels
+            else
+                d.px.image = image;
+            layer.drawings.append(d);
+        }
+        layer.shown = 0;
+        return layer;
+    };
+    auto plain = [&](const QString &name, const QSize &size, const QPointF &c, const QColor &colour) {
+        Layer layer = makeRasterLayer(name, size);
+        square(layer.image, c, 30, colour);
+        return layer;
+    };
+    Scene *harbour = new Scene;
+    harbour->number = 1;
+    harbour->location = QStringLiteral("HARBOUR");
+    Panel *a = makeBlankPanel(kSize);
+    a->layers.removeLast();
+    Layer sky;
+    sky.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    sky.type = QStringLiteral("group");
+    sky.name = QStringLiteral("Sky");
+    sky.groupExpanded = true;
+    Layer cloud = plain(QStringLiteral("Cloud"), kSize, {820, 80}, QColor(150, 150, 150));
+    cloud.groupId = sky.id;
+    Layer lock = plain(QStringLiteral("Lock"), kSize, {880, 460}, QColor(90, 90, 90));
+    lock.locked = true;
+    a->layers << plain(QStringLiteral("Rock"), kSize, {700, 400}, QColor(110, 110, 110))
+              << runLayer(QStringLiteral("Seagull"), kSize, {0, 4, 8, 12},
+                          [](int k) { return QPointF(300 + 60 * k, 300); },
+                          [](int k) { return QColor(40, 60, 120 + 30 * k); }, 20)
+              << runLayer(QStringLiteral("Bird"), kSize, {0, 2, 4, 6, 8, 10, 12},
+                          [](int k) { return QPointF(100 + 50 * k, 150); },
+                          [](int k) { return QColor(200, 30 + 25 * k, 40); }, 16)
+              << lock << cloud << sky;
+    a->activeLayerIndex = 3;
+    a->setLength(24, 24);
+    harbour->panels.append(a);
+    const QSize stage(kSize.width() + 2 * kMargin, kSize.height() + 2 * kMargin);
+    Panel *b = makeBlankPanel(stage);
+    b->layers.removeLast();
+    b->layers << runLayer(QStringLiteral("Gull"), stage, {0, 6, 12},
+                          [](int k) { return QPointF(kMargin + 480 + 40 * k, kMargin + 120); },
+                          [](int k) { return QColor(30, 150 + 30 * k, 200); }, 20);
+    b->activeLayerIndex = 1;
+    b->margin = QMargins(kMargin, kMargin, kMargin, kMargin);
+    b->ownMargin = true;
+    b->setLength(24, 24);
+    harbour->panels.append(b);
+    Scene *island = new Scene;
+    island->number = 2;
+    island->location = QStringLiteral("ISLAND");
+    Panel *c = makeBlankPanel(kSize);
+    c->layers.removeLast();
+    c->layers << runLayer(QStringLiteral("Crab"), kSize, {0, 12}, [](int k) { return QPointF(600 + 80 * k, 450); },
+                          [](int k) { return QColor(40, 170 + 40 * k, 60); }, 24);
+    c->activeLayerIndex = 1;
+    c->setLength(24, 24);
+    island->panels.append(c);
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Frames");
+    data.fps = 24;
+    data.canvasSize = kSize;
+    data.scenes = {harbour, island};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete harbour;
+    delete island;
+    return path;
+}
+
+// Where a drawing's art is (its pixels' bounds, stage px) and its colour there.
+struct Art
+{
+    QRect box;
+    QRgb colour = 0;
+    bool operator==(const Art &o) const { return box == o.box && colour == o.colour; }
+    bool operator!=(const Art &o) const { return !(*this == o); }
+    Art moved(int dx, int dy) const { return {box.translated(dx, dy), colour}; }
+    QString text() const
+    {
+        return box.isEmpty() ? QStringLiteral("none")
+                             : QStringLiteral("%1,%2 %3x%4 %5").arg(box.x()).arg(box.y()).arg(box.width())
+                                   .arg(box.height()).arg(QColor(colour).name());
+    }
+};
+Art artOf(const LayerPixels &px)
+{
+    const QImage img = px.pixels().convertToFormat(QImage::Format_ARGB32);
+    int x0 = img.width(), y0 = img.height(), x1 = -1, y1 = -1;
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x)
+            if (qAlpha(line[x]) > 0) {
+                x0 = qMin(x0, x);
+                y0 = qMin(y0, y);
+                x1 = qMax(x1, x);
+                y1 = qMax(y1, y);
+            }
+    }
+    Art art;
+    if (x1 < 0)
+        return art;
+    art.box = QRect(QPoint(x0, y0), QPoint(x1, y1));
+    art.colour = img.pixel(art.box.center()) | 0xff000000u;
+    return art;
+}
+} // namespace fc
+
+void runFcPass(const QString &scratch)
+{
+    using namespace workspace;
+    using fc::Art;
+    using fc::artOf;
+    out() << "--- (fc) round FC-a: frames selected, copied, cut and pasted on the FRAMES lane; Space never presses a "
+             "button; the film's frame note ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/fc");
+    const QString project = fc::writeFcProject(dir);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    const QVector<Scene *> scenes = r.ok ? r.window.scenesForTest() : QVector<Scene *>();
+    QUndoStack *stack = r.ok ? r.window.undoStackForTest() : nullptr;
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    QPushButton *plusButton = nullptr;
+    QPushButton *dupButton = nullptr;
+    if (r.ok)
+        for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
+            if (b->toolTip().contains(QLatin1String("<b>Add Panel</b>")))
+                plusButton = b;
+            if (b->toolTip().contains(QLatin1String("<b>Duplicate Panel</b>")))
+                dupButton = b;
+        }
+    QWidget *noteBar = r.ok ? static_cast<QWidget *>(r.storyboard->noteBarForTest()) : nullptr;
+    const bool shape = scenes.size() == 2 && scenes.at(0)->panels.size() == 2 && scenes.at(1)->panels.size() == 1
+        && scenes.at(0)->panels.at(0)->layers.size() == 7 && scenes.at(0)->panels.at(0)->layers.at(3).drawings.size() == 7
+        && scenes.at(0)->panels.at(0)->layers.at(2).drawings.size() == 4
+        && scenes.at(0)->panels.at(1)->layers.at(1).drawings.size() == 3
+        && scenes.at(1)->panels.at(0)->layers.at(1).drawings.size() == 2
+        && scenes.at(0)->panels.at(1)->frameAt() == QPoint(fc::kMargin, fc::kMargin);
+    if (!r.ok || !shape || !stack || !brushBtn || !plusButton || !dupButton || !noteBar) {
+        check(QStringLiteral("(fc) the fixture opens - HARBOUR's two panels (the second on its own stage) and ISLAND's "
+                             "one, their runs - with the Brush, the strip's + and Duplicate Panel, and the bar's note"),
+              false,
+              QStringLiteral("rig %1, shape %2, + %3, dup %4, bar %5").arg(r.ok).arg(shape).arg(plusButton != nullptr)
+                  .arg(dupButton != nullptr).arg(noteBar != nullptr));
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scenes.at(0)->panels.at(0);
+    Panel *pb = scenes.at(0)->panels.at(1);
+    Panel *pc = scenes.at(1)->panels.at(0);
+    const int rock = 1, seagull = 2, bird = 3, lockLayer = 4, skyFolder = 6;
+    r.storyboard->setPointerDeviceForTest(lr::kPen);
+    auto sel = [&] { return r.storyboard->selectedFlatIndexForTest(); };
+    auto key = [&](int k, Qt::KeyboardModifiers mods = Qt::NoModifier) { return keyClaimed(&r.window, k, mods); };
+    auto place = [&](int flat, int frame) {
+        if (sel() != flat) {
+            emit r.animatic->panelSelectRequested(flat);
+            pump(250);
+        }
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(120);
+    };
+    auto startsOf = [](const Panel *panel, int layer) {
+        QStringList s;
+        for (const LayerDrawing &d : panel->layers.at(layer).drawings)
+            s << QString::number(d.start);
+        return s.join(QLatin1Char(','));
+    };
+    auto selected = [&] {
+        QStringList s;
+        for (int i : r.storyboard->selectedDrawingsForTest())
+            s << QString::number(i);
+        return s.join(QLatin1Char(','));
+    };
+    auto drawnSelected = [&] {
+        QStringList s;
+        for (const QVariant &v : r.timeline->drawingBlocksForTest())
+            if (v.toMap().value(QStringLiteral("selected")).toBool())
+                s << QString::number(v.toMap().value(QStringLiteral("index")).toInt());
+        return s.join(QLatin1Char(','));
+    };
+    auto blockOf = [&](int index) {
+        for (const QVariant &v : r.timeline->drawingBlocksForTest())
+            if (v.toMap().value(QStringLiteral("index")).toInt() == index)
+                return v.toMap();
+        return QVariantMap();
+    };
+    auto laneY = [&] { return r.timeline->drawingsLaneForTest().center().y(); };
+    auto blockCentre = [&](int index) {
+        const QVariantMap m = blockOf(index);
+        return QPointF((m.value(QStringLiteral("x0")).toDouble() + m.value(QStringLiteral("x1")).toDouble()) / 2.0,
+                       laneY());
+    };
+    // A press and a release on the timeline through the window system, with the keys held.
+    auto mouseAt = [&](const QPointF &at, QEvent::Type type, Qt::MouseButtons state, Qt::MouseButton button,
+                       Qt::KeyboardModifiers mods) {
+        QWindow *win = r.surface->window()->windowHandle();
+        if (!win)
+            return;
+        const QPointF global(r.surface->mapToGlobal(at.toPoint()));
+        const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(win, local, global, state,
+                                                                                             button, type, mods);
+    };
+    auto tapAt = [&](const QPointF &at, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        mouseAt(at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton, mods);
+        mouseAt(at, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, mods);
+        mouseAt(at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton, mods);
+        pump(150);
+    };
+    auto tap = [&](int index, Qt::KeyboardModifiers mods = Qt::NoModifier) { tapAt(blockCentre(index), mods); };
+    // A key as the keyboard gives it: a shortcut's if one takes it, else to the widget with the keyboard (and on to its
+    // parents), through the application's filters. Says which.
+    auto fullKey = [&](int k, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        if (keyClaimed(&r.window, k, mods))
+            return QStringLiteral("a shortcut");
+        QWidget *to = QApplication::focusWidget() ? QApplication::focusWidget() : static_cast<QWidget *>(&r.window);
+        const QString text = k == Qt::Key_Space ? QStringLiteral(" ") : QString();
+        QKeyEvent press(QEvent::KeyPress, k, mods, text);
+        QApplication::sendEvent(to, &press);
+        QKeyEvent release(QEvent::KeyRelease, k, mods, text);
+        QApplication::sendEvent(to, &release);
+        pump(150);
+        return QString::fromLatin1(to->metaObject()->className());
+    };
+    struct LaneMenu
+    {
+        bool opened = false, found = false;
+        QString name;
+        QStringList entries, texts, offTips;
+    };
+    // A right-click on the timeline through the window system; the menu read and - if asked - one entry pressed there
+    // through the window system too.
+    auto menuAt = [&](const QPointF &at, const QString &entry) {
+        LaneMenu m;
+        bool looked = false;
+        QTimer::singleShot(200, r.surface, [&m, &looked, entry] {
+            auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+            m.opened = menu != nullptr;
+            if (!menu) {
+                looked = true;
+                return;
+            }
+            m.name = menu->objectName();
+            QAction *chosen = nullptr;
+            for (QAction *a : menu->actions()) {
+                if (a->isSeparator())
+                    continue;
+                m.entries << a->objectName();
+                m.texts << a->text();
+                if (!a->isEnabled())
+                    m.offTips << a->objectName() + QLatin1Char('=') + a->toolTip();
+                if (a->objectName() == entry)
+                    chosen = a;
+            }
+            m.found = chosen != nullptr;
+            if (chosen && chosen->isEnabled()) {
+                const QPointF on = menu->actionGeometry(chosen).center();
+                libbox::pointerTo(menu, on, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+                QCoreApplication::processEvents();
+                libbox::pointerTo(menu, on, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+                libbox::pointerTo(menu, on, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+                QCoreApplication::processEvents();
+            }
+            if (auto *still = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                still->setAttribute(Qt::WA_NoMouseReplay);
+                still->close();
+            }
+            looked = true;
+        });
+        mouseAt(at, QEvent::MouseMove, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        mouseAt(at, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+        mouseAt(at, QEvent::MouseButtonRelease, Qt::NoButton, Qt::RightButton, Qt::NoModifier);
+        QElapsedTimer guard;
+        guard.start();
+        while (!looked && guard.elapsed() < 15000)
+            pump(20);
+        pump(150);
+        return m;
+    };
+    auto barNow = [&] {
+        r.canvas->expireNoteForTest();
+        pump(120);
+        return r.canvas->noteBarText();
+    };
+    // A press and a release on the bottom bar through the window system: a press somewhere else than the LAYER row.
+    auto pressBar = [&] {
+        const QPointF c(noteBar->width() / 2.0, noteBar->height() / 2.0);
+        libbox::pointerTo(noteBar, c, QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+        libbox::pointerTo(noteBar, c, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton);
+        libbox::pointerTo(noteBar, c, QEvent::MouseButtonRelease, Qt::NoButton, Qt::LeftButton);
+        pump(150);
+    };
+    auto said = [&] { return r.storyboard->lastNoteForTest(); };
+    auto amberNow = [&] { return r.canvas->noteBarKind() == DrawingCanvas::NoteKind::Warning; };
+    auto undo = [&] {
+        key(Qt::Key_Z, Qt::ControlModifier);
+        pump(150);
+    };
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    // Bird's drawings' art as drawn: what every copy is compared with.
+    QVector<Art> birdArt;
+    for (int k = 0; k < 7; ++k)
+        birdArt << artOf(pa->layers.at(bird).pixelsOf(k));
+    QVector<Art> seagullArt;
+    for (int k = 0; k < 4; ++k)
+        seagullArt << artOf(pa->layers.at(seagull).pixelsOf(k));
+    const Art rockArt = artOf(pa->layers.at(rock).pixelsOf(0));
+    auto artAt = [&](const Panel *panel, int layer, int i) { return artOf(panel->layers.at(layer).pixelsOf(i)); };
+    auto toPanel1 = [&] {
+        place(0, 0);
+        r.storyboard->layerRowClickedForTest(bird);
+        pump(120);
+    };
+    toPanel1();
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600); // 16 px a frame
+    pump(200);
+
+    // (fc0) BEFORE ANY COPY: the lane's menu on a frame, its two Pastes greyed with their reason; Ctrl+V with the
+    // lane last pressed and a panel copied pastes no frame and says so in amber, and pastes no panel.
+    {
+        tap(1);
+        const LaneMenu m = menuAt(blockCentre(1), QString());
+        check(QStringLiteral("(fc0) THE LANE'S MENU ON A FRAME (Figma FC-1 section 2): New Frame, Duplicate Frame, Copy "
+                             "Frame, Cut Frame, Paste Frames at the Playhead, Paste Frames Over the Playhead and Delete "
+                             "Frame - the two Pastes greyed until frames are copied, their reason a hover tooltip ('No "
+                             "frames are copied yet.')"),
+              m.opened && m.name == QLatin1String("layerDrawingMenu")
+                  && m.entries == QStringList({QStringLiteral("layerDrawingNew"), QStringLiteral("layerDrawingNewFrom"),
+                                               QStringLiteral("layerFramesCopy"), QStringLiteral("layerFramesCut"),
+                                               QStringLiteral("layerFramesPaste"), QStringLiteral("layerFramesPasteOver"),
+                                               QStringLiteral("layerDrawingDelete")})
+                  && m.texts.value(2) == QLatin1String("Copy Frame\tCtrl+C")
+                  && m.texts.value(6) == QLatin1String("Delete Frame\tDel")
+                  && m.offTips == QStringList({QStringLiteral("layerFramesPaste=No frames are copied yet."),
+                                               QStringLiteral("layerFramesPasteOver=No frames are copied yet.")}),
+              QStringLiteral("opened %1 '%2' [%3] texts [%4]; off [%5]").arg(m.opened).arg(m.name)
+                  .arg(m.entries.join(QLatin1Char(','))).arg(m.texts.join(QLatin1Char('|')))
+                  .arg(m.offTips.join(QLatin1Char('|'))));
+        // A panel on the panel clipboard (Ctrl+C after a press on the bottom bar), then the lane pressed and Ctrl+V.
+        pressBar();
+        const bool rowLetGo = !r.storyboard->layerRowFocusedForTest();
+        const int stepsBefore = stack->index();
+        key(Qt::Key_C, Qt::ControlModifier);
+        const bool panelCopied = r.storyboard->hasPanelClipboard();
+        tap(2);
+        const int panels = scenes.at(0)->panels.size();
+        const QString startsBefore = startsOf(pa, bird);
+        const bool pasted = key(Qt::Key_V, Qt::ControlModifier);
+        const QString note = said();
+        const bool amber = amberNow();
+        while (stack->index() > stepsBefore) // (nothing should have been made; whatever was, taken back)
+            undo();
+        check(QStringLiteral("(fc0) NOTHING COPIED: with a panel copied but no frames, Ctrl+V with the FRAMES lane last "
+                             "pressed pastes no frame and no panel, and says in amber \"No frames are copied yet.\""),
+              rowLetGo && panelCopied && pasted && note == QLatin1String("No frames are copied yet.") && amber
+                  && scenes.at(0)->panels.size() == panels && startsOf(pa, bird) == startsBefore
+                  && !r.storyboard->framesCopiedForTest(),
+              QStringLiteral("the row let go %1; panel copied %2; Ctrl+V taken %3: '%4' (amber %5); panels %6 -> %7; "
+                             "Bird '%8' -> '%9'")
+                  .arg(rowLetGo).arg(panelCopied).arg(pasted).arg(note).arg(amber).arg(panels)
+                  .arg(scenes.at(0)->panels.size()).arg(startsBefore, startsOf(pa, bird)));
+    }
+
+    // (fc1) SELECTING (answer 2): a click one frame - the playhead to it; Shift+click the run from it; Ctrl+click one
+    // more or one less (neither moves the playhead); the blocks drawn selected; the bar's note says the selection.
+    {
+        toPanel1();
+        tap(1);
+        const QString one = selected();
+        const int at1 = r.animatic->playheadFrameInPanel();
+        tap(3, Qt::ShiftModifier);
+        const QString run = selected();
+        const QString runDrawn = drawnSelected();
+        const QString runNote = barNow();
+        const int at2 = r.animatic->playheadFrameInPanel();
+        tap(5, Qt::ControlModifier);
+        const QString more = selected();
+        tap(2, Qt::ControlModifier);
+        const QString less = selected();
+        const QString lessDrawn = drawnSelected();
+        const QString lessNote = barNow();
+        const int at3 = r.animatic->playheadFrameInPanel();
+        check(QStringLiteral("(fc1) SELECTING FRAMES (answer 2): a click on frame 2 selects it and puts the playhead on its "
+                             "first frame; Shift+click on frame 4 selects 2 to 4; Ctrl+click adds frame 6, Ctrl+click on "
+                             "frame 3 takes it away - the playhead stays; the blocks are drawn selected; the bar says "
+                             "\"Bird  ·  frames 2 to 4 selected  ·  6 frames long\", then \"... frames 2, 4 and 6 "
+                             "selected ...\""),
+              one == QLatin1String("1") && at1 == 2 && run == QLatin1String("1,2,3") && runDrawn == run && at2 == 2
+                  && more == QLatin1String("1,2,3,5") && less == QLatin1String("1,3,5") && lessDrawn == less && at3 == 2
+                  && runNote == QStringLiteral("Bird") + dot + QStringLiteral("frames 2 to 4 selected") + dot
+                         + QStringLiteral("6 frames long")
+                  && lessNote == QStringLiteral("Bird") + dot + QStringLiteral("frames 2, 4 and 6 selected") + dot
+                         + QStringLiteral("6 frames long"),
+              QStringLiteral("click [%1] at %2; Shift [%3] drawn [%4] at %5 '%6'; Ctrl [%7], Ctrl [%8] drawn [%9] at %10 "
+                             "'%11'")
+                  .arg(one).arg(at1).arg(run, runDrawn).arg(at2).arg(runNote, more, less, lessDrawn).arg(at3)
+                  .arg(lessNote));
+        tap(4);
+        const QString alone = selected();
+        const int at4 = r.animatic->playheadFrameInPanel();
+        const QString aloneNote = barNow();
+        check(QStringLiteral("(fc1) control: a plain click on frame 5 selects it alone, the playhead to it, and the bar says "
+                             "the run's own note"),
+              alone == QLatin1String("4") && at4 == 8
+                  && aloneNote == QStringLiteral("Bird") + dot + QStringLiteral("frame 5 of 7") + dot
+                         + QStringLiteral("held 2 frames"),
+              QStringLiteral("[%1] at %2 '%3'").arg(alone).arg(at4).arg(aloneNote));
+    }
+
+    // (fc2) ONE OUTLINE FOR A RUN (Figma FC-1 section 1): frames 2 to 4 selected are drawn as one frame - at the cut
+    // inside the run no outline, at the run's left edge the outline; frame 3 alone has its own.
+    {
+        // The colour at a block's left cut, mid-lane, with the pointer away (no block lit by it) and the playhead on
+        // frame 21 (a tap puts it on the tapped frame's cut, and its line is drawn there; first run of this check).
+        auto columnAt = [&](int index) {
+            r.animatic->setPlayheadFrameInPanel(0, 20);
+            mouseAt(QPointF(r.surface->width() - 4, 4), QEvent::MouseMove, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            pump(120);
+            const QImage lane = r.surface->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+            const int x = int(std::lround(blockOf(index).value(QStringLiteral("x0")).toDouble()));
+            return QColor(lane.pixel(x, laneY()));
+        };
+        tap(2); // frame 3 alone: the outline at its cut
+        const QColor outline = columnAt(2);
+        tapAt(QPointF(r.timeline->drawingsLaneForTest().right() - 6, laneY())); // none selected: the plain cut
+        const QColor plainCut = columnAt(2);
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        const QColor inner = columnAt(2), left = columnAt(1);
+        check(QStringLiteral("(fc2) ONE OUTLINE FOR A RUN: with frames 2 to 4 selected, the outline is at the run's left "
+                             "edge, and the cut between frames 2 and 3 inside the run shows as it does with nothing "
+                             "selected - no outline there"),
+              left == outline && inner == plainCut,
+              QStringLiteral("left edge %1, the inner cut %2 (outline %3, plain cut %4)")
+                  .arg(left.name(), inner.name(), outline.name(), plainCut.name()));
+        check(QStringLiteral("(fc2) control: frame 3 selected alone is outlined at that cut - the outline and the plain "
+                             "cut are told apart"),
+              outline != plainCut, QStringLiteral("outline %1, plain cut %2").arg(outline.name(), plainCut.name()));
+    }
+
+    // (fc3) NONE SELECTED: a click on the lane off a frame, Esc over the timeline, Esc over the canvas.
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        const QPointF offFrames(r.timeline->drawingsLaneForTest().right() - 6, laneY()); // panel 2's part of the lane
+        tapAt(offFrames);
+        const QString afterOff = selected();
+        const bool rowKept = r.storyboard->layerRowFocusedForTest();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        hover(r, r.animatic, true); // the pointer over the timeline: its Esc
+        const QString escTimeline = fullKey(Qt::Key_Escape);
+        hover(r, r.animatic, false);
+        const QString afterEsc1 = selected();
+        const bool previewUp = r.animatic->previewVisible();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        lr::penOver(r.canvas, QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        const QString escCanvas = fullKey(Qt::Key_Escape);
+        const QString afterEsc2 = selected();
+        check(QStringLiteral("(fc3) NONE SELECTED (answer 2): a click on the lane off a frame selects none (the row stays "
+                             "chosen, for a paste); Esc over the timeline clears the selection, and Esc over the canvas "
+                             "too - no preview opened, nothing else done"),
+              afterOff.isEmpty() && rowKept && afterEsc1.isEmpty() && !previewUp && afterEsc2.isEmpty()
+                  && startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12"),
+              QStringLiteral("off a frame [%1] (row %2); Esc over the timeline (%3) [%4], preview %5; over the canvas (%6) "
+                             "[%7]")
+                  .arg(afterOff).arg(rowKept).arg(escTimeline, afterEsc1).arg(previewUp).arg(escCanvas, afterEsc2));
+        // Control: an Esc typed into a text field is the field's - the selection stays.
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        QLineEdit *field = nullptr;
+        for (QLineEdit *e : r.window.findChildren<QLineEdit *>())
+            if (e->isVisible() && !e->isReadOnly() && !field)
+                field = e;
+        if (field) {
+            field->activateWindow();
+            field->setFocus(Qt::OtherFocusReason);
+            pump(80);
+        }
+        const QString escField = fullKey(Qt::Key_Escape);
+        const QString afterField = selected();
+        if (field)
+            field->clearFocus();
+        check(QStringLiteral("(fc3) control: with a text field typed in, its Esc is its own - frames 2 to 4 stay selected"),
+              field && afterField == QLatin1String("1,2,3"),
+              QStringLiteral("field %1 (%2) [%3]").arg(field != nullptr).arg(escField, afterField));
+    }
+
+    // (fc4) COPY: Ctrl+C with frames 2 to 4 selected copies them as they are and how long each is held; the bar says
+    // so in grey. Control: after a press elsewhere Ctrl+C is not the frames' (the copied frames stay as they were).
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        const bool taken = key(Qt::Key_C, Qt::ControlModifier);
+        const QString note = said();
+        const bool grey = !amberNow();
+        check(QStringLiteral("(fc4) COPY: Ctrl+C with Bird's frames 2 to 4 selected copies three frames, six frames long, "
+                             "and says \"Copied 3 frames of Bird (6 frames long)\" in grey"),
+              taken && r.storyboard->framesCopiedCountForTest() == 3 && r.storyboard->framesCopiedLengthForTest() == 6
+                  && note == QLatin1String("Copied 3 frames of Bird (6 frames long)") && grey,
+              QStringLiteral("taken %1; copied %2 frames, %3 long; '%4' (grey %5)").arg(taken)
+                  .arg(r.storyboard->framesCopiedCountForTest()).arg(r.storyboard->framesCopiedLengthForTest())
+                  .arg(note).arg(grey));
+        tap(5);
+        pressBar();
+        const bool rowLetGo = !r.storyboard->layerRowFocusedForTest();
+        key(Qt::Key_C, Qt::ControlModifier);
+        check(QStringLiteral("(fc4) control: frame 6 selected, then a press on the bottom bar - Ctrl+C is no longer the "
+                             "lane's: the copied frames are still the three"),
+              rowLetGo && r.storyboard->framesCopiedCountForTest() == 3 && r.storyboard->framesCopiedLengthForTest() == 6,
+              QStringLiteral("let go %1; copied %2 frames, %3 long").arg(rowLetGo)
+                  .arg(r.storyboard->framesCopiedCountForTest()).arg(r.storyboard->framesCopiedLengthForTest()));
+    }
+
+    // (fc5) PASTE AT A CUT, ON ANOTHER LAYER (answer 1): Seagull, the playhead where its frame 3 starts (frame 9),
+    // Ctrl+V - the three go in there and its frames 3 and 4 move six frames later; one step; the pasted frames are
+    // the selection; undone, as it was. Control: Paste Frames Over the Playhead (the menu) covers six frames and
+    // moves nothing.
+    {
+        toPanel1();
+        r.storyboard->layerRowClickedForTest(seagull);
+        pump(120);
+        tap(2); // Seagull's frame 3: the playhead to frame 9 (8 from 0), the lane last pressed
+        const int at = r.animatic->playheadFrameInPanel();
+        const int steps = stack->index();
+        const bool taken = key(Qt::Key_V, Qt::ControlModifier);
+        const QString starts = startsOf(pa, seagull);
+        const QString step = stack->index() == steps + 1 ? stack->text(stack->count() - 1) : QString();
+        const QString arts = QStringList({artAt(pa, seagull, 2).text(), artAt(pa, seagull, 3).text(),
+                                          artAt(pa, seagull, 4).text()}).join(QLatin1Char('|'));
+        const bool same = artAt(pa, seagull, 2) == birdArt.at(1) && artAt(pa, seagull, 3) == birdArt.at(2)
+            && artAt(pa, seagull, 4) == birdArt.at(3) && artAt(pa, seagull, 5) == seagullArt.at(2)
+            && artAt(pa, seagull, 6) == seagullArt.at(3);
+        const QString nowSelected = selected();
+        const QString note = said();
+        undo();
+        const QString back = startsOf(pa, seagull);
+        check(QStringLiteral("(fc5) PASTE AT A CUT, ON ANOTHER LAYER (answer 1): Seagull, the playhead on frame 9 where its "
+                             "frame 3 starts, Ctrl+V - Bird's three frames go in there (frames 9 to 14), Seagull's frames 3 "
+                             "and 4 move six frames later; one step (\"Paste Frames\"); the pasted frames are selected; the "
+                             "bar says so; undone, as it was"),
+              at == 8 && taken && starts == QLatin1String("0,4,8,10,12,14,18") && same && step == QLatin1String("Paste Frames")
+                  && nowSelected == QLatin1String("2,3,4")
+                  && note == QLatin1String("Pasted 3 frames on Seagull at frame 9: the frames after them moved 6 frames later")
+                  && back == QLatin1String("0,4,8,12"),
+              QStringLiteral("playhead %1; taken %2; '%3' step '%4'; pasted art %5 (same %6); selected [%7]; '%8'; undone "
+                             "'%9'")
+                  .arg(at).arg(taken).arg(starts, step, arts).arg(same).arg(nowSelected, note, back));
+        tap(2);
+        const LaneMenu m = menuAt(blockCentre(2), QStringLiteral("layerFramesPasteOver"));
+        const QString over = startsOf(pa, seagull);
+        const QString overStep = stack->undoText();
+        const bool overArt = artAt(pa, seagull, 2) == birdArt.at(1) && artAt(pa, seagull, 5) == seagullArt.at(3);
+        const QString overNote = said();
+        undo();
+        check(QStringLiteral("(fc5) control: Paste Frames Over the Playhead, pressed in the lane's menu, covers frames 9 to "
+                             "14 - Seagull's frame 3 is gone, its frame 4 shows from frame 15 - and moves nothing after "
+                             "(\"Paste Frames Over\")"),
+              m.found && over == QLatin1String("0,4,8,10,12,14") && overArt && overStep == QLatin1String("Paste Frames Over")
+                  && overNote == QLatin1String("Pasted 3 frames over Seagull's frames 9 to 14: nothing after them moved")
+                  && startsOf(pa, seagull) == QLatin1String("0,4,8,12"),
+              QStringLiteral("menu %1; '%2' (art %3) step '%4' '%5'; undone '%6'").arg(m.found).arg(over).arg(overArt)
+                  .arg(overStep, overNote, startsOf(pa, seagull)));
+    }
+
+    // (fc6) PASTE INSIDE A FRAME: the playhead on frame 7, inside Seagull's frame 2 (frames 5 to 8): frame 2 is split
+    // there - its first part, the pasted frames, then the rest of it (the same drawing) and the frames after.
+    {
+        tap(1); // Seagull's frame 2: the lane last pressed
+        r.animatic->setPlayheadFrameInPanel(0, 6);
+        pump(120);
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString starts = startsOf(pa, seagull);
+        const bool art = artAt(pa, seagull, 1) == seagullArt.at(1) && artAt(pa, seagull, 2) == birdArt.at(1)
+            && artAt(pa, seagull, 5) == seagullArt.at(1) && artAt(pa, seagull, 6) == seagullArt.at(2);
+        const QString note = said();
+        undo();
+        check(QStringLiteral("(fc6) PASTE INSIDE A FRAME: the playhead on frame 7, inside Seagull's frame 2 - it holds frames "
+                             "5 and 6, the pasted three follow (7 to 12), then the rest of frame 2 (the same picture, frames "
+                             "13 and 14) and frames 3 and 4, six frames later"),
+              starts == QLatin1String("0,4,6,8,10,12,14,18") && art
+                  && note == QLatin1String("Pasted 3 frames on Seagull at frame 7, inside its frame 2: the rest of it and "
+                                           "the frames after moved 6 frames later")
+                  && startsOf(pa, seagull) == QLatin1String("0,4,8,12"),
+              QStringLiteral("'%1' art %2 '%3'; undone '%4'").arg(starts).arg(art).arg(note, startsOf(pa, seagull)));
+    }
+
+    // (fc7) A LAYER WITH ONE FRAME becomes a run: Rock holds up to the playhead, then the pasted frames, then Rock again.
+    {
+        r.storyboard->layerRowClickedForTest(rock);
+        pump(120);
+        const QPointF onRow(r.timeline->frameScreenXForTest(5), r.timeline->layerRowForTest().top() + 8); // its track
+        tapAt(onRow);
+        r.animatic->setPlayheadFrameInPanel(0, 10);
+        pump(120);
+        const bool rowChosen = r.storyboard->layerRowFocusedForTest();
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString starts = startsOf(pa, rock);
+        const bool art = artAt(pa, rock, 0) == rockArt && artAt(pa, rock, 1) == birdArt.at(1)
+            && artAt(pa, rock, 3) == birdArt.at(3) && artAt(pa, rock, 4) == rockArt;
+        undo();
+        const bool oneAgain = !pa->layers.at(rock).hasRun();
+        check(QStringLiteral("(fc7) A LAYER WITH ONE FRAME BECOMES A RUN: the LAYER row pressed, Rock selected, the playhead "
+                             "on frame 11, Ctrl+V - Rock holds frames 1 to 10, Bird's three follow (11 to 16), then Rock "
+                             "again; undone, Rock has one frame"),
+              rowChosen && starts == QLatin1String("0,10,12,14,16") && art && oneAgain,
+              QStringLiteral("row %1; '%2' art %3; one frame again %4").arg(rowChosen).arg(starts).arg(art).arg(oneAgain));
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(120);
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString first = startsOf(pa, rock);
+        const bool firstArt = artAt(pa, rock, 0) == birdArt.at(1) && artAt(pa, rock, 3) == rockArt;
+        undo();
+        check(QStringLiteral("(fc7) control: at frame 1 the pasted three come first and Rock follows them, once (nothing of "
+                             "it before them)"),
+              first == QLatin1String("0,2,4,6") && firstArt && !pa->layers.at(rock).hasRun(),
+              QStringLiteral("'%1' art %2").arg(first).arg(firstArt));
+    }
+
+    // (fc8) ANOTHER PANEL, ITS OWN STAGE, AND ANOTHER SCENE: each pasted drawing keeps its place in the camera's frame.
+    {
+        place(1, 6); // HARBOUR panel 2, Gull, the playhead where its frame 2 starts
+        const QPointF onRow(blockCentre(1).x(), laneY());
+        tapAt(onRow);
+        r.animatic->setPlayheadFrameInPanel(1, 6);
+        pump(120);
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString gull = startsOf(pb, 1);
+        const Art onB = artAt(pb, 1, 1);
+        const bool placeKept = onB == birdArt.at(1).moved(fc::kMargin, fc::kMargin)
+            && artAt(pb, 1, 3) == birdArt.at(3).moved(fc::kMargin, fc::kMargin);
+        place(2, 12); // ISLAND's panel, Crab, where its frame 2 starts
+        tap(1);
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString crab = startsOf(pc, 1);
+        const Art onC = artAt(pc, 1, 1);
+        const bool sameStage = onC == birdArt.at(1) && artAt(pc, 1, 3) == birdArt.at(3);
+        check(QStringLiteral("(fc8) ANOTHER PANEL ON ITS OWN STAGE, AND ANOTHER SCENE: pasted on HARBOUR panel 2 (40 px of "
+                             "stage each side) at its frame 7, Gull's run takes them there and each drawing is where it was "
+                             "in the camera's frame - 40 px right and down on that stage; on ISLAND's panel (the same stage "
+                             "as Bird's) at frame 13, exactly where it was drawn"),
+              gull == QLatin1String("0,6,8,10,12,18") && placeKept && crab == QLatin1String("0,12,14,16,18") && sameStage,
+              QStringLiteral("Gull '%1' art %2 (Bird's %3); Crab '%4' art %5").arg(gull, onB.text(), birdArt.at(1).text(), crab,
+                                                                                   onC.text()));
+        undo();
+        place(1, 0);
+        undo();
+        const QString backB = startsOf(pb, 1), backC = startsOf(pc, 1);
+        check(QStringLiteral("(fc8) control: both pastes undone, Gull and Crab are as they were"),
+              backB == QLatin1String("0,6,12") && backC == QLatin1String("0,12"),
+              QStringLiteral("Gull '%1', Crab '%2'").arg(backB, backC));
+    }
+    // (fc8) ...A FRAME JUST DRAWN ON: its full picture, not yet folded away (the pastes above copied folded drawings -
+    // a red run moving the full picture's place passed them; first red run R3).
+    {
+        toPanel1();
+        tap(1); // Bird's frame 2 on the canvas
+        const int steps = stack->index();
+        LayerFolder *folder = r.storyboard->layerFolder();
+        folder->setHeldForTest(true); // nothing folded away meanwhile: the copy takes the full picture
+        stroke(r.canvas, 0);
+        r.canvas->flushPaintCommit();
+        pump(150);
+        tap(0); // (not frame 2 at once: a second tap there so soon is a double-click - Zoom to Frames)
+        tap(1); // the stroke was a press on the canvas: the lane takes the keys back
+        const Art drawn = artAt(pa, bird, 1);
+        const bool fresh = !pa->layers.at(bird).image.isNull() && !pa->layers.at(bird).tilesCurrent();
+        const QString selectedAtCopy = selected();
+        key(Qt::Key_C, Qt::ControlModifier);
+        const QString copySaid = said();
+        folder->setHeldForTest(false);
+        place(1, 6);
+        tapAt(QPointF(blockCentre(1).x(), laneY())); // Gull's frame 2: the playhead to frame 7
+        key(Qt::Key_V, Qt::ControlModifier);
+        const Art pasted = artAt(pb, 1, 1);
+        const QString gull = startsOf(pb, 1);
+        undo(); // the paste
+        toPanel1();
+        while (stack->index() > steps)
+            undo(); // the stroke
+        check(QStringLiteral("(fc8) A FRAME JUST DRAWN ON - its full picture, not yet folded - pasted on panel 2's own stage "
+                             "keeps its place in the camera's frame too: 40 px right and down"),
+              fresh && drawn != birdArt.at(1) && gull == QLatin1String("0,6,8,14") && pasted == drawn.moved(fc::kMargin, fc::kMargin)
+                  && artAt(pa, bird, 1) == birdArt.at(1) && startsOf(pb, 1) == QLatin1String("0,6,12"),
+              QStringLiteral("full picture %1; drawn %2; selected [%7], '%8'; Gull '%3', pasted %4; back: Bird %5, Gull '%6'")
+                  .arg(fresh)
+                  .arg(drawn.text(), gull, pasted.text(), artAt(pa, bird, 1).text(), startsOf(pb, 1), selectedAtCopy, copySaid));
+        // The copy the checks below start from, again: Bird's frames 2 to 4.
+        tap(0);
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        key(Qt::Key_C, Qt::ControlModifier);
+    }
+
+    // (fc9) NEVER PAST THE PANEL'S END: the frame that holds to the end gives up its hold first; only what would be
+    // pushed out of sight refuses the paste, in amber, and nothing changes.
+    {
+        toPanel1();
+        tap(6); // Bird's frame 7 (13 to 24): the playhead to frame 13
+        const int steps = stack->index();
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString gave = startsOf(pa, bird);
+        undo();
+        tap(6);
+        r.animatic->setPlayheadFrameInPanel(0, 20);
+        pump(120);
+        const int steps2 = stack->index();
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString refused = said();
+        const bool amber = amberNow();
+        const bool unchanged = startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12") && stack->index() == steps2;
+        while (stack->index() > steps2) // (a paste that should have been refused - a red run's - taken back first)
+            undo();
+        check(QStringLiteral("(fc9) NEVER PAST THE PANEL'S END: at frame 13 the three go in and Bird's last frame holds six "
+                             "frames instead of twelve; at frame 21 they would end past the panel - refused in amber, "
+                             "nothing changed"),
+              gave == QLatin1String("0,2,4,6,8,10,12,14,16,18") && stack->index() == steps && unchanged && amber
+                  && refused == QLatin1String("Not enough room: the pasted frames would pass the panel's end by 1 frame - "
+                                              "lengthen the panel, or put the playhead earlier"),
+              QStringLiteral("at 13 '%1'; at 21 '%2' (amber %3, unchanged %4)").arg(gave, refused).arg(amber).arg(unchanged));
+        // Every frame of Bird copied (24 frames long), pasted into Seagull at frame 5: its frames 2 to 4 would go past.
+        tap(0);
+        tap(6, Qt::ShiftModifier);
+        key(Qt::Key_C, Qt::ControlModifier);
+        const int all = r.storyboard->framesCopiedLengthForTest();
+        r.storyboard->layerRowClickedForTest(seagull);
+        pump(120);
+        tap(1); // Seagull's frame 2, at frame 5
+        const int steps3 = stack->index();
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString pushed = said();
+        const bool none = startsOf(pa, seagull) == QLatin1String("0,4,8,12") && stack->index() == steps3;
+        while (stack->index() > steps3) // (as above)
+            undo();
+        const LaneMenu m = menuAt(blockCentre(1), QStringLiteral("layerFramesPasteOver"));
+        const QString overAll = startsOf(pa, seagull);
+        undo();
+        check(QStringLiteral("(fc9) ...and the frames after the playhead: all of Bird (24 frames long) into Seagull at frame 5 "
+                             "would push its frames 2 to 4 out of sight - refused (\"... by 13 frames - paste over, or "
+                             "lengthen the panel\"); control: Paste Frames Over there is made, nothing pushed"),
+              all == 24 && none
+                  && pushed == QLatin1String("Not enough room: the frames after the playhead would pass the panel's end by "
+                                             "13 frames - paste over, or lengthen the panel")
+                  && m.found && overAll == QLatin1String("0,4,6,8,10,12,14,16,28")
+                  && startsOf(pa, seagull) == QLatin1String("0,4,8,12"),
+              QStringLiteral("copied %1 long; '%2' (unchanged %3); over: '%4'").arg(all).arg(pushed).arg(none).arg(overAll));
+    }
+
+    // (fc10) REFUSED IN AMBER, NOTHING CHANGED: a folder, the paper, a locked layer, the playhead on another panel.
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        key(Qt::Key_C, Qt::ControlModifier); // Bird's frames 2 to 4 again
+        QStringList notes;
+        bool allAmber = true;
+        const int steps = stack->index();
+        for (int layer : {skyFolder, 0, lockLayer}) {
+            r.storyboard->layerRowClickedForTest(layer);
+            pump(120);
+            key(Qt::Key_V, Qt::ControlModifier);
+            notes << said();
+            allAmber = allAmber && amberNow();
+        }
+        r.storyboard->layerRowClickedForTest(bird);
+        pump(120);
+        r.animatic->setPlayheadFrameInPanel(1, 3); // the playhead on panel 2, panel 1 on the canvas
+        pump(150);
+        key(Qt::Key_V, Qt::ControlModifier);
+        notes << said();
+        allAmber = allAmber && amberNow();
+        const bool unchanged = stack->index() == steps && startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12");
+        while (stack->index() > steps) // (a paste a refusal should have stopped - a red run's - taken back)
+            undo();
+        check(QStringLiteral("(fc10) REFUSED IN AMBER, NOTHING CHANGED: with the Sky folder, the paper, the locked layer "
+                             "selected, and with the playhead on another panel than the canvas's"),
+              notes == QStringList({QStringLiteral("A folder has no frames: choose a layer in the Layers panel to paste the "
+                                                   "frames on."),
+                                    QStringLiteral("The paper has no frames: choose a layer in the Layers panel to paste the "
+                                                   "frames on."),
+                                    QStringLiteral("Lock is locked"),
+                                    QStringLiteral("Put the playhead on the panel to paste the frames into.")})
+                  && allAmber && unchanged,
+              QStringLiteral("[%1] amber %2 unchanged %3").arg(notes.join(QLatin1Char('|'))).arg(allAmber).arg(unchanged));
+        r.animatic->setPlayheadFrameInPanel(0, 0);
+        pump(150);
+        const int canvasFlat = sel(), playheadFlat = r.animatic->currentFlatIndex();
+        const bool rowNow = r.storyboard->layerRowFocusedForTest();
+        key(Qt::Key_V, Qt::ControlModifier);
+        const bool made = stack->index() == steps + 1 && startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12,14,16,18");
+        const QString note = said();
+        const QString pastedStarts = startsOf(pa, bird);
+        if (stack->index() > steps)
+            undo();
+        check(QStringLiteral("(fc10) control: Bird selected, the playhead back on panel 1's frame 1 - the same Ctrl+V pastes"),
+              made,
+              QStringLiteral("'%1' (canvas on %2, playhead on %3, row %4; '%5')").arg(pastedStarts).arg(canvasFlat)
+                  .arg(playheadFlat).arg(rowNow).arg(note));
+    }
+
+    // (fc11) CUT (answer 3): the frame before holds over the cut frames, one step; a layer keeps at least one frame.
+    // Control: Del on the same frames deletes them the same way and copies nothing.
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        const int steps = stack->index();
+        const bool taken = key(Qt::Key_X, Qt::ControlModifier);
+        const QString starts = startsOf(pa, bird);
+        const QString step = stack->index() == steps + 1 ? stack->undoText() : QString();
+        const QString note = said();
+        const int copied = r.storyboard->framesCopiedCountForTest(), length = r.storyboard->framesCopiedLengthForTest();
+        const bool art = artAt(pa, bird, 0) == birdArt.at(0) && artAt(pa, bird, 1) == birdArt.at(4);
+        undo();
+        check(QStringLiteral("(fc11) CUT (answer 3): Ctrl+X on Bird's frames 2 to 4 - they go, frame 1 holds over their six "
+                             "frames, nothing after moves; one step (\"Cut Frames\"); they are the copied ones; the bar "
+                             "says \"Cut 3 frames of Bird: frame 1 holds over their 6 frames\"; undone, as it was"),
+              taken && starts == QLatin1String("0,8,10,12") && step == QLatin1String("Cut Frames") && art && copied == 3
+                  && length == 6 && note == QLatin1String("Cut 3 frames of Bird: frame 1 holds over their 6 frames")
+                  && startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12"),
+              QStringLiteral("taken %1; '%2' step '%3' art %4; copied %5 (%6 long); '%7'; undone '%8'").arg(taken)
+                  .arg(starts, step).arg(art).arg(copied).arg(length).arg(note, startsOf(pa, bird)));
+        tap(0);
+        tap(6, Qt::ShiftModifier);
+        const int steps2 = stack->index();
+        key(Qt::Key_X, Qt::ControlModifier);
+        const QString refused = said();
+        const bool amber = amberNow();
+        const bool kept = stack->index() == steps2 && startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12")
+            && r.storyboard->framesCopiedCountForTest() == 3;
+        check(QStringLiteral("(fc11) A LAYER KEEPS AT LEAST ONE FRAME: Ctrl+X on all seven is refused in amber - nothing cut, "
+                             "nothing copied"),
+              refused == QLatin1String("Bird keeps at least one frame: copy them instead, or Clear Layer") && amber && kept,
+              QStringLiteral("'%1' (amber %2, kept %3)").arg(refused).arg(amber).arg(kept));
+        // Control: Del on frames 2 to 4 (the pointer over the timeline: Del is the timeline's there).
+        key(Qt::Key_C, Qt::ControlModifier); // something else on the copy first: all seven
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        hover(r, r.animatic, true);
+        const int steps3 = stack->index();
+        key(Qt::Key_Delete);
+        hover(r, r.animatic, false);
+        const QString del = startsOf(pa, bird);
+        const QString delStep = stack->index() == steps3 + 1 ? stack->undoText() : QString();
+        const int copiedAfter = r.storyboard->framesCopiedCountForTest();
+        undo();
+        check(QStringLiteral("(fc11) control: Del on the same three takes them the same way - \"Delete Frames\", one step - "
+                             "and leaves the copied frames as they were (all seven)"),
+              del == QLatin1String("0,8,10,12") && delStep == QLatin1String("Delete Frames") && copiedAfter == 7
+                  && startsOf(pa, bird) == QLatin1String("0,2,4,6,8,10,12"),
+              QStringLiteral("'%1' step '%2'; copied %3").arg(del, delStep).arg(copiedAfter));
+    }
+
+    // (fc12) SCATTERED FRAMES (answer 2): Ctrl+clicked apart, copied and pasted one after another in their order.
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ControlModifier);
+        tap(5, Qt::ControlModifier);
+        key(Qt::Key_C, Qt::ControlModifier);
+        const QString note = said();
+        place(2, 0);
+        tap(0); // Crab's frame 1, at frame 1
+        key(Qt::Key_V, Qt::ControlModifier);
+        const QString crab = startsOf(pc, 1);
+        const bool order = artAt(pc, 1, 0) == birdArt.at(1) && artAt(pc, 1, 1) == birdArt.at(3)
+            && artAt(pc, 1, 2) == birdArt.at(5);
+        undo();
+        check(QStringLiteral("(fc12) SCATTERED FRAMES (answer 2): Bird's frames 2, 4 and 6 Ctrl+clicked apart and copied are "
+                             "pasted on Crab one after another, in their order, each as long as it was"),
+              note == QLatin1String("Copied 3 frames of Bird (6 frames long)") && crab == QLatin1String("0,2,4,6,18") && order
+                  && startsOf(pc, 1) == QLatin1String("0,12"),
+              QStringLiteral("'%1'; Crab '%2' order %3").arg(note, crab).arg(order));
+    }
+
+    // (fc13) THE MENU ON A SELECTION, AND OFF A FRAME: a right-click on a selected frame keeps the selection and counts
+    // it; Copy 3 Frames pressed there copies them; off a frame, New Frame and Paste Frames at the Playhead alone.
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        const LaneMenu m = menuAt(blockCentre(2), QStringLiteral("layerFramesCopy"));
+        const QString still = selected();
+        const int copied = r.storyboard->framesCopiedCountForTest();
+        const LaneMenu off = menuAt(QPointF(r.timeline->drawingsLaneForTest().right() - 6, laneY()), QString());
+        check(QStringLiteral("(fc13) THE MENU ON A SELECTION: a right-click on frame 3 of the selected 2 to 4 keeps all "
+                             "three selected and counts them (\"Copy 3 Frames\", \"Cut 3 Frames\", \"Delete 3 Frames\"); "
+                             "Copy 3 Frames pressed there copies them; off a frame the menu is New Frame and Paste Frames "
+                             "at the Playhead"),
+              m.found && still == QLatin1String("1,2,3") && m.texts.value(2) == QLatin1String("Copy 3 Frames\tCtrl+C")
+                  && m.texts.value(3) == QLatin1String("Cut 3 Frames\tCtrl+X")
+                  && m.texts.value(6) == QLatin1String("Delete 3 Frames\tDel") && m.offTips.isEmpty() && copied == 3
+                  && off.entries == QStringList({QStringLiteral("layerDrawingNew"), QStringLiteral("layerFramesPaste")}),
+              QStringLiteral("texts [%1] off [%2]; selected after [%3]; copied %4; off a frame [%5]")
+                  .arg(m.texts.join(QLatin1Char('|')), m.offTips.join(QLatin1Char('|')), still).arg(copied)
+                  .arg(off.entries.join(QLatin1Char(','))));
+        tap(5);
+        const LaneMenu other = menuAt(blockCentre(2), QString());
+        check(QStringLiteral("(fc13) control: a right-click on a frame that is not selected selects it alone"),
+              selected() == QLatin1String("2") && other.texts.value(2) == QLatin1String("Copy Frame\tCtrl+C"),
+              QStringLiteral("[%1] '%2'").arg(selected(), other.texts.value(2)));
+    }
+
+    // (fc14) SAVED AND OPENED AGAIN; DUPLICATE PANEL: pasted frames are drawings of their own.
+    {
+        toPanel1();
+        tap(1);
+        tap(3, Qt::ShiftModifier);
+        key(Qt::Key_C, Qt::ControlModifier);
+        r.storyboard->layerRowClickedForTest(seagull);
+        pump(120);
+        tap(2);
+        key(Qt::Key_V, Qt::ControlModifier);
+        QStringList ids;
+        for (const LayerDrawing &d : pa->layers.at(seagull).drawings)
+            ids << d.id;
+        QStringList birdIds;
+        for (const LayerDrawing &d : pa->layers.at(bird).drawings)
+            birdIds << d.id;
+        bool own = ids.size() == 7 && QSet<QString>(ids.begin(), ids.end()).size() == 7;
+        for (const QString &id : ids)
+            own = own && !birdIds.contains(id);
+        dupButton->click();
+        pump(300);
+        const Panel *copy = scenes.at(0)->panels.size() == 3 ? scenes.at(0)->panels.at(1) : nullptr;
+        const bool dup = copy && startsOf(copy, seagull) == QLatin1String("0,4,8,10,12,14,18")
+            && artOf(copy->layers.at(seagull).pixelsOf(3)) == birdArt.at(2);
+        const QString saved = dir + QStringLiteral("/Saved.sankotv");
+        const bool ok = r.window.saveProjectForTest(saved);
+        pump(200);
+        r.window.markCleanForTest();
+        const bool reopened = r.window.loadProjectForTest(saved);
+        pump(400);
+        const QVector<Scene *> again = r.window.scenesForTest();
+        const Panel *pa2 = again.value(0) && !again.value(0)->panels.isEmpty() ? again.value(0)->panels.at(0) : nullptr;
+        const bool same = pa2 && startsOf(pa2, seagull) == QLatin1String("0,4,8,10,12,14,18")
+            && artOf(pa2->layers.at(seagull).pixelsOf(2)) == birdArt.at(1)
+            && artOf(pa2->layers.at(seagull).pixelsOf(4)) == birdArt.at(3)
+            && artOf(pa2->layers.at(seagull).pixelsOf(5)) == seagullArt.at(2);
+        check(QStringLiteral("(fc14) PASTED FRAMES ARE DRAWINGS OF THEIR OWN: new ids, none of Bird's; Duplicate Panel copies "
+                             "them with the run; saved and opened again, Seagull has the same seven frames, each its "
+                             "picture"),
+              own && dup && ok && reopened && same,
+              QStringLiteral("own ids %1; duplicate %2; saved %3, reopened %4, same %5").arg(own).arg(dup).arg(ok)
+                  .arg(reopened).arg(same));
+    }
+
+    // From here the reopened project (the same fixture with Seagull's paste and a duplicate panel 2).
+    const QVector<Scene *> s2 = r.window.scenesForTest();
+    if (s2.size() != 2 || s2.at(0)->panels.size() != 3) {
+        check(QStringLiteral("(fc) the reopened project has HARBOUR's three panels"), false);
+        r.window.markCleanForTest();
+        return;
+    }
+    pa = s2.at(0)->panels.at(0);
+    Panel *pGull = s2.at(0)->panels.at(2);
+
+    // (fc15) SPACE NEVER PRESSES A BUTTON (the user's word after hand test LT): the strip's + with the keyboard and the
+    // pen on the bottom bar - Space adds no panel; Space's own uses stay.
+    {
+        place(0, 0);
+        r.storyboard->layerRowClickedForTest(bird);
+        pump(120);
+        const int panels = s2.at(0)->panels.size();
+        plusButton->activateWindow();
+        plusButton->setFocus(Qt::TabFocusReason);
+        pump(80);
+        lr::penOver(noteBar, QPointF(noteBar->width() / 2.0, noteBar->height() / 2.0));
+        const bool focused = QApplication::focusWidget() == plusButton;
+        const int kept0 = r.storyboard->spaceKeptFromButtonsForTest();
+        const QString went = fullKey(Qt::Key_Space);
+        const int kept = r.storyboard->spaceKeptFromButtonsForTest() - kept0;
+        const int panelsAfter = int(s2.at(0)->panels.size());
+        const bool noPanel = panelsAfter == panels && !r.animatic->isPlaying();
+        while (s2.at(0)->panels.size() > panels) // (a panel the Space made - a red run's - taken back: the next check
+            undo();                              // has its own panels)
+        // A drop-down list with the keyboard: its list does not open either.
+        QComboBox *combo = nullptr;
+        for (QComboBox *c : r.window.findChildren<QComboBox *>())
+            if (c->isVisible() && !c->isEditable() && !combo)
+                combo = c;
+        if (combo) {
+            combo->setFocus(Qt::TabFocusReason);
+            pump(80);
+        }
+        fullKey(Qt::Key_Space);
+        const bool listShut = combo && !combo->view()->isVisible();
+        if (combo && combo->view()->isVisible())
+            combo->hidePopup();
+        check(QStringLiteral("(fc15) SPACE NEVER PRESSES A BUTTON: the strip's + has the keyboard and the pen rests on the "
+                             "bottom bar (no film up) - Space adds no panel, starts no film, and is taken before the "
+                             "button; a drop-down list with the keyboard does not open"),
+              focused && kept == 1 && noPanel && combo && listShut,
+              QStringLiteral("focused %1; went %2, kept %3; panels %4 -> %5, playing %6; a combo %7, its list shut %8")
+                  .arg(focused).arg(went).arg(kept).arg(panels).arg(panelsAfter).arg(r.animatic->isPlaying())
+                  .arg(combo != nullptr).arg(listShut));
+        // Controls: the + still adds a panel when clicked; Space over the timeline plays and pauses; over the canvas it is
+        // the pan; in a text field it types.
+        const int beforeClick = s2.at(0)->panels.size();
+        plusButton->click();
+        pump(200);
+        const bool clicked = s2.at(0)->panels.size() == beforeClick + 1;
+        undo();
+        hover(r, r.animatic, true);
+        const bool plays = key(Qt::Key_Space) && r.animatic->isPlaying();
+        const bool pauses = key(Qt::Key_Space) && !r.animatic->isPlaying();
+        hover(r, r.animatic, false);
+        if (r.animatic->previewVisible())
+            r.animatic->leavePreview();
+        pump(150);
+        place(0, 0);
+        lr::penOver(r.canvas, QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        plusButton->setFocus(Qt::TabFocusReason);
+        pump(80);
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "));
+        QApplication::sendEvent(QApplication::focusWidget() ? QApplication::focusWidget() : r.canvas, &down);
+        pump(60);
+        const bool pans = r.canvas->spaceHeld();
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "));
+        QApplication::sendEvent(QApplication::focusWidget() ? QApplication::focusWidget() : r.canvas, &up);
+        pump(60);
+        QLineEdit *field = nullptr;
+        for (QLineEdit *e : r.window.findChildren<QLineEdit *>())
+            if (e->isVisible() && !e->isReadOnly() && !field)
+                field = e;
+        QString typed;
+        if (field) {
+            const QString was = field->text();
+            field->setFocus(Qt::OtherFocusReason);
+            field->setCursorPosition(field->text().size());
+            pump(80);
+            fullKey(Qt::Key_Space);
+            typed = field->text();
+            field->setText(was);
+            field->clearFocus();
+        }
+        check(QStringLiteral("(fc15) control: a click on the + adds a panel; Space over the timeline plays and pauses; over "
+                             "the canvas - the + still with the keyboard - it is the pan; in a text field it types a space"),
+              clicked && plays && pauses && pans && field && typed.endsWith(QLatin1Char(' ')),
+              QStringLiteral("click %1; plays %2 pauses %3; pans %4; typed '%5'").arg(clicked).arg(plays).arg(pauses).arg(pans)
+                  .arg(typed));
+    }
+
+    // (fc16) THE FILM'S FRAME NOTE (the user's word after hand test LT): paused in the preview, the bar names the
+    // previewed panel's layer and its frame there - not the canvas's.
+    {
+        place(0, 0);
+        r.storyboard->layerRowClickedForTest(bird);
+        pump(120);
+        const QString workspace = barNow();
+        r.animatic->togglePlay();
+        pump(300);
+        r.animatic->togglePlay(); // paused: the preview stays up
+        pump(200);
+        const bool up = r.animatic->previewVisible();
+        const int gullFlat = 2;
+        r.animatic->setPlayheadFrameInPanel(gullFlat, 7);
+        pump(200);
+        const QString onGull = barNow();
+        r.animatic->setPlayheadFrameInPanel(0, 9);
+        pump(200);
+        const QString onBird = barNow();
+        const int canvasShows = pa->layers.at(bird).shown;
+        r.animatic->leavePreview();
+        pump(250);
+        place(0, 0);
+        const QString back = barNow();
+        check(QStringLiteral("(fc16) THE FILM'S FRAME NOTE: with the film paused in the preview on HARBOUR panel 3 (the "
+                             "duplicate's Gull) at frame 8, the bar says Gull's frame there; on panel 1 at frame 10 it says "
+                             "Bird's frame 5 - while the canvas still shows Bird's frame 1"),
+              up && onGull == QStringLiteral("Gull") + dot + QStringLiteral("frame 2 of 3") + dot + QStringLiteral("held 6 frames")
+                  && onBird == QStringLiteral("Bird") + dot + QStringLiteral("frame 5 of 7") + dot + QStringLiteral("held 2 frames")
+                  && canvasShows == 0,
+              QStringLiteral("preview %1; '%2'; '%3' (the canvas shows %4)").arg(up).arg(onGull, onBird).arg(canvasShows + 1));
+        check(QStringLiteral("(fc16) control: in the workspace the bar names the canvas's own frame, as before"),
+              workspace == QStringLiteral("Bird") + dot + QStringLiteral("frame 1 of 7") + dot + QStringLiteral("held 2 frames")
+                  && back == workspace,
+              QStringLiteral("before '%1', after '%2'").arg(workspace, back));
+        Q_UNUSED(pGull);
+    }
+
+    r.storyboard->setPointerDeviceForTest(-1);
+    r.window.markCleanForTest();
+}
+
 // ---- (ss) THE SAFE SAVE (saving step 1, 2026-11-23; approved by the user that day) -------------
 // Until this step a save wrote each changed picture OVER its own file and then replaced the
 // project file. Cut short between the two - a crash, the app ended, the power gone - it left the
@@ -46171,6 +47317,14 @@ int main(int argc, char **argv)
               << Qt::endl;
         return g_failures;
     }
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("fc")) {
+        runFcPass(scratch); // round FC-a: copying frames; Space never presses a button; the film's frame note
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("lt")) {
         runLtPass(scratch); // Up / Down over the Layers list, the three short tips (the user's word after hand test LR)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -46506,6 +47660,7 @@ int main(int argc, char **argv)
     runOsPass(scratch);           // OS-1: the Light Table for panels, the Onion Skin for frames (2026-11-27)
     runLrPass(scratch);           // the arrows; the bulbs in their neighbours' grey and line (2026-11-27)
     runLtPass(scratch);           // Up / Down over the Layers list; the three short tips (2026-11-28)
+    runFcPass(scratch);           // round FC-a: copying frames; Space and buttons; the film's frame note (2026-11-28)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

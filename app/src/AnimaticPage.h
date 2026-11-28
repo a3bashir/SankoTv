@@ -378,7 +378,7 @@ signals:
     // THE DRAWINGS LANE of the LAYER row (batch I-2), the timeline's requests handed on.
     void newDrawingRequested();
     void rowsMinimumChanged(); // the timeline's rows need another least height (2026-11-26)
-    void drawingBlockPressed(int layerIndex, int drawingIndex);
+    void drawingBlockPressed(int layerIndex, int drawingIndex, Qt::KeyboardModifiers mods);
     void drawingCutMoveRequested(int layerIndex, int drawingIndex, int startFrameInPanel, bool alone);
     void drawingsLaneContextMenuRequested(int layerIndex, int drawingIndex, const QPoint &globalPos);
 
@@ -386,9 +386,9 @@ public:
     // THE LAYER ROW (batch I-1): a layer's motion or the selected layer changed - the row
     // shows or goes, and repaints.
     void refreshLayerRow();
-    // The drawings lane (batch I-2): the block drawn as selected (-1 none); whether the onion
-    // skin is on (its blocks take its colours).
-    void setSelectedDrawing(int drawingIndex);
+    // The drawings lane (batch I-2): the blocks drawn as selected (round FC-a: several; none:
+    // empty); whether the onion skin is on (its blocks take its colours).
+    void setSelectedDrawings(const QVector<int> &drawingIndices);
     void setOnionSkinShown(bool on);
     // The preview's moving panel: the place in the panel it is posed at (batch I-1).
     double previewAtForTest() const;
