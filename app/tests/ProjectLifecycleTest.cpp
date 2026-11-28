@@ -41378,13 +41378,15 @@ void runSlidersPass(const QString &scratch)
         const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
         QAbstractButton *zoomBtn = r.timeline->zoomToFramesButtonForTest();
         const QString zoomTip = zoomBtn ? zoomBtn->toolTip() : QString();
+        // (Changed with round LT, 2026-11-28: the Zoom to Frames tip is its name only, the user's word after hand test
+        // LR - it said "each frame at least 32 px wide" until then.)
         check(QStringLiteral("(sl5) \"FRAME\" EVERYWHERE: on the Ground's drawing 2 the bar says \"Ground · frame 2 of 3 · held "
                              "2 frames\", on its last \"Ground · frame 3 of 3 · held to the panel's end\"; the Zoom to "
-                             "Frames tip says \"each frame at least 32 px wide\"; none says \"drawing\""),
+                             "Frames tip is \"Zoom to Frames\"; none says \"drawing\""),
               runOk && middle.startsWith(QStringLiteral("Ground") + dot + QStringLiteral("frame 2 of 3") + dot + QStringLiteral("held 2 frames"))
                   && last.startsWith(QStringLiteral("Ground") + dot + QStringLiteral("frame 3 of 3") + dot
                                      + QStringLiteral("held to the panel's end"))
-                  && zoomTip.contains(QLatin1String("each frame at least 32 px wide"))
+                  && zoomTip == QLatin1String("Zoom to Frames")
                   && !middle.contains(QLatin1String("drawing"), Qt::CaseInsensitive)
                   && !last.contains(QLatin1String("drawing"), Qt::CaseInsensitive)
                   && !zoomTip.contains(QLatin1String("drawing"), Qt::CaseInsensitive),
@@ -41887,12 +41889,12 @@ void runOsPass(const QString &scratch)
                              "to Frames and left of FRAMES, there while the lane is (not on panel 3's one-frame Kite); a "
                              "click switches the onion skin; on, a purple border and a purple background behind the "
                              "Light Table's bulb in grey, inside 5.5-14.5 x 2.75-17.25, and no other colour; its tip "
-                             "names it, its key, and the Light Table's"),
+                             "is its name and its key, \"Onion Skin (O)\""),
               shownRun && at == QRect(50, mag.y(), 20, 20) && mag.x() == 27 && frames.count > 20
                   && frames.box.left() > at.right() + 4 && hiddenOne && clickOn && sl::channelGap(on.edge, accent) <= 24
                   && on.purpleEdge > 40 && on.inside.blue() > on.inside.red() + 12 && on.white > 20 && on.bulb.left() >= 5
                   && on.bulb.right() <= 15 && on.bulb.top() >= 2 && on.bulb.bottom() <= 18 && on.foreign == 0
-                  && tipOs.contains(QLatin1String("Onion Skin (O)")) && tipOs.contains(QLatin1String("Light Table's (Shift+L)")),
+                  && tipOs == QLatin1String("Onion Skin (O)"), // (round LT, 2026-11-28: it also named the Light Table's)
               QStringLiteral("at %1,%2 %3x%4 (Zoom to Frames %5,%6), shown %7, FRAMES from x %8, hidden on the Kite %9, "
                              "the click %10; on: edge %11 (%12 purple edge px), inside %13, %14 grey px in %15,%16 %17x%18, "
                              "%19 of another colour; tip '%20'")
@@ -41940,10 +41942,10 @@ void runOsPass(const QString &scratch)
         ltOn.save(scratch + QStringLiteral("/os/look_lighttable_on.png"));
         ltOff.save(scratch + QStringLiteral("/os/look_lighttable_off.png"));
         check(QStringLiteral("(os5) THE LIGHT TABLE'S BUTTON in the panel strip: the same bulb in grey, nothing added; on, "
-                             "the purple border and a purple background; its tip names it, its key, and the Onion Skin's"),
+                             "the purple border and a purple background; its tip is its name and its key, \"Light Table "
+                             "(Shift+L)\""),
               sl::channelGap(lon.edge, accent) <= 30 && lon.inside.blue() > lon.inside.red() + 12 && lon.white > 20
-                  && lon.foreign == 0 && tipLt.contains(QLatin1String("Light Table (Shift+L)"))
-                  && tipLt.contains(QLatin1String("Onion Skin's (O)")),
+                  && lon.foreign == 0 && tipLt == QLatin1String("Light Table (Shift+L)"), // (round LT: it also named the Onion Skin's)
               QStringLiteral("on: edge %1, inside %2, %3 grey px, %4 of another colour; tip '%5'").arg(lon.edge.name())
                   .arg(lon.inside.name()).arg(lon.white).arg(lon.foreign).arg(tipLt));
         // (The white count may differ by a few edge pixels: the bulb's antialiased edge is blended into purple on, into
@@ -42174,8 +42176,12 @@ void runOsPass(const QString &scratch)
 
     // (os9) THE ZOOM TO FRAMES TIP WITHOUT QT'S WARNING (the user's word): the tip's frame up with one line ("New Frame
     // (N)", the + beside it) is given the Zoom to Frames tip, which wraps - as in hand test I2-2, where Qt said twice
-    // "QWindowsWindow::setGeometry: Unable to set geometry 500x27 ... Resulting geometry: 500x42".
+    // "QWindowsWindow::setGeometry: Unable to set geometry 500x27 ... Resulting geometry: 500x42". (Changed with round
+    // LT, 2026-11-28: the magnifier's tip is now "Zoom to Frames" alone, one line - so the tip that wrapped is given
+    // here in its words, kept as the long tip the frame must still grow to once; it was magnifier->toolTip().)
     {
+        const QString wrappingTip = QStringLiteral("Zoom to Frames: each frame at least 32 px wide, the playhead in the "
+                                                   "middle. A double-click on the lane does the same.");
         SankoTipFrame frame;
         frame.setTipText(QStringLiteral("New Frame (N)"));
         frame.move(r.window.mapToGlobal(QPoint(40, 600)));
@@ -42185,7 +42191,7 @@ void runOsPass(const QString &scratch)
         int warnings = -1;
         {
             camtool::WarningCapture capture;
-            frame.setTipText(magnifier->toolTip());
+            frame.setTipText(wrappingTip);
             pump(250);
             warnings = capture.count(QStringLiteral("Unable to set geometry"));
         }
@@ -42743,17 +42749,21 @@ void runLrPass(const QString &scratch)
         pump(80);
     }
 
-    // (lr6) UP AND DOWN: the panel before and after, wherever the pointer is (answer 2).
+    // (lr6) UP AND DOWN: the panel before and after, wherever the pointer is (answer 2) - but the Layers list, where
+    // since round LT (the user's word after hand test LR, 2026-11-28) they select the layer above or below: the pen is
+    // over the panel strip here (over the Layers panel until then).
     {
-        penOver(list->viewport(), QPointF(list->viewport()->width() / 2.0, list->viewport()->height() / 2.0));
+        QLabel *stripThumb = thumbs(r.storyboard).value(0);
+        if (stripThumb)
+            penOver(stripThumb, QPointF(stripThumb->width() / 2.0, stripThumb->height() / 2.0));
         place(0, 0);
         QStringList panels;
-        bool taken = true;
+        bool taken = stripThumb != nullptr;
         for (int k : {Qt::Key_Down, Qt::Key_Down, Qt::Key_Up, Qt::Key_Up}) {
             taken = key(k) && taken;
             panels << QString::number(sel());
         }
-        check(QStringLiteral("(lr6) UP AND DOWN (answer 2): the pen over the Layers panel, Down takes the canvas to the next "
+        check(QStringLiteral("(lr6) UP AND DOWN (answer 2): the pen over the panel strip, Down takes the canvas to the next "
                              "panel - HARBOUR's 2, ISLAND's 1 - and Up back"),
               taken && panels.join(QLatin1Char(' ')) == QLatin1String("1 2 1 0"),
               QStringLiteral("taken %1; panels %2").arg(taken).arg(panels.join(QLatin1Char(' '))));
@@ -43096,6 +43106,402 @@ void runLrPass(const QString &scratch)
         ltButton->click();
     sankoSettings().remove(SankoOnionSkin::switchKey());
     sankoSettings().remove(SankoLightTable::switchKey());
+    r.storyboard->setPointerDeviceForTest(-1);
+    r.window.markCleanForTest();
+}
+
+// ---- (lt) UP / DOWN OVER THE LAYERS LIST, THE THREE SHORT TIPS (the user's word after hand test LR, 2026-11-28) -------
+// "While the pointer is over the Layers list, Up/Down select the layer above or below, as a click on it would. Everywhere
+// else Up/Down still change panels, and Left/Right and Shift+Left/Right still step frames, over the Layers list too." And
+// the LAYER row's Onion Skin bulb, the strip's Light Table bulb and the LAYER row's magnifier tip their names only.
+namespace lt {
+QString writeLtProject(const QString &dir)
+{
+    using lmui::kSize;
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/Layers.sankotv");
+    auto grey = [](const QString &name, const QPointF &c) {
+        Layer layer = makeRasterLayer(name, kSize);
+        QPainter p(&layer.image);
+        p.fillRect(QRectF(c - QPointF(15, 15), QSizeF(30, 30)), QColor(70, 70, 70));
+        p.end();
+        return layer;
+    };
+    auto folder = [](const QString &name, bool open) {
+        Layer f;
+        f.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        f.type = QStringLiteral("group");
+        f.name = name;
+        f.groupExpanded = open;
+        return f;
+    };
+    Scene *meadow = new Scene;
+    meadow->number = 1;
+    meadow->location = QStringLiteral("MEADOW");
+    // Panel 1: 0 Background, 1 Ground, 2 Rock and 3 Tree in 4 Trees (closed), 5 Bird, 6 Sun and 7 Moon in 8 Sky (open).
+    // Its rows, top to bottom: Sky, Moon, Sun, Bird, Trees, Ground, Background.
+    Panel *a = makeBlankPanel(kSize);
+    a->layers.removeLast();
+    const Layer trees = folder(QStringLiteral("Trees"), false);
+    const Layer sky = folder(QStringLiteral("Sky"), true);
+    Layer rock = grey(QStringLiteral("Rock"), {500, 420});
+    Layer tree = grey(QStringLiteral("Tree"), {560, 300});
+    Layer sun = grey(QStringLiteral("Sun"), {800, 120});
+    Layer moon = grey(QStringLiteral("Moon"), {900, 140});
+    rock.groupId = trees.id;
+    tree.groupId = trees.id;
+    sun.groupId = sky.id;
+    moon.groupId = sky.id;
+    a->layers << grey(QStringLiteral("Ground"), {700, 380}) << rock << tree << trees
+              << grey(QStringLiteral("Bird"), {300, 150}) << sun << moon << sky;
+    a->activeLayerIndex = 5;
+    a->setLength(24, 24);
+    meadow->panels.append(a);
+    Panel *b = makeBlankPanel(kSize);
+    b->setLength(24, 24);
+    meadow->panels.append(b);
+    // CROWD's one panel: twenty layers over the Background - more rows than the list shows at once.
+    Scene *crowd = new Scene;
+    crowd->number = 2;
+    crowd->location = QStringLiteral("CROWD");
+    Panel *c = makeBlankPanel(kSize);
+    c->layers.removeLast();
+    for (int i = 1; i <= 20; ++i)
+        c->layers.append(grey(QStringLiteral("L%1").arg(i), {100.0 + 40 * i, 300}));
+    c->activeLayerIndex = 20;
+    c->setLength(12, 24);
+    crowd->panels.append(c);
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Layers");
+    data.fps = 24;
+    data.canvasSize = kSize;
+    data.scenes = {meadow, crowd};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete meadow;
+    delete crowd;
+    return path;
+}
+} // namespace lt
+
+void runLtPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lt;
+    out() << "--- (lt) Up / Down over the Layers list; the three short tips ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/lt");
+    const QString project = writeLtProject(dir);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    const QVector<Scene *> scenes = r.ok ? r.window.scenesForTest() : QVector<Scene *>();
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    QScrollArea *list = r.ok ? r.storyboard->layerListForTest() : nullptr;
+    QPushButton *ltButton = r.ok ? r.storyboard->lightTableButtonForTest() : nullptr;
+    QAbstractButton *osButton = r.ok ? r.timeline->onionSkinButtonForTest() : nullptr;
+    QAbstractButton *magnifier = r.ok ? r.timeline->zoomToFramesButtonForTest() : nullptr;
+    QAbstractButton *plusButton = r.ok ? r.timeline->newDrawingButtonForTest() : nullptr;
+    QPushButton *dupButton = nullptr;
+    if (ltButton && ltButton->parentWidget())
+        for (QPushButton *b : ltButton->parentWidget()->findChildren<QPushButton *>())
+            if (b->toolTip().contains(QLatin1String("Duplicate Panel")))
+                dupButton = b;
+    if (!r.ok || scenes.size() != 2 || scenes.at(0)->panels.size() != 2 || scenes.at(1)->panels.size() != 1 || !brushBtn
+        || !list || !ltButton || !osButton || !magnifier || !plusButton || !dupButton) {
+        check(QStringLiteral("(lt) the fixture opens - MEADOW's two panels and CROWD's one - with the Brush, the Layers list, "
+                             "the two bulbs, the magnifier, the + and Duplicate Panel"),
+              false,
+              QStringLiteral("rig %1, scenes %2, list %3, bulbs %4 %5, magnifier %6, + %7, dup %8").arg(r.ok).arg(scenes.size())
+                  .arg(list != nullptr).arg(ltButton != nullptr).arg(osButton != nullptr).arg(magnifier != nullptr)
+                  .arg(plusButton != nullptr).arg(dupButton != nullptr));
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scenes.at(0)->panels.at(0);
+    Panel *pc = scenes.at(1)->panels.at(0);
+    r.storyboard->setPointerDeviceForTest(lr::kPen);
+    auto sel = [&] { return r.storyboard->selectedFlatIndexForTest(); };
+    auto key = [&](int k, Qt::KeyboardModifiers mods = Qt::NoModifier) { return keyClaimed(&r.window, k, mods); };
+    auto place = [&](int flat, int frame) {
+        if (sel() != flat) {
+            emit r.animatic->panelSelectRequested(flat);
+            pump(250);
+        }
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(120);
+    };
+    auto selection = [&] {
+        QStringList s;
+        for (int i : r.storyboard->layerSelectionForTest())
+            s << QString::number(i);
+        return s.join(QLatin1Char(','));
+    };
+    auto overList = [&] {
+        QWidget *view = list->viewport();
+        lr::penOver(view, QPointF(view->width() / 2.0, view->height() / 2.0));
+    };
+    const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+    auto overCanvas = [&] { lr::penOver(r.canvas, mid); };
+    // The row of a layer in the list (rows are remade on a panel change: the old ones go first).
+    auto rowOf = [&](int index) -> QWidget * {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        for (QWidget *w : list->viewport()->findChildren<QWidget *>(QStringLiteral("layerRow")))
+            if (w->isVisible() && w->property("layerIndex").toInt() == index)
+                return w;
+        return nullptr;
+    };
+    // A click on a row as the mouse gives it: pressed and released on the row itself, with the keys held.
+    auto pressRow = [&](int index, Qt::KeyboardModifiers mods) {
+        QWidget *row = rowOf(index);
+        if (!row)
+            return false;
+        const QPointF c(row->width() / 2.0, row->height() / 2.0);
+        QMouseEvent down(QEvent::MouseButtonPress, c, row->mapToGlobal(c.toPoint()), Qt::LeftButton, Qt::LeftButton, mods);
+        QCoreApplication::sendEvent(row, &down);
+        QMouseEvent up(QEvent::MouseButtonRelease, c, row->mapToGlobal(c.toPoint()), Qt::LeftButton, Qt::NoButton, mods);
+        QCoreApplication::sendEvent(row, &up);
+        pump(150);
+        return true;
+    };
+    auto labelColumn = [&] {
+        return r.surface->grab(QRect(0, 0, AnimaticTimeline::labelColumnWidthForTest(), r.surface->height())).toImage();
+    };
+
+    // Bird's run on MEADOW's panel 1: frames 0, 2 and 4 (N twice, a stroke on each), as in (lr).
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(5);
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600);
+    place(0, 0);
+    const bool n1 = key(Qt::Key_N);
+    stroke(r.canvas, 0);
+    r.canvas->flushPaintCommit();
+    pump(250);
+    const bool n2 = key(Qt::Key_N);
+    stroke(r.canvas, 3);
+    r.canvas->flushPaintCommit();
+    pump(250);
+    QStringList starts;
+    for (const LayerDrawing &d : pa->layers.at(5).drawings)
+        starts << QString::number(d.start);
+    const bool runOk = n1 && n2 && starts.join(QLatin1Char(',')) == QLatin1String("0,2,4");
+
+    // (lt1) UP AND DOWN OVER THE LAYERS LIST: the row above or below, the folders' rows as they are shown.
+    {
+        r.storyboard->layerRowClickedForTest(5);
+        place(0, 3);
+        overList();
+        QStringList seen;
+        bool taken = true;
+        const int keys[] = {Qt::Key_Up,   Qt::Key_Up,   Qt::Key_Up,   Qt::Key_Up,   Qt::Key_Down, Qt::Key_Down,
+                            Qt::Key_Down, Qt::Key_Down, Qt::Key_Down, Qt::Key_Down, Qt::Key_Down};
+        for (int k : keys) {
+            taken = key(k) && taken;
+            seen << QString::number(pa->activeLayerIndex);
+        }
+        const bool still = sel() == 0 && r.animatic->currentFlatIndex() == 0 && r.animatic->playheadFrameInPanel() == 3;
+        check(QStringLiteral("(lt1) UP AND DOWN OVER THE LAYERS LIST SELECT THE LAYER ABOVE OR BELOW: the pen over the list, "
+                             "from Bird Up goes to Sun, Moon and Sky (the open folder's rows, then the folder) and stays at "
+                             "the top; Down comes back through Moon, Sun and Bird to Trees (its closed folder's layers "
+                             "passed over), Ground and the Background, and stays at the bottom - one layer selected, the "
+                             "panel and the playhead where they were"),
+              runOk && taken && seen.join(QLatin1Char(' ')) == QLatin1String("6 7 8 8 7 6 5 4 1 0 0") && still
+                  && selection() == QLatin1String("0"),
+              QStringLiteral("the run %1; taken %2; the selected layer after each key %3; panel %4, frame %5; selection %6")
+                  .arg(runOk).arg(taken).arg(seen.join(QLatin1Char(' '))).arg(sel())
+                  .arg(r.animatic->playheadFrameInPanel()).arg(selection()));
+        place(0, 3); // (its own start: red run A left the film on another panel and this control failed with it)
+        r.storyboard->layerRowClickedForTest(5);
+        pump(80);
+        overCanvas();
+        const bool down = key(Qt::Key_Down);
+        const int s1 = sel();
+        const bool up = key(Qt::Key_Up);
+        const int s2 = sel();
+        check(QStringLiteral("(lt1) control: the same keys with the pen over the canvas are the panels' - Down the next "
+                             "panel, Up back - and panel 1's selected layer stays Bird"),
+              down && s1 == 1 && up && s2 == 0 && pa->activeLayerIndex == 5,
+              QStringLiteral("Down %1 -> panel %2; Up %3 -> panel %4; panel 1's layer %5").arg(down).arg(s1).arg(up).arg(s2)
+                  .arg(pa->activeLayerIndex));
+    }
+
+    // (lt2) AS A CLICK ON THE ROW WOULD: a multi-selection becomes the one layer, and the Layers list and the
+    // timeline's label column (the LAYER row names the selected layer) look as after a click on that row.
+    {
+        clickThumb(r, 0);
+        overList();
+        r.storyboard->layerRowClickedForTest(5);
+        r.storyboard->layerRowClickedForTest(7, Qt::ControlModifier);
+        pump(150);
+        const QString multi = selection();
+        const bool upTaken = key(Qt::Key_Up); // from Moon, the active one, to Sky
+        const QString afterKey = selection();
+        const int activeKey = pa->activeLayerIndex;
+        const QImage listKey = list->viewport()->grab().toImage();
+        const QImage columnKey = labelColumn();
+        r.storyboard->layerRowClickedForTest(5);
+        r.storyboard->layerRowClickedForTest(7, Qt::ControlModifier);
+        pump(150);
+        const QString multi2 = selection();
+        const bool pressed = pressRow(8, Qt::NoModifier);
+        const QString afterClick = selection();
+        const int activeClick = pa->activeLayerIndex;
+        const QImage listClick = list->viewport()->grab().toImage();
+        const QImage columnClick = labelColumn();
+        check(QStringLiteral("(lt2) AS A CLICK ON THE ROW WOULD: from Bird and Moon both selected (Moon the active one), Up "
+                             "selects Sky alone - the same selection and active layer as a click on Sky's row, and the "
+                             "Layers list and the timeline's label column the same, pixel for pixel"),
+              upTaken && multi == QLatin1String("5,7") && multi2 == multi && pressed && afterKey == QLatin1String("8")
+                  && afterClick == afterKey && activeKey == 8 && activeClick == 8 && !listKey.isNull()
+                  && listKey == listClick && columnKey == columnClick,
+              QStringLiteral("before %1 / %2; Up %3 -> %4 (active %5); the click %6 -> %7 (active %8); the list the same %9, "
+                             "the label column the same %10")
+                  .arg(multi, multi2).arg(upTaken).arg(afterKey).arg(activeKey).arg(pressed).arg(afterClick)
+                  .arg(activeClick).arg(listKey == listClick).arg(columnKey == columnClick));
+        r.storyboard->layerRowClickedForTest(5);
+        r.storyboard->layerRowClickedForTest(7, Qt::ControlModifier);
+        pump(150);
+        const bool ctrlPressed = pressRow(8, Qt::ControlModifier);
+        const QString kept = selection();
+        const QImage listKept = list->viewport()->grab().toImage();
+        check(QStringLiteral("(lt2) control: the pictures tell selections apart - a Ctrl+click on Sky keeps Bird and Moon "
+                             "too, and the list looks different from the plain click's"),
+              ctrlPressed && kept == QLatin1String("5,7,8") && listKept != listClick,
+              QStringLiteral("Ctrl+click %1 -> %2; the list different %3").arg(ctrlPressed).arg(kept).arg(listKept != listClick));
+        r.storyboard->layerRowClickedForTest(5);
+        pump(80);
+    }
+
+    // (lt3) LEFT / RIGHT AND SHIFT+LEFT / SHIFT+RIGHT OVER THE LIST STILL STEP FRAMES.
+    {
+        r.storyboard->layerRowClickedForTest(5);
+        pump(80);
+        auto steps = [&](QStringList &seen) {
+            place(0, 1);
+            bool t = key(Qt::Key_Right);
+            seen << QString::number(r.animatic->playheadFrameInPanel());
+            t = key(Qt::Key_Left) && t;
+            seen << QString::number(r.animatic->playheadFrameInPanel());
+            t = key(Qt::Key_Right, Qt::ShiftModifier) && t;
+            seen << QString::number(r.animatic->playheadFrameInPanel());
+            t = key(Qt::Key_Left, Qt::ShiftModifier) && t;
+            seen << QString::number(r.animatic->playheadFrameInPanel());
+            return t;
+        };
+        overList();
+        const int scroll0 = list->verticalScrollBar()->value();
+        QStringList onList;
+        const bool takenList = steps(onList);
+        const QString selList = selection();
+        const int scrollList = list->verticalScrollBar()->value();
+        check(QStringLiteral("(lt3) LEFT / RIGHT AND SHIFT+LEFT / SHIFT+RIGHT STILL STEP FRAMES OVER THE LIST: the pen over "
+                             "the list, Bird selected, from frame 1 Right goes to 2 and Left back to 1, Shift+Right to "
+                             "Bird's next frame (2) and Shift+Left to its first (0); Bird stays the one selected layer, the "
+                             "panel stays, and the list does not scroll"),
+              runOk && takenList && onList.join(QLatin1Char(' ')) == QLatin1String("2 1 2 0") && selList == QLatin1String("5")
+                  && pa->activeLayerIndex == 5 && sel() == 0 && scrollList == scroll0,
+              QStringLiteral("the run %1; taken %2; frames %3; selection %4; panel %5; scroll %6 -> %7").arg(runOk)
+                  .arg(takenList).arg(onList.join(QLatin1Char(' '))).arg(selList).arg(sel()).arg(scroll0).arg(scrollList));
+        overCanvas();
+        QStringList onCanvas;
+        const bool takenCanvas = steps(onCanvas);
+        // (First written as "the same frames as over the list": red run E, the list's keys doing nothing, failed this
+        // control with the check - it leaned on the check's own run. Now it says what the canvas gives.)
+        check(QStringLiteral("(lt3) control: the same keys with the pen over the canvas give those frames - 2, 1, 2, 0"),
+              takenCanvas && onCanvas.join(QLatin1Char(' ')) == QLatin1String("2 1 2 0"),
+              QStringLiteral("taken %1; frames %2").arg(takenCanvas).arg(onCanvas.join(QLatin1Char(' '))));
+    }
+
+    // (lt4) THE LIST FOLLOWS THE SELECTION: CROWD's twenty layers, from the top down, each new row shown whole.
+    {
+        // (The strip shows the selected scene's panels only: CROWD's is chosen as the timeline chooses it. My first run
+        // clicked a third thumbnail that MEADOW's strip does not have and stayed on panel 1.)
+        place(2, 0);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        r.storyboard->layerRowClickedForTest(20);
+        pump(120);
+        QScrollBar *bar = list->verticalScrollBar();
+        bar->setValue(0);
+        pump(80);
+        QWidget *view = list->viewport();
+        auto rowShown = [&](int index) { // 1 wholly in the list's view, 0 not wholly, -1 no row
+            QWidget *w = rowOf(index);
+            if (!w)
+                return -1;
+            return view->rect().contains(QRect(w->mapTo(view, QPoint(0, 0)), w->size())) ? 1 : 0;
+        };
+        const int topBefore = rowShown(20), bottomBefore = rowShown(0);
+        overList();
+        bool taken = true, shown = true;
+        QStringList seen;
+        for (int i = 0; i < 20; ++i) {
+            taken = key(Qt::Key_Down) && taken;
+            const int now = pc->activeLayerIndex;
+            const int whole = rowShown(now);
+            shown = shown && whole == 1;
+            seen << QStringLiteral("%1%2").arg(now).arg(whole == 1 ? QString() : QStringLiteral("(not whole: %1)").arg(whole));
+        }
+        check(QStringLiteral("(lt4) THE LIST FOLLOWS THE SELECTION: on CROWD's panel of twenty layers, from the top, each Down "
+                             "selects the next layer down and its row is shown whole in the list, down to the Background; "
+                             "the list has scrolled, the panel stayed"),
+              taken && shown && pc->activeLayerIndex == 0 && bar->value() > 0 && sel() == 2,
+              QStringLiteral("taken %1; the layers %2; scroll %3 of %4; panel %5").arg(taken)
+                  .arg(seen.join(QLatin1Char(' '))).arg(bar->value()).arg(bar->maximum()).arg(sel()));
+        check(QStringLiteral("(lt4) control: the list is taller than its view - at the top, before the keys, L20's row is "
+                             "shown whole and the Background's is not"),
+              topBefore == 1 && bottomBefore == 0,
+              QStringLiteral("L20 %1, the Background %2; the view %3 high, the scroll's end %4").arg(topBefore)
+                  .arg(bottomBefore).arg(view->height()).arg(bar->maximum()));
+    }
+
+    // (lt5) THE THREE TIPS, THEIR NAMES ONLY.
+    {
+        place(0, 0); // MEADOW's panel 1 (the strip shows CROWD's one panel now: my first run clicked that and found no lane)
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        r.storyboard->layerRowClickedForTest(5); // Bird: the frames lane, its magnifier and the bulb are there
+        pump(150);
+        // A widget's tip as Qt asks for it when it is due, and what the tip frame then shows (text, height).
+        auto shownTip = [&](QWidget *w) {
+            QToolTip::hideText();
+            pump(400); // Qt's own 0.3 s hide first: a tip asked for within it is the old one again
+            const QPoint local(w->width() / 2, w->height() / 2);
+            QHelpEvent help(QEvent::ToolTip, local, w->mapToGlobal(local));
+            QCoreApplication::sendEvent(w, &help);
+            pump(250);
+            SankoTipFrame *frame = sankoTipFrameForTest();
+            return std::make_pair(frame && frame->isVisible() ? frame->tipText() : QString(), frame ? frame->height() : -1);
+        };
+        const bool there = osButton->isVisible() && magnifier->isVisible() && plusButton->isVisible() && ltButton->isVisible();
+        const auto plus = shownTip(plusButton);
+        const auto onion = shownTip(osButton);
+        const auto light = shownTip(ltButton);
+        const auto zoom = shownTip(magnifier);
+        const auto dup = shownTip(dupButton);
+        QToolTip::hideText();
+        pump(400);
+        check(QStringLiteral("(lt5) THE THREE TIPS, THEIR NAMES ONLY: the Onion Skin bulb's tip is \"Onion Skin (O)\", the "
+                             "Light Table bulb's \"Light Table (Shift+L)\", the magnifier's \"Zoom to Frames\" - each shown "
+                             "so, on one line, as high as the + button's \"New Frame (N)\""),
+              there && osButton->toolTip() == QLatin1String("Onion Skin (O)")
+                  && ltButton->toolTip() == QLatin1String("Light Table (Shift+L)")
+                  && magnifier->toolTip() == QLatin1String("Zoom to Frames") && plus.first == QLatin1String("New Frame (N)")
+                  && onion.first == osButton->toolTip() && light.first == ltButton->toolTip()
+                  && zoom.first == magnifier->toolTip() && plus.second > 0 && onion.second == plus.second
+                  && light.second == plus.second && zoom.second == plus.second,
+              QStringLiteral("there %1; shown '%2' %3 px, '%4' %5 px, '%6' %7 px; the + '%8' %9 px").arg(there)
+                  .arg(onion.first).arg(onion.second).arg(light.first).arg(light.second).arg(zoom.first).arg(zoom.second)
+                  .arg(plus.first).arg(plus.second));
+        check(QStringLiteral("(lt5) control: the tips around them are as they were - Duplicate Panel's, shown the same way, "
+                             "still says what it does"),
+              dupButton->toolTip() == QLatin1String("<b>Duplicate Panel</b> | Copies the selected panel.")
+                  && dup.first.contains(QLatin1String("Copies the selected panel")),
+              QStringLiteral("its tip '%1', shown '%2'").arg(dupButton->toolTip(), dup.first));
+    }
+
     r.storyboard->setPointerDeviceForTest(-1);
     r.window.markCleanForTest();
 }
@@ -45765,6 +46171,14 @@ int main(int argc, char **argv)
               << Qt::endl;
         return g_failures;
     }
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("lt")) {
+        runLtPass(scratch); // Up / Down over the Layers list, the three short tips (the user's word after hand test LR)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("os")) {
         runOsPass(scratch); // OS-1: the Light Table and the Onion Skin, each its own switch (2026-11-27)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -46091,6 +46505,7 @@ int main(int argc, char **argv)
     runSlidersPass(scratch);      // the sliders round: Preferences' sliders, "frame", FRAMES (2026-11-27)
     runOsPass(scratch);           // OS-1: the Light Table for panels, the Onion Skin for frames (2026-11-27)
     runLrPass(scratch);           // the arrows; the bulbs in their neighbours' grey and line (2026-11-27)
+    runLtPass(scratch);           // Up / Down over the Layers list; the three short tips (2026-11-28)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

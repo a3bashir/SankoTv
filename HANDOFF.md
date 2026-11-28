@@ -1,5 +1,127 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-28 (15:1x): ROUND LT COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST LT - UP / DOWN OVER THE LAYERS LIST SELECT LAYERS, THE THREE SHORT TIPS; FIGMA FC-1 (757:757) APPROVED WITH THE USER'S EIGHT ANSWERS (BELOW) - TO BE BUILT IN TWO ROUNDS, FC-a (SELECTING, COPY / CUT / PASTE OF FRAMES, AND TWO FIXES) NOW, FC-b (CYCLES) AFTER FC-a IS HAND-TESTED AND COMMITTED
+THE USER'S WORD (pasted 2026-11-28 about 15:00, verbatim):
+"Hand test LT done: all steps looked right. Read every Dev Recorder session made after 12:58 on 28 November, oldest
+first. Confirm from system.txt that it ran the Nov 28 2026 12:58:25 build (git dc6763121+dirty) and that the title bar
+named "TEST COPY - small pirate, LT", then report pass, fail or "not tested" per step of handtest_LT.md.
+If it ran the right build and nothing failed:
+1. Commit and push LT with its HANDOFF notes, matching its hash list, git status clean.
+2. Figma FC-1 (757:757) is approved with my answers below. Record all eight answers in HANDOFF now. Build it in two
+rounds:
+   - Round FC-a, now: selecting, copy, cut and paste of frames, plus the two fixes below. Stop after it for my hand test.
+   - Round FC-b, later: cycles, after FC-a passes my hand test and is committed.
+My answers to FC-1:
+1. Paste: Ctrl+V inserts at the playhead and the frames after move later. Paste Frames Over is in the right-click menu
+only.
+2. Selecting:
+   - Click: selects a single frame.
+   - Shift+click: selects a continuous range of frames.
+   - Ctrl+click: selects or deselects individual frames.
+   - Click an empty timeline area: deselects all frames.
+   - Esc: clears the selection.
+   Frames picked with Ctrl+click are copied and pasted one after another, in their order. Make Cycle... needs one
+   continuous run, so it is greyed for scattered frames.
+3. Cut: the frame before holds over the cut frames, as Delete Frame does.
+4. Cycles: the repeats stay linked to the frames I drew; Make Repeats into Frames makes them separate.
+5. A cycle made for a number of times or frames: the frames after it move later, as a paste does.
+6. Copying part of a cycle pastes plain frames; a whole cycle copied with its repeats pastes as a cycle.
+7. Make Cycle... from the menu only, no key.
+8. Version 8 only for a project with a cycle: fine.
+The two fixes, in round FC-a:
+- Space over the bottom bar pressed the panel strip's focused "+" and added panels. Space must never press a focused
+button, anywhere. Keep Space's own uses (play and pause, and any others), and tell me in the report what Space does in
+each place.
+- The preview's frame note should name the layer of the panel being previewed, not the workspace panel's layer.
+For each round: checks with controls and red runs, none judged by the clock, quick check, full gate before stopping
+(every family green in both builds), a fresh TEST COPY, the exe stamp and a short hand-test list. Don't commit until my
+hand test passes. Mark Figma FC-1 BUILT only after round FC-b is committed.
+Don't use Figma or any other window while the quick check or the gate runs.
+If anything failed or the build is wrong, commit nothing and report.
+ALL DONE when finished, and send a notification."
+HAND TEST LT READ: one session, 20261128-144700 (518 s); system.txt Release, built Nov 28 2026 12:58:25, git
+dc6763121+dirty; the title bar "SANKO TV — TEST COPY - small pirate, LT" (screenshots). NO STEP FAILED: 0 PASS (the
+recorder first, then Open Project); 1 PASS (over the rows, Up at Bird nothing, Down x5 Bird - Layer 3 - Layer 6 - Layer
+4 - Layer 5 - Background, Up x6 back to Bird, the last at the top nothing; the playhead at frame 0 throughout); 2 PASS
+(Bird + Layer 3 by Ctrl+click, Down -> Layer 6 alone, the one under the last clicked; Layer 4 + Layer 5 by Shift+click,
+Up -> Layer 6 alone, the one above the last clicked; the exact "Ctrl+click then Up" was not pressed); 3 PASS (the Layers
+panel made two rows high; Down x8 / Up x6 / Down x8 / Up x8 - the selected row always in view, the extra Downs at the
+Background nothing); 4 PASS (over the list Right x5 frame 0 -> 5, Shift+Right x7 and Shift+Left x8 by Bird's frames,
+5 -> 18 -> 2; Bird stayed selected); 5 PASS (over the canvas and the timeline Up / Down changed panels; the strip not
+tried); 6 PASS ("Onion Skin (O)", "Zoom to Frames", "Light Table (Shift+L)" each one line; Delete Panel's tip with its
+description, as before). 0 warnings captured. Crops and the timeline: Documents\SankoTV-Design\batch-LT-2026-11-28\
+handtest_LT\.
+FC-1 ANSWERS RECORDED (the user's eight answers above are the approved design; where FC-1 757:757 differs, the answers
+win): (1) Ctrl+V inserts at the playhead, the frames after move later; Paste Frames Over in the right-click menu only.
+(2) click one frame; Shift+click a continuous range; Ctrl+click adds or removes one frame; a click on an empty timeline
+area deselects all frames; Esc clears the selection; scattered (Ctrl+click) frames copy and paste one after another in
+their order; Make Cycle... is greyed for scattered frames. (3) cut: the frame before holds over the cut frames, as Delete
+Frame. (4) repeats stay linked to the drawn frames; Make Repeats into Frames separates them. (5) a cycle for n times or n
+frames moves the frames after it later, as a paste. (6) part of a cycle copies as plain frames; a whole cycle with its
+repeats pastes as a cycle. (7) Make Cycle... from the menu only, no key. (8) file version 8 only for a project with a
+cycle.
+WHAT CHANGED (the main tree, uncommitted; 4 files, hash list app/build/_probe/split/sha_LT_gate.txt: StoryboardPage.h /
+.cpp, AnimaticTimeline.cpp, tests/ProjectLifecycleTest.cpp):
+1. UP / DOWN OVER THE LAYERS LIST: the Up / Down shortcuts ask StoryboardPage::layerListArrow(up) first. With the pointer
+(m_pointerGlobal, as the arrows' slider rule) inside the rows' scroll area (m_layerListScroll, objectName "layerList"),
+it selects the row above or below the selected layer's - the shown row with the least index over it, or the greatest
+under it (the rows run from the frontmost layer; a closed folder's layers have no row and are passed over) - through
+layerRowClicked(index, no modifier), as a click on the row: one layer selected, the active one; then
+ensureWidgetVisible on its row. At the top or the bottom row the key stays in the list and nothing moves. Anywhere else
+Up / Down are the panels' (goPrev / goNext), and Left / Right, Shift+Left / Shift+Right step frames over the list too
+(unchanged). NOTHING IN THE LAYERS LIST USED UP / DOWN BEFORE: no Key_Up / Key_Down in its code; only Qt's own scrolling
+of a scroll area that has the keyboard, which the arrow shortcuts take first since round LR (in hand test LR, Shift+Up /
+Shift+Down - not shortcuts - reached the list's QScrollArea and did nothing visible).
+2. THE TIPS, THEIR NAMES ONLY: the LAYER row's Onion Skin bulb "Onion Skin (O)", the strip's Light Table bulb "Light
+Table (Shift+L)", the LAYER row's magnifier "Zoom to Frames" (they said what each shows, the right-click, the other's
+key; the magnifier's wrapped to two lines).
+Test hooks: layerListForTest(), layerRowClickedForTest(index, mods), layerSelectionForTest().
+CHECKS: the new slice lt (runLtPass, fixture Layers.sankotv - MEADOW panel 1: Background, Ground, Rock and Tree in the
+closed folder Trees, Bird, Sun and Moon in the open folder Sky; MEADOW panel 2; CROWD's one panel of 20 layers), 10
+checks: (lt1) Up / Down over the list, folders open and closed, the ends + control (the canvas: panels); (lt2) as a
+click on the row would - a multi-selection collapses, the list and the timeline's label column pixel-equal to a real
+click's + control (a Ctrl+click looks different); (lt3) Left / Right, Shift+Left / Shift+Right over the list step frames,
+the selection and scroll unchanged + control (the canvas gives 2 1 2 0); (lt4) the list follows the selection on 20
+layers (the rig's list is 54 px high) + control (the list taller than its view); (lt5) the three tips exactly, shown one
+line as high as "New Frame (N)" + control (Duplicate Panel's tip as it was). OLDER CHECKS CHANGED (Documents\
+SankoTV-Design\batch-LT-2026-11-28\changed_checks_LT_diff.txt, verbatim): (sl5) the Zoom to Frames tip is "Zoom to
+Frames"; (os5) x2 the bulbs' tips equal their names; (os9) the tip that wraps is given in the old tip's words (the
+magnifier's no longer wraps); (lr6) the pen over the panel strip (over the Layers list Up / Down now select layers).
+RED RUNS (batch-LT-2026-11-28\red_runs\): A Up / Down the panels' everywhere - 3 of 10 ((lt1), (lt2), (lt4)); B index
++-1, no click (into the closed folder, the multi-selection kept, no scroll) - 3 of 10; C no scroll - 1 ((lt4)); D the old
+tips - 1 ((lt5)); E Left / Right / Shift+ doing nothing over the list - 1 ((lt3)); D+F (F: Up / Down select layers
+wherever the pointer is) on sl, os, lr, lt - (sl5), (os5) x2, (lr6), (lr3) control, (lr4) control, (lt1) control, (lt5):
+the changed older checks' positive control. Markers out, the sources at their pre-red hashes, lt 10 / 10.
+MY MISTAKES: (1) (lt4) and (lt5) first clicked a strip thumbnail by index - the strip shows the selected scene's panels
+only (fixed: chosen as the timeline chooses); (2) the (lt1) and (lt3) controls first leaned on their checks' own runs
+(red runs A and E failed them too) - each now has its own start or its own expected frames.
+QUICK CHECK (Release, 12:33-12:56, nothing else running, Figma closed before it): Camera 354 / 354, Lifecycle 2046 /
+2046 (LR's 2036 + 10). THE TEST COPY: "TEST COPY - small pirate, LT" (C:\SankoTV-TestCopies; 117 files, version 7, Bird
+24 frames on 2s, named 104 missing 0; the original's 94 files hashed before and after, unchanged). HAND TEST LT:
+Documents\SankoTV-Design\handtest_LT.md.
+FULL GATE LT (12:56-14:00, 3851 s, mode normal; log app/build/_probe/split/fullgate_LT.log, copied to Documents\
+SankoTV-Design\batch-LT-2026-11-28): DEBUG every family green - Lifecycle 2046, Camera 354, Brush Library 187, Size Lock
+170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. RELEASE every family green but
+Lifecycle 2037 / 2046: (rn4), (rn5), (rn7), (kc3), (kc5), (km3) control, (km1), (km2), (kd1). Read, not relaxed: the
+run's own TESTWINDOW lines say the test window LOST THE FOREGROUND to "Correct SankoTV Prompt - Google Chrome" 9 times
+(220.2-265.4 s, the (rn) / (k2) stretch, and 514-527 s), "not by the test"; the (rn) checks type into
+QApplication::focusWidget() (none while another program is in front: the names stayed 'Ink One' / 'Ink Three'), the
+(k2) presses and menus need the active window. None of the nine touches round LT: layerListArrow runs only from the Up /
+Down shortcuts, nothing else looks up the "layerList" name, the tips are on other buttons; the same sources passed all
+nine in Debug. RE-RUN of Release Lifecycle alone, the same exe (14:02-14:23, fullgate_LT_rerunRelease, copied to
+batch-LT-2026-11-28\gate_LT_rerunRelease): RESULT PASS (checks=2046 failures=0), the foreground lost once - (lb)'s own
+witness window. Markers: 0 in the four files; the sources at sha_LT_gate.txt's hashes after the gate.
+EXE: app/build/Release/SankoTV.exe built Nov 28 2026 12:58:25 (file 12:58:44, 30436864 bytes), git dc6763121+dirty,
+sha256 81c410653c47123b... (batch-LT-2026-11-28\sha_LT_exes.txt).
+FIGMA FC-1 (757:757, area 002 below OS-1; the area's rectangle 571:698 grown to 31855; screenshot Documents\
+SankoTV-Design\figma-FC1\FC-1_full.png): copy / cut / paste of frames on the FRAMES lane (tap, Shift+tap for a run;
+Ctrl+C / X / V while the lane was the last thing pressed, as a key's; Paste Frames at the Playhead inserts - the frames
+after move later - Paste Frames Over in the menu; cut = the frame before holds over, as Delete Frame; refusals in
+amber), cycles (Make Cycle... popover: to the panel's end / n times / for n frames; repeats as lighter blocks showing
+their frame's number, dashed bands, a tag, an end handle; Edit Cycle..., End Cycle at the Playhead, Make Repeats into
+Frames, Remove Cycle; drawing on a repeat draws on its frame), the keys, menus and notes, undo / saving (version 8 only
+with a cycle) / Duplicate Panel, and 8 questions. WAITING FOR APPROVAL; NOTHING OF IT BUILT.
+
 ## 2026-11-28 (12:0x): ROUND LR COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST LR - THE ARROW KEYS (A FRAME, A LAYER'S FRAME, A PANEL) AND THE TWO BULBS IN THEIR NEIGHBOURS' GREY AND LINE; NEXT: UP / DOWN SELECT LAYERS OVER THE LAYERS LIST AND THREE SHORT TIPS (ROUND LT), AND A FIGMA PROPOSAL FOR COPYING FRAMES AND CYCLES; THE ROADMAP BELOW
 THE USER'S WORD FOR THE ROUND: the OS-1 commit section below (pasted 2026-11-27 about 16:38), its point 2 (A and B).
 THE USER'S WORD FOR THIS COMMIT (pasted 2026-11-28 about 11:50): "Hand test LR done: all steps looked right. Read every

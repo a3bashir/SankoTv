@@ -10076,8 +10076,16 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     arrowKey(QKeySequence(Qt::Key_Right), true, [this] { stepFrame(1); });
     arrowKey(QKeySequence(Qt::SHIFT | Qt::Key_Left), true, [this] { stepLayerFrame(-1); });
     arrowKey(QKeySequence(Qt::SHIFT | Qt::Key_Right), true, [this] { stepLayerFrame(1); });
-    arrowKey(QKeySequence(Qt::Key_Up), false, [this] { if (m_animatic) m_animatic->goPrev(); });
-    arrowKey(QKeySequence(Qt::Key_Down), false, [this] { if (m_animatic) m_animatic->goNext(); });
+    // Up / Down with the pointer over the Layers list select the layer above or below there
+    // (layerListArrow, the user's word after hand test LR); anywhere else they are the panels.
+    arrowKey(QKeySequence(Qt::Key_Up), false, [this] {
+        if (!layerListArrow(true) && m_animatic)
+            m_animatic->goPrev();
+    });
+    arrowKey(QKeySequence(Qt::Key_Down), false, [this] {
+        if (!layerListArrow(false) && m_animatic)
+            m_animatic->goNext();
+    });
 
     // ...and the canvas's keys go to the canvas while the pointer is over IT
     // (routeCanvasKey, below).
@@ -13448,11 +13456,11 @@ QWidget *StoryboardPage::createPanelControls()
     // and their Figma 749:892): the purple border and the purple background (the accent at
     // 28 %), as the LAYER row's Onion Skin button; nothing added to the icon - in Duplicate's
     // and Delete's grey and line since the user's word after hand test OS1 (stripIconPixmap).
+    // Its tip is its name and its key, nothing else (the user's word after hand test LR,
+    // 2026-11-28; until then it also said what it shows, its right-click and the Onion Skin's).
     m_lightTableButton = ctrlButton(
         SankoLightTable::kIconPath, QSize(14, 21), QStringLiteral("#111111"),
-        QStringLiteral("<b>Light Table (Shift+L)</b> | The panels before and after this one, under your "
-                       "drawing: the previous panel as it ends, in red; the next as it begins, in green. "
-                       "Right-click: its Preferences. A layer's frames are the Onion Skin's (O)."),
+        QStringLiteral("Light Table (Shift+L)"),
         SankoTheme::themed("QPushButton:hover { border-color: #3a3a3a; }"
                        "QPushButton:checked { border: 1.5px solid %ACCENT%;"
                        " background-color: rgba(124, 110, 246, 71); }"));
@@ -13751,6 +13759,8 @@ QWidget *StoryboardPage::createLayerPanel()
     // Layer rows (top = frontmost), scrollable; the host accepts row drags
     // and paints the accent insertion line at the drop gap.
     QScrollArea *scroll = new QScrollArea;
+    scroll->setObjectName(QStringLiteral("layerList"));
+    m_layerListScroll = scroll; // Up / Down over it select layers (layerListArrow)
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -16460,6 +16470,53 @@ bool StoryboardPage::arrowKeyStaysWith(QObject *receiver, QKeyEvent *event)
         return false; // the pointer is elsewhere: the arrows are the frames'
     event->accept(); // the widget's own: no shortcut takes the key
     return true;
+}
+
+// UP / DOWN OVER THE LAYERS LIST (the user's word after hand test LR, 2026-11-28): "While the
+// pointer is over the Layers list, Up/Down select the layer above or below, as a click on it
+// would. Everywhere else Up/Down still change panels, and Left/Right and Shift+Left/Right still
+// step frames, over the Layers list too." Nothing in the list used Up / Down before: only Qt's
+// own scrolling of a scroll area that has the keyboard, which the arrow shortcuts take first
+// since round LR. The rows run top to bottom from the frontmost layer (rebuildLayerPanel: the
+// highest index first), and a layer inside a closed folder has no row - so the row above is the
+// shown row with the least index over the selected layer's, the row below the one with the
+// greatest index under it. At the top or the bottom row the key stays in the list and nothing
+// moves. One a press, as Up / Down are.
+bool StoryboardPage::layerListArrow(bool up)
+{
+    if (!m_layerListScroll || !m_layerListScroll->isVisible() || !m_pointerKnown)
+        return false;
+    const QPoint at = m_layerListScroll->mapFromGlobal(m_pointerGlobal).toPoint();
+    if (!m_layerListScroll->rect().contains(at))
+        return false; // the pointer is elsewhere: the panels'
+    Panel *panel = currentPanel();
+    if (!panel || panel->layers.isEmpty())
+        return true;
+    const int active = panel->activeLayerIndex;
+    int target = -1;
+    for (QWidget *row : std::as_const(m_layerRows)) {
+        const int i = row->property("layerIndex").toInt();
+        if (i < 0 || i >= panel->layers.size())
+            continue;
+        if (up ? (i > active && (target < 0 || i < target)) : (i < active && (target < 0 || i > target)))
+            target = i;
+    }
+    if (target < 0)
+        return true; // the top row or the bottom one: nothing above or below it
+    layerRowClicked(target, Qt::NoModifier); // as a click on the row would
+    for (QWidget *row : std::as_const(m_layerRows)) // (read again: a click may rebuild the rows)
+        if (row->property("layerIndex").toInt() == target) {
+            m_layerListScroll->ensureWidgetVisible(row, 0, 0);
+            break;
+        }
+    return true;
+}
+
+QList<int> StoryboardPage::layerSelectionForTest() const
+{
+    QList<int> selection = m_layerSelection.values();
+    std::sort(selection.begin(), selection.end());
+    return selection;
 }
 
 bool StoryboardPage::arrowKeysArmedForTest() const

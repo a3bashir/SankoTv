@@ -334,6 +334,9 @@ public:
     void duplicateSelectedPanelForTest() { duplicatePanel(); }
     // Batch I-1's checks: a Layers row pressed as the artist presses it; the footer's Merge.
     void layerRowClickedForTest(int index) { layerRowClicked(index, Qt::NoModifier); }
+    // Round LT's checks: a row pressed with Ctrl or Shift held; the selected rows' layers, ascending.
+    void layerRowClickedForTest(int index, Qt::KeyboardModifiers mods) { layerRowClicked(index, mods); }
+    QList<int> layerSelectionForTest() const;
     void layerMergeSelectedForTest() { layerMergeSelected(); }
     QVariantMap stageBarStateForTest() const;
     // The project's margin (for new panels) moved, and no panel with it.
@@ -682,6 +685,12 @@ public:
     // over it (CanvasKeyRouter, at the key's ShortcutOverride): true when it does.
     bool arrowKeyStaysWith(QObject *receiver, QKeyEvent *event);
     bool arrowKeysArmedForTest() const;
+    // UP / DOWN OVER THE LAYERS LIST (the user's word after hand test LR, 2026-11-28): with the
+    // pointer over the list, the layer whose row is above (up) or below the selected layer's,
+    // selected as a click on that row would; true when the pointer is over the list (the key
+    // is the list's, even at its top or bottom row), false when Up / Down are the panels'.
+    bool layerListArrow(bool up);
+    QScrollArea *layerListForTest() const { return m_layerListScroll; }
     void onDrawingsLaneMenu(int layerIndex, int drawingIndex, const QPoint &globalPos);
     int selectedDrawingForTest() const { return m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1; }
     // The drawing under the playhead onto every layer with a run of the panel on the canvas:
@@ -1453,6 +1462,7 @@ private:
     int m_layerAnchor = -1;
     Panel *m_layerSelPanel = nullptr;   // selection resets on panel switches
     QWidget *m_layerListHost = nullptr; // drop target for row reordering
+    QScrollArea *m_layerListScroll = nullptr; // the rows' scroll area: Up / Down over it (layerListArrow)
 
     // Right column.
     QComboBox *m_shotType = nullptr;

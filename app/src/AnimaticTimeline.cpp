@@ -797,8 +797,10 @@ void AnimaticTimeline::buildTrackControls()
     m_zoomFramesButton->setCursor(Qt::PointingHandCursor);
     m_zoomFramesButton->setFocusPolicy(Qt::NoFocus);
     m_zoomFramesButton->setFixedSize(20, 20);
-    m_zoomFramesButton->setToolTip(QStringLiteral("Zoom to Frames: each frame at least 32 px wide, the playhead "
-                                                  "in the middle. A double-click on the lane does the same."));
+    // Its name only (the user's word after hand test LR, 2026-11-28: "Shorter tooltips, with no
+    // other description"; it was "Zoom to Frames: each frame at least 32 px wide, the playhead in
+    // the middle. A double-click on the lane does the same.").
+    m_zoomFramesButton->setToolTip(QStringLiteral("Zoom to Frames"));
     {
         const qreal dpr = devicePixelRatioF();
         QPixmap glyph(QSize(16, 16) * dpr);
@@ -820,18 +822,16 @@ void AnimaticTimeline::buildTrackControls()
     connect(m_zoomFramesButton, &QToolButton::clicked, this, [this] { zoomToFrames(); });
     m_zoomFramesButton->hide();
     // THE ONION SKIN'S BUTTON (OS-1; see OnionSkinButton above): beside Zoom to Frames, there
-    // while the lane is. Its tip says its name, its key and what it shows, and that the panels
-    // are the Light Table's (Figma 745:757 section 1).
+    // while the lane is. Its tip is its name and its key, nothing else (the user's word after
+    // hand test LR, 2026-11-28; until then it also said what it shows, its right-click, and that
+    // the panels are the Light Table's - Figma 745:757 section 1).
     m_onionButton = new OnionSkinButton(m_canvas);
     m_onionButton->setObjectName(QStringLiteral("layerOnionSkin"));
     m_onionButton->setCheckable(true);
     m_onionButton->setCursor(Qt::PointingHandCursor);
     m_onionButton->setFocusPolicy(Qt::NoFocus);
     m_onionButton->setFixedSize(20, 20);
-    m_onionButton->setToolTip(QStringLiteral(
-        "<b>Onion Skin (O)</b> | The frames before and after this one on the selected layer: before in blue, "
-        "after in orange (Preferences > Onion Skin). Right-click: its Preferences. Panels are the Light "
-        "Table's (Shift+L)."));
+    m_onionButton->setToolTip(QStringLiteral("Onion Skin (O)"));
     m_onionButton->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_onionButton, &QToolButton::clicked, this, [this](bool on) { emit onionSkinButtonClicked(on); });
     connect(m_onionButton, &QWidget::customContextMenuRequested, this, [this] { emit onionSkinPageRequested(); });
