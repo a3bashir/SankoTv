@@ -160,6 +160,10 @@ public:
     void goLast();
     void goPrev();
     void goNext();
+    // THE ARROWS' FRAME STEP (the user's answers after hand test OS1, 2026-11-27): the panel
+    // (flat index) and its frame `delta` frames from the playhead, across the panels as the
+    // film runs them; false at the film's first or last frame (nowhere to go).
+    bool frameFromPlayhead(int delta, int *flatIndex, int *frameInPanel) const;
     bool isPlaying() const { return m_playing; }
 
     // The scratch audio track (used by project save/load). audioPath() is

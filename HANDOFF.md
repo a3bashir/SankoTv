@@ -1,5 +1,108 @@
 # SankoTV — Session Handoff Brief
 
+## 2026-11-28 (12:0x): ROUND LR COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST LR - THE ARROW KEYS (A FRAME, A LAYER'S FRAME, A PANEL) AND THE TWO BULBS IN THEIR NEIGHBOURS' GREY AND LINE; NEXT: UP / DOWN SELECT LAYERS OVER THE LAYERS LIST AND THREE SHORT TIPS (ROUND LT), AND A FIGMA PROPOSAL FOR COPYING FRAMES AND CYCLES; THE ROADMAP BELOW
+THE USER'S WORD FOR THE ROUND: the OS-1 commit section below (pasted 2026-11-27 about 16:38), its point 2 (A and B).
+THE USER'S WORD FOR THIS COMMIT (pasted 2026-11-28 about 11:50): "Hand test LR done: all steps looked right. Read every
+Dev Recorder session made after 17:54 on 27 November, oldest first (two if the restart in step 13 was done). Confirm
+from system.txt that it ran the Nov 27 2026 17:54:10 build (git 9eadf310d+dirty) and that the title bar named "TEST COPY
+- small pirate, LR", then report pass, fail or "not tested" per step of handtest_LR.md, and whether Qt's tooltip warning
+appears when the magnifier's tip opens. If it ran the right build and nothing failed: 1. Commit and push LR with its
+HANDOFF notes, matching its hash list, git status clean. 2. Then a small round. Build: - While the pointer is over the
+Layers list, Up/Down select the layer above or below, as a click on it would. Everywhere else Up/Down still change
+panels, and Left/Right and Shift+Left/Right still step frames, over the Layers list too. Tell me if anything in the
+Layers list already uses Up/Down. - Shorter tooltips, with no other description: - the LAYER row's Onion Skin bulb:
+"Onion Skin (O)" - the panel strip's Light Table bulb: "Light Table (Shift+L)" - the LAYER row's magnifier: "Zoom to
+Frames" Checks with controls and red runs, none judged by the clock, quick check, full gate before stopping (every
+family green in both builds), a fresh TEST COPY, the exe stamp and a short hand-test list. Don't commit until my hand
+test passes. 3. A proposal first, before building, for copying and pasting frames, and for cycles. Propose in a Figma
+frame, in the area labelled "Claude Code please Start new design here 002", using SankoTV's existing UI: - copy, cut and
+paste of one or several frames on the FRAMES lane: within a layer, to another layer, and to another panel or scene; how
+several frames are selected; where the paste lands and what happens to the frames after it; consistent with how layer
+keys are copied on the LAYER row; - cycles: repeating a run of frames (a walk or a flap, for example) to the panel's end
+or for a chosen length; how a cycle looks on the FRAMES lane; how it is edited or ended; - the keys, the right-click menu
+and the bar's notes; - how undo, saving and Duplicate Panel treat them. Screenshot it and stop for my approval before
+building any of point 3. The roadmap order from now on. Record it in HANDOFF and your notes: [below] Don't use Figma or
+any other window while the quick check or the gate runs: do point 3's Figma work before the quick check starts or after
+the gate ends. If anything failed or the build is wrong, commit nothing and report. ALL DONE when finished, and send a
+notification."
+THE ROADMAP (the user's order from 2026-11-28 on): 1. Copy / paste of frames and cycles - build after the user approves
+the Figma proposal. 2. Camera Phase 3, 3D assets in the camera - its own proposal before building. 3. I-3 Screen layers
+- the last part of batch I, starting with a Figma proposal. 4. Small fixes together: the Dev Recorder's lone-Alt logging
+and the memory measurement. 5. Before selling: licences, code signing (item 15) and the rest of the pre-release list,
+once features are done.
+HAND TEST LR (read 2026-11-28 about 12:00; report, crops and the arrow runs in Documents\SankoTV-Design\
+batch-LR-2026-11-27\handtest_LR\): TWO sessions - 20261128-110617 (11:06:17, 2013.9 s, the list) and 20261128-114000
+(11:40:00, 8.1 s, the restart of step 13); both Release, built Nov 27 2026 17:54:10, git 9eadf310d+dirty; the title bar
+"SANKO TV — TEST COPY - small pirate, LR". NO STEP FAILED: 0, 1, 2, 3, 4 PASS (every one of 1700-odd Left / Right
+presses one frame, held runs to 279, the edge notes "OCEAN · panel 2 · frame 1" / "... panel 1 · frame 83"); 5 PASS
+(Right / Left while playing paused and stepped in the preview) - but Space at 1268 s, the pointer on the bottom bar and
+no film up, went to the focused strip "+" and added blank panels (8 undone): Space's pointer rule is older than LR; 6
+PASS; 7 Shift+Right PASS, Shift+Left stayed in panel 2 BY THE RULE (panel 2's selected layer was Layer 11, given a
+second frame by the user at 2:58, at its first frame: "Layer 11's first frame: nothing before it") - the list's "back"
+was my mistake; 8 PASS, Home / End NOT TESTED; 9 PASS as far as the recording shows (the recorder never logs keys typed
+in a field; no shortcut, no playhead move); 10 PASS (over the volume Up / Down 24 -> 80 -> 20; Right on the canvas one
+frame, volume kept); 11 PASS (the three long tips); 12 PASS (Onion Skin and Light Table pages); 13 PASS (the Light Table
+on after the restart). QT'S WARNING: none captured in either session; the magnifier's tip opened four times (500 x 42).
+SEEN, NOT CHANGED: Space on the bottom bar presses the focused button; with the preview on another panel the bar's frame
+note names the workspace panel's layer (DrawingCanvas::runNoteText).
+WHAT CHANGED (the main tree, uncommitted; 7 files, hash list app/build/_probe/split/sha_LR_gate.txt: AnimaticPage.h /
+.cpp, StoryboardPage.h / .cpp, AnimaticTimeline.cpp, SankoLightTable.h (LF), tests/ProjectLifecycleTest.cpp):
+1. THE ARROWS (A): six QShortcuts of StoryboardPage (m_arrowKeys, WindowShortcut). Left / Right -> stepFrame(-1 / +1),
+held they repeat; Shift+Left / Shift+Right -> stepLayerFrame, held they repeat; Up / Down -> AnimaticPage::goPrev /
+goNext, one a press (what Left / Right did). Left / Right are no longer among the timeline's pointer-gated keys
+(m_timelineKeys); Home, End, Ctrl+Left / Ctrl+Right unchanged. Armed wherever the pointer is; disarmed while
+typingInTextField() (updateTimelineKeys - a field does not claim Up / Down, so they would leak). stepFrame: a playing
+film pauses first (togglePlay); AnimaticPage::frameFromPlayhead(delta) walks across panels, false at the film's first
+or last frame; in the workspace a new panel is selected (selectFlatPanel) and the canvas shows the frame; with the film
+up the step stays in the preview; over a panel's edge the bar says in grey "OCEAN  ·  panel 2  ·  frame 1" (the scene's
+location, the panel's number in its scene). stepLayerFrame: the selected layer's frame block before / after the
+playhead's (goToDrawing); a layer with one frame, a folder, no layer, or the playhead paused in another panel than the
+selected one: goPrev / goNext; at the run's ends it stays and says in grey "Bird's first frame: nothing before it" /
+"Bird's last frame: nothing after it".
+2. WHO KEEPS THE ARROWS: CanvasKeyRouter, at the key's ShortcutOverride, asks arrowKeyStaysWith - a slider
+(QAbstractSlider, SankoSlider: the sound's volume, the Stroke size) or a drop-down list (QComboBox, QAbstractItemView:
+Shot Info's shot type / camera / lens) that has the keyboard keeps its arrows while the pointer is over it
+(m_pointerGlobal, from notePointerAt: the test's pen or the real pointer). Text and number fields keep them (the
+shortcuts disarmed). Menus, the Camera popover and dialogs are other windows (their own keys). The floating toolbars'
+sliders never take the keyboard (WindowDoesNotAcceptFocus). NOT KEPT: scroll areas (the Layers list, Scenes, the panel
+strip, the Brush Library) - Qt's default stepped them with the keyboard after a click in them; the Layers list has no
+arrow keys of its own in SankoTV's code. The Dashboard's Recent Projects keeps its arrows (not the workspace).
+3. THE BULBS (B): SankoLightTable::bulbSvg(colour, line) - the file's mask (the outline, the user's 749:892 shape) and
+inside it ONE masked path `line` units thick; whiteIconSvg is gone. LAYER row (OnionSkinButton): #a4a7ae
+(SankoTimelineTheme::kTrackControl, the Eye's and the Speaker's tint), kLayerRowLine 1.71 units = 1.18 px; read at 32x
+by the line measure: the bulb 1.172, the Eye 1.133, the Speaker 1.172. Strip (stripIconPixmap): kStripColor #cccccc
+(duplicate.svg's and delete.svg's own), kStripLine 1.386 = 1.32 px, its proportions kept (KeepAspectRatio; it was
+stretched to its 14 x 20 box); read: the bulb 1.297, Duplicate 1.359, Delete 1.297. Picture: Documents\SankoTV-Design\
+batch-LR-2026-11-27\looks\LR_bulbs_beside_neighbours_x4.png.
+CHECKS: the new slice lr (runLrPass, its fixture Arrows.sankotv - HARBOUR's two panels of 24 frames, ISLAND's one of 12,
+Bird's run at 0, 2, 4), 22 checks: (lr1) Left / Right at the canvas, the ruler, the Layers panel, the strip + control;
+(lr2) a panel's edge and the note, across scenes + control (the film's ends); (lr3) held keys' repeats + control (Up /
+Down a press); (lr4) a playing film pauses, then steps, in the preview + control (Down plays on); (lr5) Shift+arrows +
+control (a one-frame layer: panels); (lr6) Up / Down + control (Home / End unchanged); (lr7) a text field + control;
+(lr8) the volume under the pointer + control; (bu1) the LAYER bulb's paint, colour and weight + control; (bu2) the
+strip's + control (OS-1's stretch); (bu3) the shape + control. Older checks changed (batch-LR-2026-11-27\
+changed_checks_LR_diff.txt, the hunks verbatim): (ag) Down / Up for Right / Left; (os5) "grey" for "white", the LAYER
+bulb's ink counted by coverage over its own ground, the strip's threshold 170 for 235.
+RED RUNS (batch-LR-2026-11-27\red_runs\README.md): A the old arrows - 12 of 22 failed; B no slider override, armed while
+typing, the preview left, no note, a one-frame layer still - 7 of 22; C the OS-1 bulbs - 2 of 22. Markers out, the 7
+files at their pre-red hashes, the slice green 22 / 22.
+MY MISTAKES: (1) (lr3) control expected a non-repeating shortcut's repeats to be taken by nothing - Qt takes them; (2)
+(lr8) the fixture's volume was 100; (3) (bu1) I aimed at the Eye alone and measured at 16x (too coarse), and tried to
+read the colour from a 4x paint (QtSvg's mask is drawn at the painter's own scale); (4) (bu3) a guessed 0.5 % - the two
+masked strokes drawing the base's top edge twice was a real fault (fixed); (5) (os5) a fixed brightness - first
+loosened to "within 4", then put back to equal once the measure counted coverage; (6) my 4x picture script used $w and
+$W (one variable in PowerShell); (7) my first picture of the bulbs was empty: the os slice had cleared the scratch.
+QUICK CHECK (Release, 17:26-17:48, nothing else running): Camera 354 / 354, Lifecycle 2036 / 2036 (OS1's 2014 + 22).
+THE TEST COPY: "TEST COPY - small pirate, LR" (C:\SankoTV-TestCopies; 117 files, version 7, Bird 24 frames on 2s,
+named 104 missing 0; the original's 94 files hashed before and after, unchanged). HAND TEST LR:
+Documents\SankoTV-Design\handtest_LR.md.
+FULL GATE LR (17:52-18:55, 3783 s, mode normal, nothing else running; log app/build/_probe/split/fullgate_LR.log, copied
+to Documents\SankoTV-Design\batch-LR-2026-11-27\): every family green in both builds - Lifecycle 2036 / 2036, Camera 354,
+BrushLibrary 187, CanvasSizeLock 170, CanvasEdgeLock 74, DevRecorder 46, QuickShapeGeometryLock 19, PaintPixelLock 13,
+CanvasBrushLock 3; FAMILIES FAILING 0 and 0. The 7 files match sha_LR_gate.txt after the gate. THE EXE: built Nov 27
+2026 17:54:10, git 9eadf310d+dirty (Release SankoTV.exe 17:54:31, sha256 85a53fbe...; Debug 17:56:44, 7294e24b...;
+batch-LR-2026-11-27\sha_LR_exes.txt).
+
 ## 2026-11-27 (16:5x): OS-1 COMMITTED (THIS COMMIT) ON THE USER'S WORD AFTER HAND TEST OS1 - THE LIGHT TABLE FOR PANELS, THE ONION SKIN FOR FRAMES, EACH ITS OWN SWITCH, THE USER'S ICON (FIGMA 749:892), PREFERENCES > LIGHT TABLE, THE ZOOM TO FRAMES TIP'S QT WARNING FIXED; FIGMA OS-1 (745:757) MARKED BUILT; NEXT: LEFT / RIGHT AS PROPOSED WITH THE USER'S ANSWERS, AND THE TWO BULBS IN THEIR NEIGHBOURS' COLOUR AND LINE
 THE USER'S WORD (pasted 2026-11-27, about 16:38): "Hand test OS-1 done: all steps looked right. Read every Dev Recorder
 session made after 15:09 on 27 November, oldest first (two, because of the restart in step 9). Confirm from system.txt

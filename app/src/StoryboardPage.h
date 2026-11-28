@@ -669,6 +669,19 @@ public:
     // A block tapped: the playhead to its first frame; it is then the selected thing on the
     // LAYER row (Del deletes it) until a press anywhere else.
     void goToDrawing(int layerIndex, int drawingIndex);
+    // THE ARROWS (the user's answers after hand test OS1, 2026-11-27), wherever the pointer is
+    // in the workspace, never while a text field is typed in: Left / Right one frame back or
+    // forward - at a panel's edge into the panel before or after, held they keep stepping, a
+    // playing film pauses first; Shift+Left / Shift+Right the selected layer's previous or next
+    // frame (a layer with one frame: the panel before or after); Up / Down the panel before or
+    // after. With the film up the step stays in the preview; in the workspace it is a scrub:
+    // the canvas shows the panel it lands in. Called by their shortcuts; public for the checks.
+    void stepFrame(int delta);
+    void stepLayerFrame(int delta);
+    // A slider or a drop-down list with the keyboard keeps its arrows while the pointer is
+    // over it (CanvasKeyRouter, at the key's ShortcutOverride): true when it does.
+    bool arrowKeyStaysWith(QObject *receiver, QKeyEvent *event);
+    bool arrowKeysArmedForTest() const;
     void onDrawingsLaneMenu(int layerIndex, int drawingIndex, const QPoint &globalPos);
     int selectedDrawingForTest() const { return m_layerKeyFocus.row ? m_layerKeyFocus.drawing : -1; }
     // The drawing under the playhead onto every layer with a run of the panel on the canvas:
@@ -1365,6 +1378,9 @@ private:
         bool filmKey = false;
     };
     QVector<TimelineKey> m_timelineKeys;
+    QVector<QShortcut *> m_arrowKeys;        // the six arrows (stepFrame...; updateTimelineKeys arms them)
+    QPointF m_pointerGlobal;                 // where the pointer last was (notePointerAt)...
+    bool m_pointerKnown = false;             // ...once a move or press has said so
     bool typingInTextField() const;          // a text or number field has the keyboard
     bool m_pointerOverTimeline = false;
     bool m_pointerOverPreview = false;

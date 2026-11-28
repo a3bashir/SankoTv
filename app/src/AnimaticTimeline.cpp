@@ -53,18 +53,19 @@ namespace {
 
 // THE ONION SKIN'S BUTTON (OS-1, 2026-11-27): the user's Figma frame 749:892, "LAYER row button:
 // onion (on)", drawn at four times the size - an 80 x 80 frame, its fill the accent at 28 %, a
-// 4 px accent stroke inside, corners of 16; in it the Light Table's icon (lighttable.svg) in
-// white, 36 x 58 at (22, 11). Here at its size, 20 x 20: the fill, a 1 px border inside, corners
-// of 4, the icon 9 x 14.5 at (5.5, 2.75). Off it is the row's other buttons' (the + and Zoom to
-// Frames): #1c1e25, the accent at 14 % over it under the pointer, no border. Painted here, so
-// what is drawn is the frame and nothing else.
+// 4 px accent stroke inside, corners of 16; in it the Light Table's icon (lighttable.svg), 36 x 58
+// at (22, 11). Here at its size, 20 x 20: the fill, a 1 px border inside, corners of 4, the icon
+// 9 x 14.5 at (5.5, 2.75). Off it is the row's other buttons' (the + and Zoom to Frames):
+// #1c1e25, the accent at 14 % over it under the pointer, no border. Painted here, so what is
+// drawn is the frame and nothing else. THE ICON in the Eye's and the Speaker's grey and line
+// (the user's word after hand test OS1; it was white): see SankoLightTable::bulbSvg.
 class OnionSkinButton : public QToolButton
 {
 public:
     explicit OnionSkinButton(QWidget *parent) : QToolButton(parent)
     {
         setAttribute(Qt::WA_Hover, true); // drawn again as the pointer comes and goes
-        m_icon.load(SankoLightTable::whiteIconSvg());
+        m_icon.load(SankoLightTable::bulbSvg(SankoTimelineTheme::kTrackControl, SankoLightTable::kLayerRowLine));
     }
 
 protected:

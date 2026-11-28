@@ -9377,10 +9377,14 @@ QPixmap StoryboardPage::stripIconPixmap(const QString &svg,
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     QSvgRenderer renderer;
-    if (svg == SankoLightTable::kIconPath)
-        renderer.load(SankoLightTable::whiteIconSvg()); // the Light Table's icon in white (OS-1)
-    else
+    if (svg == SankoLightTable::kIconPath) {
+        // The Light Table's bulb in Duplicate's and Delete's grey and line (the user's word after
+        // hand test OS1; white in OS-1), its proportions kept in the box (it was stretched to it).
+        renderer.load(SankoLightTable::bulbSvg(SankoLightTable::kStripColor, SankoLightTable::kStripLine));
+        renderer.setAspectRatioMode(Qt::KeepAspectRatio);
+    } else {
         renderer.load(svg);
+    }
     renderer.render(&p, QRectF(0, 0, bw, bh));
     p.end();
     m_stripIconCache.insert(key, pm);
@@ -9727,6 +9731,11 @@ protected:
             m_page->notePointerAt(receiver, static_cast<QPointerEvent *>(event));
             return false;
         }
+        // An arrow whose widget keeps it (a slider or a drop-down list under the pointer, with
+        // the keyboard): taken here, at its ShortcutOverride, so the workspace's arrow shortcut
+        // never fires and the key goes on to the widget.
+        if (event->type() == QEvent::ShortcutOverride)
+            return m_page->arrowKeyStaysWith(receiver, static_cast<QKeyEvent *>(event));
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease)
             return false;
         auto *key = static_cast<QKeyEvent *>(event);
@@ -10014,8 +10023,6 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     // (updateTimelineKeys). With no film up, the pointer decides as before.
     addKey(QKeySequence(Qt::Key_Space), true,
            [this] { m_animatic->togglePlay(); }, true);
-    addKey(QKeySequence(Qt::Key_Left), true, [this] { m_animatic->goPrev(); });
-    addKey(QKeySequence(Qt::Key_Right), true, [this] { m_animatic->goNext(); });
     addKey(QKeySequence(Qt::Key_Home), true, [this] { m_animatic->goFirst(); });
     addKey(QKeySequence(Qt::Key_End), true, [this] { m_animatic->goLast(); });
     addKey(QKeySequence(Qt::Key_Escape), true, [this] {
@@ -10049,6 +10056,28 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         else
             toolKey(DrawingCanvas::SelectRect);
     });
+
+    // THE ARROWS (the user's answers after hand test OS1, 2026-11-27; Left / Right were the
+    // panel before and after, and only with the pointer over the timeline or the preview -
+    // in hand test I2-2 they "did nothing"): wherever the pointer is in the workspace,
+    // never while a text field is typed in (updateTimelineKeys disarms them then). Left /
+    // Right and Shift+Left / Shift+Right step frames and run on while held; Up / Down step
+    // panels, one a press, as Left / Right did. A slider or a drop-down list that has the
+    // keyboard keeps its arrows while the pointer is over it (arrowKeyStaysWith). Home, End
+    // and Ctrl+Left / Ctrl+Right are as they were.
+    auto arrowKey = [this](const QKeySequence &sequence, bool held, std::function<void()> action) {
+        QShortcut *shortcut = new QShortcut(sequence, this);
+        shortcut->setContext(Qt::WindowShortcut);
+        shortcut->setAutoRepeat(held);
+        connect(shortcut, &QShortcut::activated, this, std::move(action));
+        m_arrowKeys.append(shortcut);
+    };
+    arrowKey(QKeySequence(Qt::Key_Left), true, [this] { stepFrame(-1); });
+    arrowKey(QKeySequence(Qt::Key_Right), true, [this] { stepFrame(1); });
+    arrowKey(QKeySequence(Qt::SHIFT | Qt::Key_Left), true, [this] { stepLayerFrame(-1); });
+    arrowKey(QKeySequence(Qt::SHIFT | Qt::Key_Right), true, [this] { stepLayerFrame(1); });
+    arrowKey(QKeySequence(Qt::Key_Up), false, [this] { if (m_animatic) m_animatic->goPrev(); });
+    arrowKey(QKeySequence(Qt::Key_Down), false, [this] { if (m_animatic) m_animatic->goNext(); });
 
     // ...and the canvas's keys go to the canvas while the pointer is over IT
     // (routeCanvasKey, below).
@@ -10498,6 +10527,10 @@ void StoryboardPage::notePointerAt(QObject *receiver, QPointerEvent *event)
             return;
     }
     const auto *widget = static_cast<const QWidget *>(receiver);
+    if (!event->points().isEmpty()) { // for the arrows: is it over a slider that has the keyboard?
+        m_pointerGlobal = event->points().first().globalPosition();
+        m_pointerKnown = true;
+    }
     const bool over = widget == m_canvas || m_canvas->isAncestorOf(widget);
     const bool arrived = over && !m_pointerOverCanvas;
     m_pointerOverCanvas = over;
@@ -10586,6 +10619,11 @@ void StoryboardPage::updateTimelineKeys()
         if (key.shortcut->key() == QKeySequence(Qt::Key_Escape))
             escArmed = armed;
     }
+    // The arrows are the workspace's wherever the pointer is, but never a text field's
+    // (Up and Down too: a field does not claim them, so they would leak past it).
+    const bool arrowsArmed = !typingInTextField();
+    for (QShortcut *key : std::as_const(m_arrowKeys))
+        key->setEnabled(arrowsArmed);
     // Stage mode's Esc is on the timeline's, while that one is armed: two enabled
     // shortcuts on one key would fire neither.
     for (QShortcut *key : std::as_const(m_stageKeys))
@@ -13408,7 +13446,8 @@ QWidget *StoryboardPage::createPanelControls()
 
     // Light Table — checkable toggle. ON (OS-1, 2026-11-27, the user's word after hand test SL
     // and their Figma 749:892): the purple border and the purple background (the accent at
-    // 28 %), as the LAYER row's Onion Skin button; the icon white, nothing added.
+    // 28 %), as the LAYER row's Onion Skin button; nothing added to the icon - in Duplicate's
+    // and Delete's grey and line since the user's word after hand test OS1 (stripIconPixmap).
     m_lightTableButton = ctrlButton(
         SankoLightTable::kIconPath, QSize(14, 21), QStringLiteral("#111111"),
         QStringLiteral("<b>Light Table (Shift+L)</b> | The panels before and after this one, under your "
@@ -13441,7 +13480,7 @@ QWidget *StoryboardPage::createPanelControls()
          QStringLiteral(":/icons/add.svg")},
         {m_dupPanelButton, QSize(44, 30), QSize(17, 17),
          QStringLiteral(":/icons/duplicate.svg")},
-        {m_lightTableButton, QSize(44, 30), QSize(14, 21), SankoLightTable::kIconPath}, // drawn white
+        {m_lightTableButton, QSize(44, 30), QSize(14, 21), SankoLightTable::kIconPath}, // the bulb (stripIconPixmap)
         {m_deletePanelButton, QSize(44, 30), QSize(14, 15),
          QStringLiteral(":/icons/delete.svg")},
     };
@@ -16331,6 +16370,106 @@ void StoryboardPage::goToDrawing(int layerIndex, int drawingIndex)
         setActiveLayer(layerIndex);
     m_animatic->setPlayheadFrameInPanel(currentFlatIndex(), probe.drawingStart(drawingIndex));
     refreshLayerMotionUi();
+}
+
+// LEFT / RIGHT (see the header): one frame from the playhead. Over a panel's edge the bar says
+// where it landed ("OCEAN  ·  panel 2  ·  frame 1"); every other step shows in the run's own
+// note. At the film's first or last frame nothing happens.
+void StoryboardPage::stepFrame(int delta)
+{
+    if (!m_animatic)
+        return;
+    if (m_animatic->isPlaying())
+        m_animatic->togglePlay(); // a playing film pauses first, then steps (answer 3)
+    int flat = -1, frame = 0;
+    if (!m_animatic->frameFromPlayhead(delta, &flat, &frame))
+        return;
+    const bool crossed = flat != m_animatic->currentFlatIndex();
+    // In the workspace a step is a scrub: the panel it lands in is selected and the canvas
+    // shows the frame. With the film up it stays in the preview, as a paused film's frame.
+    if (!m_animatic->previewVisible() && flat != currentFlatIndex())
+        selectFlatPanel(flat);
+    m_animatic->setPlayheadFrameInPanel(flat, frame);
+    if (!crossed)
+        return;
+    int scene = -1, panel = -1;
+    if (!flatToScenePanel(flat, &scene, &panel))
+        return;
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    const QString sceneName = m_scenes.at(scene)->location.trimmed().isEmpty()
+        ? QStringLiteral("Scene %1").arg(scene + 1)
+        : m_scenes.at(scene)->location.trimmed();
+    sayNote(sceneName + dot + QStringLiteral("panel %1").arg(panel + 1) + dot
+            + QStringLiteral("frame %1").arg(frame + 1));
+}
+
+// SHIFT+LEFT / SHIFT+RIGHT (see the header): the selected layer's frame before or after the one
+// at the playhead - the start of that block on the FRAMES lane, as a tap on it (goToDrawing).
+// A layer with one frame - or a folder, or no layer, or the film paused in another panel than
+// the selected one - steps to the panel before or after instead. At the layer's first or last
+// frame the bar says so, in grey.
+void StoryboardPage::stepLayerFrame(int delta)
+{
+    if (!m_animatic)
+        return;
+    if (m_animatic->isPlaying())
+        m_animatic->togglePlay();
+    Panel *panel = currentPanel();
+    const int index = panel ? panel->activeLayerIndex : -1;
+    const bool onPanel = panel && m_animatic->currentFlatIndex() == currentFlatIndex();
+    if (!onPanel || index < 0 || index >= panel->layers.size() || !panel->layerHasRun(panel->layers.at(index))) {
+        if (delta < 0)
+            m_animatic->goPrev();
+        else
+            m_animatic->goNext();
+        return;
+    }
+    Layer counted = panel->layers.at(index); // a copy: the counting is the workspace's (countRunAt)
+    counted.countRunAt(cameraFps());
+    const int frame = m_animatic->playheadFrameInPanel();
+    int current = 0;
+    for (int i = 0; i < counted.drawings.size(); ++i)
+        if (counted.drawingStart(i) <= frame)
+            current = i;
+    const int target = current + (delta < 0 ? -1 : 1);
+    if (target < 0 || target >= counted.drawings.size()) {
+        sayNote(target < 0 ? QStringLiteral("%1's first frame: nothing before it").arg(counted.name)
+                           : QStringLiteral("%1's last frame: nothing after it").arg(counted.name));
+        return;
+    }
+    goToDrawing(index, target);
+}
+
+bool StoryboardPage::arrowKeyStaysWith(QObject *receiver, QKeyEvent *event)
+{
+    const int key = event->key();
+    if (key != Qt::Key_Left && key != Qt::Key_Right && key != Qt::Key_Up && key != Qt::Key_Down)
+        return false;
+    if (event->modifiers() & ~(Qt::ShiftModifier | Qt::KeypadModifier))
+        return false; // Ctrl+Left / Ctrl+Right are the panel's move, wherever the keyboard is
+    auto *widget = qobject_cast<QWidget *>(receiver);
+    if (!widget || !m_pointerKnown || !widget->isVisible())
+        return false;
+    // The workspace's widgets that use the arrows themselves: a slider (the Stroke size, the
+    // Zoom and Rotate sliders, the sound's volume) and a drop-down list. Not a scroll area:
+    // its arrows only scroll, and the frames are wanted there.
+    if (!widget->inherits("QAbstractSlider") && !widget->inherits("SankoSlider")
+        && !widget->inherits("QComboBox") && !widget->inherits("QAbstractItemView"))
+        return false;
+    if (!widget->rect().contains(widget->mapFromGlobal(m_pointerGlobal).toPoint()))
+        return false; // the pointer is elsewhere: the arrows are the frames'
+    event->accept(); // the widget's own: no shortcut takes the key
+    return true;
+}
+
+bool StoryboardPage::arrowKeysArmedForTest() const
+{
+    if (m_arrowKeys.isEmpty())
+        return false;
+    for (QShortcut *key : m_arrowKeys)
+        if (!key->isEnabled())
+            return false;
+    return true;
 }
 
 // The drawings lane's menu (Figma I-2 section 2): New Frame, Duplicate Frame - at the playhead,

@@ -6022,18 +6022,19 @@ void runWorkspaceKeysPass(const QString &project)
                          "drawing"),
           !r.animatic->previewVisible());
 
-    // Arrows / Home / End navigate - they select, as a click would.
+    // Down / Up / Home / End navigate - they select, as a click would. (Down and Up since the
+    // user's answers after hand test OS1, 2026-11-27: Left and Right step frames now, (lr).)
     int calls = r.storyboard->selectPanelCallsForTest();
-    keyClaimed(&r.window, Qt::Key_Right);
+    keyClaimed(&r.window, Qt::Key_Down);
     const bool right = r.storyboard->selectedFlatIndexForTest() == 2
         && r.storyboard->selectPanelCallsForTest() == calls + 1;
     keyClaimed(&r.window, Qt::Key_End);
     const bool end = r.storyboard->selectedFlatIndexForTest() == 5;
     keyClaimed(&r.window, Qt::Key_Home);
     const bool home = r.storyboard->selectedFlatIndexForTest() == 0;
-    keyClaimed(&r.window, Qt::Key_Right);
-    keyClaimed(&r.window, Qt::Key_Left);
-    check(QStringLiteral("(ag) over the timeline, Right / End / Home / Left "
+    keyClaimed(&r.window, Qt::Key_Down);
+    keyClaimed(&r.window, Qt::Key_Up);
+    check(QStringLiteral("(ag) over the timeline, Down / End / Home / Up "
                          "select the next, last, first and previous panel"),
           right && end && home
               && r.storyboard->selectedFlatIndexForTest() == 0,
@@ -41814,8 +41815,9 @@ void runOsPass(const QString &scratch)
 
     // (os5) THE TWO BUTTONS' LOOK (the user's Figma 749:892, answer 5): the Onion Skin's on the LAYER row at x 50,
     // 20 x 20, between Zoom to Frames and FRAMES, there while the lane is; on, the accent border and the accent at 28 %
-    // behind the Light Table's bulb in white (9 x 14.5 at (5.5, 2.75)), and no other colour. The Light Table's in the
-    // panel strip: the same bulb, white; on, the purple border and a purple background.
+    // behind the Light Table's bulb (9 x 14.5 at (5.5, 2.75)), and no other colour. The Light Table's in the panel
+    // strip: the same bulb; on, the purple border and a purple background. (The bulbs were white in OS-1; since the
+    // user's word after hand test OS1 they are their neighbours' greys, #a4a7ae and #cccccc - measured in (bu).)
     {
         const QColor accent(0x7c, 0x6e, 0xf6);
         // Its place, with the Gull's run on the row; and on panel 3's one-frame Kite it is not there.
@@ -41846,7 +41848,7 @@ void runOsPass(const QString &scratch)
         const QImage onImg = osButton->grab().toImage().convertToFormat(QImage::Format_ARGB32);
         struct Look
         {
-            int white = 0, foreign = 0, purpleEdge = 0;
+            int white = 0, foreign = 0, purpleEdge = 0; // (white: the bulb's ink - its grey since hand test OS1)
             QRect bulb;
             QColor edge, inside;
         };
@@ -41856,11 +41858,16 @@ void runOsPass(const QString &scratch)
             auto px = [&](qreal x, qreal y) { return QColor(img.pixel(qRound(x * dpr), qRound(y * dpr))); };
             l.edge = px(10, 0.4);
             l.inside = px(2.5, 10);
+            // The bulb's ink: a pixel at least half covered by the grey (#a4a7ae) over this look's own ground - on the
+            // purple, off the #1c1e25. (A fixed brightness, first "> 200" for OS-1's white and then "> 120" for the grey,
+            // counts more of the soft edge over the lighter ground: 38 on against 29 off with the same bulb - the measure,
+            // not the button, which (bu1) shows paints the drawing to the pixel.) Not the accent's border (spread 136).
+            const int ground = qGray(l.inside.rgb()), inkGrey = qGray(QColor(0xa4, 0xa7, 0xae).rgb());
             for (int y = 0; y < img.height(); ++y)
                 for (int x = 0; x < img.width(); ++x) {
                     const QColor c(img.pixel(x, y));
                     const int spread = qMax(c.red(), qMax(c.green(), c.blue())) - qMin(c.red(), qMin(c.green(), c.blue()));
-                    if (qGray(c.rgb()) > 200 && spread < 24) {
+                    if (2 * (qGray(c.rgb()) - ground) >= inkGrey - ground && spread < 60) {
                         ++l.white;
                         const QRect p(qRound(x / dpr), qRound(y / dpr), 1, 1);
                         l.bulb = l.bulb.isNull() ? p : l.bulb.united(p);
@@ -41879,7 +41886,7 @@ void runOsPass(const QString &scratch)
         check(QStringLiteral("(os5) THE ONION SKIN'S BUTTON (Figma 749:892): on the LAYER row at x 50, 20 x 20, level with Zoom "
                              "to Frames and left of FRAMES, there while the lane is (not on panel 3's one-frame Kite); a "
                              "click switches the onion skin; on, a purple border and a purple background behind the "
-                             "Light Table's bulb in white, inside 5.5-14.5 x 2.75-17.25, and no other colour; its tip "
+                             "Light Table's bulb in grey, inside 5.5-14.5 x 2.75-17.25, and no other colour; its tip "
                              "names it, its key, and the Light Table's"),
               shownRun && at == QRect(50, mag.y(), 20, 20) && mag.x() == 27 && frames.count > 20
                   && frames.box.left() > at.right() + 4 && hiddenOne && clickOn && sl::channelGap(on.edge, accent) <= 24
@@ -41887,17 +41894,17 @@ void runOsPass(const QString &scratch)
                   && on.bulb.right() <= 15 && on.bulb.top() >= 2 && on.bulb.bottom() <= 18 && on.foreign == 0
                   && tipOs.contains(QLatin1String("Onion Skin (O)")) && tipOs.contains(QLatin1String("Light Table's (Shift+L)")),
               QStringLiteral("at %1,%2 %3x%4 (Zoom to Frames %5,%6), shown %7, FRAMES from x %8, hidden on the Kite %9, "
-                             "the click %10; on: edge %11 (%12 purple edge px), inside %13, %14 white px in %15,%16 %17x%18, "
+                             "the click %10; on: edge %11 (%12 purple edge px), inside %13, %14 grey px in %15,%16 %17x%18, "
                              "%19 of another colour; tip '%20'")
                   .arg(at.x()).arg(at.y()).arg(at.width()).arg(at.height()).arg(mag.x()).arg(mag.y()).arg(shownRun)
                   .arg(frames.box.left()).arg(hiddenOne).arg(clickOn).arg(on.edge.name()).arg(on.purpleEdge)
                   .arg(on.inside.name()).arg(on.white).arg(on.bulb.x()).arg(on.bulb.y()).arg(on.bulb.width())
                   .arg(on.bulb.height()).arg(on.foreign).arg(tipOs));
         check(QStringLiteral("(os5) control: off, the same button has no purple border and no purple behind - and the same "
-                             "white bulb"),
+                             "grey bulb"),
               off.purpleEdge == 0 && sl::channelGap(off.edge, QColor(0x1c, 0x1e, 0x25)) <= 8 && off.white == on.white
                   && off.bulb == on.bulb && off.foreign == 0,
-              QStringLiteral("edge %1 (%2 purple edge px); %3 white px in %4,%5 %6x%7; %8 of another colour")
+              QStringLiteral("edge %1 (%2 purple edge px); %3 grey px in %4,%5 %6x%7; %8 of another colour")
                   .arg(off.edge.name()).arg(off.purpleEdge).arg(off.white).arg(off.bulb.x()).arg(off.bulb.y())
                   .arg(off.bulb.width()).arg(off.bulb.height()).arg(off.foreign));
         osButton->click();
@@ -41917,7 +41924,7 @@ void runOsPass(const QString &scratch)
                 for (int x = 0; x < img.width(); ++x) {
                     const QColor c(img.pixel(x, y));
                     const int spread = qMax(c.red(), qMax(c.green(), c.blue())) - qMin(c.red(), qMin(c.green(), c.blue()));
-                    if (qGray(c.rgb()) > 235 && spread < 16) {
+                    if (qGray(c.rgb()) > 170 && spread < 16) { // the bulb's grey, #cccccc (gray 204)
                         ++l.white;
                         l.bulb = l.bulb.isNull() ? QRect(x, y, 1, 1) : l.bulb.united(QRect(x, y, 1, 1));
                     }
@@ -41932,21 +41939,21 @@ void runOsPass(const QString &scratch)
         offImg.save(scratch + QStringLiteral("/os/look_onion_off.png"));
         ltOn.save(scratch + QStringLiteral("/os/look_lighttable_on.png"));
         ltOff.save(scratch + QStringLiteral("/os/look_lighttable_off.png"));
-        check(QStringLiteral("(os5) THE LIGHT TABLE'S BUTTON in the panel strip: the same bulb in white, nothing added; on, "
+        check(QStringLiteral("(os5) THE LIGHT TABLE'S BUTTON in the panel strip: the same bulb in grey, nothing added; on, "
                              "the purple border and a purple background; its tip names it, its key, and the Onion Skin's"),
               sl::channelGap(lon.edge, accent) <= 30 && lon.inside.blue() > lon.inside.red() + 12 && lon.white > 20
                   && lon.foreign == 0 && tipLt.contains(QLatin1String("Light Table (Shift+L)"))
                   && tipLt.contains(QLatin1String("Onion Skin's (O)")),
-              QStringLiteral("on: edge %1, inside %2, %3 white px, %4 of another colour; tip '%5'").arg(lon.edge.name())
+              QStringLiteral("on: edge %1, inside %2, %3 grey px, %4 of another colour; tip '%5'").arg(lon.edge.name())
                   .arg(lon.inside.name()).arg(lon.white).arg(lon.foreign).arg(tipLt));
         // (The white count may differ by a few edge pixels: the bulb's antialiased edge is blended into purple on, into
         // #111111 off - so the same bulb is the same box, and the count within 4. First written as an equal count, which
         // failed on 34 against 36 with the same pixmap drawn in both: my control was too strict, the button was right.)
         check(QStringLiteral("(os5) control: off, the Light Table's button is the strip's others' - its border #2a2a2a, no "
-                             "purple behind - with the same white bulb"),
+                             "purple behind - with the same grey bulb"),
               sl::channelGap(loff.edge, QColor(0x2a, 0x2a, 0x2a)) <= 12 && sl::channelGap(loff.inside, QColor(0x11, 0x11, 0x11)) <= 8
                   && loff.bulb == lon.bulb && qAbs(loff.white - lon.white) <= 4 && loff.foreign == 0,
-              QStringLiteral("edge %1, inside %2, %3 white px in %4,%5 %6x%7 (on: %8 in %9,%10 %11x%12), %13 of another colour")
+              QStringLiteral("edge %1, inside %2, %3 grey px in %4,%5 %6x%7 (on: %8 in %9,%10 %11x%12), %13 of another colour")
                   .arg(loff.edge.name()).arg(loff.inside.name()).arg(loff.white).arg(loff.bulb.x()).arg(loff.bulb.y())
                   .arg(loff.bulb.width()).arg(loff.bulb.height()).arg(lon.white).arg(lon.bulb.x()).arg(lon.bulb.y())
                   .arg(lon.bulb.width()).arg(lon.bulb.height()).arg(loff.foreign));
@@ -42216,6 +42223,880 @@ void runOsPass(const QString &scratch)
     if (r.storyboard->isLightTableOn())
         shiftL();
     forgetSettings();
+    r.window.markCleanForTest();
+}
+
+// ---- (lr) THE ARROWS, (bu) THE BULBS (the user's word after hand test OS1, 2026-11-27) ------------------------------
+// Left / Right one frame back or forward wherever the pointer is in the workspace - at a panel's edge into the panel
+// before or after, held they run on, a playing film pauses first; Shift+Left / Shift+Right the selected layer's frame
+// before or after (a layer with one frame: the panels); Up / Down the panels; never a text field's, and a slider with
+// the keyboard keeps its arrows while the pointer is over it. The two bulbs in the colour and the line of the icons
+// around them: on the LAYER row the Eye's and the Speaker's, in the panel strip Duplicate's and Delete's.
+namespace lr {
+constexpr qint64 kPen = 7031;
+
+QString writeLrProject(const QString &dir)
+{
+    using lmui::kSize;
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/Arrows.sankotv");
+    auto grey = [](const QString &name, const QPointF &c) {
+        Layer layer = makeRasterLayer(name, kSize);
+        QPainter p(&layer.image);
+        p.fillRect(QRectF(c - QPointF(15, 15), QSizeF(30, 30)), QColor(70, 70, 70));
+        p.end();
+        return layer;
+    };
+    Scene *harbour = new Scene;
+    harbour->number = 1;
+    harbour->location = QStringLiteral("HARBOUR");
+    Panel *a = makeBlankPanel(kSize);
+    a->layers.removeLast();
+    a->layers.append(grey(QStringLiteral("Ground"), {700, 380}));
+    a->layers.append(grey(QStringLiteral("Bird"), {300, 150}));
+    a->activeLayerIndex = 2;
+    a->setLength(24, 24);
+    harbour->panels.append(a);
+    Panel *b = makeBlankPanel(kSize);
+    b->setLength(24, 24);
+    harbour->panels.append(b);
+    Scene *island = new Scene;
+    island->number = 2;
+    island->location = QStringLiteral("ISLAND");
+    Panel *c = makeBlankPanel(kSize);
+    c->setLength(12, 24);
+    island->panels.append(c);
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Arrows");
+    data.fps = 24;
+    data.canvasSize = kSize;
+    data.scenes = {harbour, island};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete harbour;
+    delete island;
+    return path;
+}
+
+// The test's pen over a widget, hovering, sent at the window-system level as a real one is: the page hears only it.
+void penOver(QWidget *over, const QPointF &at)
+{
+    QWindow *target = over->window()->windowHandle();
+    if (!target)
+        return;
+    const QPointF global = over->mapToGlobal(at);
+    const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+    QWindowSystemInterface::handleTabletEvent(target, local, global, int(QInputDevice::DeviceType::Stylus),
+                                              int(QPointingDevice::PointerType::Pen), Qt::NoButton, 0.0, 0, 0, 0, 0,
+                                              0, kPen);
+    QCoreApplication::processEvents();
+    pump(60);
+}
+
+// A key HELD: its repeats, as the keyboard sends them; true when a shortcut took the repeat.
+bool repeatClaimed(QWidget *target, int key, Qt::KeyboardModifiers mods = Qt::NoModifier)
+{
+    target->activateWindow();
+    pump(30);
+    const bool claimed = qt_sendShortcutOverrideEvent(target, 0, key, mods, QString(), true, 1);
+    pump(60);
+    return claimed;
+}
+
+QByteArray fileBytes(const QString &path)
+{
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+// An icon drawn `times` larger than shown, as its button draws it: into `at` of a `sheet`, stretched to it or (keep)
+// its proportions kept.
+QImage drawnSvg(const QByteArray &svg, const QSizeF &sheet, const QRectF &at, int times, bool keep)
+{
+    QImage g(qCeil(sheet.width() * times), qCeil(sheet.height() * times), QImage::Format_ARGB32_Premultiplied);
+    g.fill(Qt::transparent);
+    QPainter p(&g);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.scale(times, times);
+    QSvgRenderer renderer(svg);
+    if (keep)
+        renderer.setAspectRatioMode(Qt::KeepAspectRatio);
+    renderer.render(&p, at);
+    p.end();
+    return g;
+}
+
+// Where the ink (alpha >= 128) lies, in the shown size's pixels.
+QRectF inkBox(const QImage &g, int times)
+{
+    int x0 = g.width(), y0 = g.height(), x1 = -1, y1 = -1;
+    for (int y = 0; y < g.height(); ++y)
+        for (int x = 0; x < g.width(); ++x)
+            if (qAlpha(g.pixel(x, y)) >= 128) {
+                x0 = qMin(x0, x);
+                y0 = qMin(y0, y);
+                x1 = qMax(x1, x);
+                y1 = qMax(y1, y);
+            }
+    return x1 < 0 ? QRectF() : QRectF(QPointF(x0, y0) / qreal(times), QPointF(x1 + 1, y1 + 1) / qreal(times));
+}
+
+// THE LINE WEIGHT, the measure of (sy2): every reading along the lines' middles, lightest first, in the shown size's
+// pixels - the exact distance transform of the ink (alpha >= 128), weight on a ridge = (2 x distance - 0.5) / times.
+QList<double> lineWeights(const QImage &g, int times)
+{
+    const int w = g.width(), h = g.height();
+    QList<double> sheet(qsizetype(w) * h);
+    double *d = sheet.data();
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            d[qsizetype(y) * w + x] = qAlpha(g.pixel(x, y)) >= 128 ? 1e12 : 0.0;
+    const int longest = qMax(w, h);
+    QList<double> fList(longest), outList(longest), zList(longest + 1);
+    QList<int> vList(longest);
+    double *f = fList.data(), *out = outList.data(), *z = zList.data();
+    int *v = vList.data();
+    auto pass = [&](int n) {
+        int k = 0;
+        v[0] = 0;
+        z[0] = -1e20;
+        z[1] = 1e20;
+        for (int q = 1; q < n; ++q) {
+            double s = 0.0;
+            for (;;) {
+                s = ((f[q] + double(q) * q) - (f[v[k]] + double(v[k]) * v[k])) / (2.0 * q - 2.0 * v[k]);
+                if (s <= z[k] && k > 0)
+                    --k;
+                else
+                    break;
+            }
+            ++k;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = 1e20;
+        }
+        k = 0;
+        for (int q = 0; q < n; ++q) {
+            while (z[k + 1] < q)
+                ++k;
+            out[q] = double(q - v[k]) * (q - v[k]) + f[v[k]];
+        }
+    };
+    for (int x = 0; x < w; ++x) {
+        for (int y = 0; y < h; ++y)
+            f[y] = d[qsizetype(y) * w + x];
+        pass(h);
+        for (int y = 0; y < h; ++y)
+            d[qsizetype(y) * w + x] = out[y];
+    }
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x)
+            f[x] = d[qsizetype(y) * w + x];
+        pass(w);
+        for (int x = 0; x < w; ++x)
+            d[qsizetype(y) * w + x] = std::sqrt(out[x]);
+    }
+    QList<double> readings;
+    for (int y = 1; y < h - 1; ++y)
+        for (int x = 1; x < w - 1; ++x) {
+            const double c = d[qsizetype(y) * w + x];
+            if (c < 1.0)
+                continue;
+            bool top = true;
+            for (int dy = -1; dy <= 1 && top; ++dy)
+                for (int dx = -1; dx <= 1 && top; ++dx)
+                    top = d[qsizetype(y + dy) * w + (x + dx)] <= c + 1e-9;
+            if (top)
+                readings.append((2.0 * c - 0.5) / times);
+        }
+    std::sort(readings.begin(), readings.end());
+    return readings;
+}
+double middleOf(const QList<double> &r) { return r.isEmpty() ? 0.0 : r[r.size() / 2]; }
+
+// The colour an icon's own pixmap is drawn in: its pixels at alpha 200 and more, unpremultiplied - their farthest
+// channel gap from `want`, and how many there are.
+QPair<int, int> iconColourGap(const QPixmap &pm, const QColor &want)
+{
+    const QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32);
+    int gap = 0, n = 0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            const QRgb c = img.pixel(x, y);
+            if (qAlpha(c) < 200)
+                continue;
+            ++n;
+            gap = qMax(gap, qMax(qAbs(qRed(c) - want.red()), qMax(qAbs(qGreen(c) - want.green()), qAbs(qBlue(c) - want.blue()))));
+        }
+    return {gap, n};
+}
+} // namespace lr
+
+void runLrPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace lr;
+    out() << "--- (lr) the arrows: frames, a layer's frames, panels; (bu) the bulbs in their neighbours' grey and line ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/lr");
+    const QString project = writeLrProject(dir);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    const QVector<Scene *> scenes = r.ok ? r.window.scenesForTest() : QVector<Scene *>();
+    auto *brushBtn = r.ok ? r.window.findChild<QPushButton *>(QStringLiteral("toolBrush")) : nullptr;
+    auto *layersDock = r.ok ? r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers")) : nullptr;
+    QScrollArea *list = layersDock ? layersDock->findChild<QScrollArea *>() : nullptr;
+    QPushButton *ltButton = r.ok ? r.storyboard->lightTableButtonForTest() : nullptr;
+    QAbstractButton *osButton = r.ok ? r.timeline->onionSkinButtonForTest() : nullptr;
+    QSlider *volume = r.ok ? r.timeline->volumePopupForTest() : nullptr;
+    auto *speaker = r.ok ? r.surface->findChild<QToolButton *>(QStringLiteral("trackMuteAudio")) : nullptr;
+    auto *eyeAudio = r.ok ? r.surface->findChild<QToolButton *>(QStringLiteral("trackEyeAudio")) : nullptr;
+    QPushButton *dupButton = nullptr, *delButton = nullptr;
+    if (ltButton && ltButton->parentWidget())
+        for (QPushButton *b : ltButton->parentWidget()->findChildren<QPushButton *>()) {
+            if (b->toolTip().contains(QLatin1String("Duplicate Panel")))
+                dupButton = b;
+            if (b->toolTip().contains(QLatin1String("Delete Panel")))
+                delButton = b;
+        }
+    if (!r.ok || scenes.size() != 2 || scenes.at(0)->panels.size() != 2 || !brushBtn || !list || !ltButton || !osButton
+        || !volume || !speaker || !eyeAudio || !dupButton || !delButton) {
+        check(QStringLiteral("(lr) the fixture opens - two scenes, HARBOUR's two panels and ISLAND's one - with the Brush, "
+                             "the Layers list, the two bulbs, the volume, the Speaker, the Eye, Duplicate and Delete"),
+              false,
+              QStringLiteral("rig %1, scenes %2, bulbs %3 %4, volume %5, speaker %6, eye %7, dup %8, del %9").arg(r.ok)
+                  .arg(scenes.size()).arg(ltButton != nullptr).arg(osButton != nullptr).arg(volume != nullptr)
+                  .arg(speaker != nullptr).arg(eyeAudio != nullptr).arg(dupButton != nullptr).arg(delButton != nullptr));
+        if (r.ok)
+            r.window.markCleanForTest();
+        return;
+    }
+    Panel *pa = scenes.at(0)->panels.at(0);
+    r.storyboard->setPointerDeviceForTest(kPen);
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    const int lengths[3] = {24, 24, 12};
+    auto at = [&] {
+        return QStringLiteral("%1:%2").arg(r.animatic->currentFlatIndex()).arg(r.animatic->playheadFrameInPanel());
+    };
+    auto sel = [&] { return r.storyboard->selectedFlatIndexForTest(); };
+    auto place = [&](int flat, int frame) {
+        if (sel() != flat) {
+            emit r.animatic->panelSelectRequested(flat);
+            pump(250);
+        }
+        r.animatic->setPlayheadFrameInPanel(flat, frame);
+        pump(120);
+    };
+    auto key = [&](int k, Qt::KeyboardModifiers mods = Qt::NoModifier) { return keyClaimed(&r.window, k, mods); };
+    auto bar = [&] { return r.canvas->noteBarText(); };
+    auto barGrey = [&] { return r.canvas->noteBarKind() == DrawingCanvas::NoteKind::Said; };
+    auto pressKey = [&](QWidget *w, int k, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        QKeyEvent down(QEvent::KeyPress, k, mods);
+        QCoreApplication::sendEvent(w, &down);
+        QKeyEvent up(QEvent::KeyRelease, k, mods);
+        QCoreApplication::sendEvent(w, &up);
+        pump(60);
+    };
+    const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+
+    // Bird's run on HARBOUR's panel 1: frames 0, 2 and 4 (N twice, a stroke on each).
+    clickThumb(r, 0);
+    r.storyboard->layerRowClickedForTest(2);
+    brushBtn->click();
+    r.timeline->setZoomForTest(1600);
+    place(0, 0);
+    const bool n1 = key(Qt::Key_N);
+    stroke(r.canvas, 0);
+    r.canvas->flushPaintCommit();
+    pump(250);
+    const bool n2 = key(Qt::Key_N);
+    stroke(r.canvas, 3);
+    r.canvas->flushPaintCommit();
+    pump(250);
+    QStringList starts;
+    for (const LayerDrawing &d : pa->layers.at(2).drawings)
+        starts << QString::number(d.start);
+    const bool runOk = n1 && n2 && starts.join(QLatin1Char(',')) == QLatin1String("0,2,4");
+
+    // (lr1) LEFT AND RIGHT, ONE FRAME, WHEREVER THE POINTER IS (answer 1).
+    {
+        QWidget *layersView = list->viewport();
+        QLabel *thumb = thumbs(r.storyboard).value(0);
+        struct Place
+        {
+            const char *name;
+            QWidget *w;
+            QPointF at;
+        };
+        const QVector<Place> places = {
+            {"the canvas", r.canvas, mid},
+            {"the timeline's ruler", r.surface, QPointF(r.surface->width() / 2.0, 12)},
+            {"the Layers panel", layersView, QPointF(layersView->width() / 2.0, layersView->height() / 2.0)},
+            {"the panel strip", thumb, thumb ? QPointF(thumb->width() / 2.0, thumb->height() / 2.0) : QPointF()},
+        };
+        place(0, 5);
+        QStringList seen;
+        bool moved = runOk && thumb, heard = true;
+        for (const Place &pl : places) {
+            if (!pl.w)
+                continue;
+            penOver(pl.w, pl.at);
+            const bool overCanvas = r.storyboard->pointerOverCanvasForTest();
+            const int f0 = r.animatic->playheadFrameInPanel();
+            const bool right = key(Qt::Key_Right);
+            const int f1 = r.animatic->playheadFrameInPanel();
+            const bool left = key(Qt::Key_Left);
+            const int f2 = r.animatic->playheadFrameInPanel();
+            moved = moved && right && left && f1 == f0 + 1 && f2 == f0 && r.animatic->currentFlatIndex() == 0 && sel() == 0
+                && !r.animatic->previewVisible();
+            heard = heard && overCanvas == (pl.w == r.canvas);
+            seen << QStringLiteral("%1: %2 -> %3 -> %4 (taken %5 %6; over the canvas %7)").arg(QLatin1String(pl.name))
+                        .arg(f0).arg(f1).arg(f2).arg(right).arg(left).arg(overCanvas);
+        }
+        check(QStringLiteral("(lr1) LEFT AND RIGHT STEP ONE FRAME WHEREVER THE POINTER IS (answer 1): the pen over the "
+                             "canvas, the timeline's ruler, the Layers panel or the panel strip - Right takes the playhead "
+                             "one frame on and Left one back, in the same panel, on the canvas (no preview), each key "
+                             "taken by its shortcut"),
+              moved, QStringLiteral("the run %1; %2").arg(runOk).arg(seen.join(QStringLiteral("; "))));
+        check(QStringLiteral("(lr1) control: the pen's place is heard - the page has it over the canvas there and nowhere "
+                             "else (where Left and Right used to be the timeline's only)"),
+              heard, seen.join(QStringLiteral("; ")));
+    }
+
+    // (lr2) AT A PANEL'S EDGE, INTO THE PANEL BEFORE OR AFTER - and the bar says where it landed.
+    {
+        penOver(r.canvas, mid);
+        place(0, 23);
+        r.canvas->expireNoteForTest();
+        const bool k1 = key(Qt::Key_Right);
+        const QString a1 = at(), b1 = bar();
+        const int s1 = sel();
+        const bool g1 = barGrey(), p1 = r.animatic->previewVisible();
+        const bool k2 = key(Qt::Key_Left);
+        const QString a2 = at(), b2 = bar();
+        const int s2 = sel();
+        place(1, 23);
+        const bool k3 = key(Qt::Key_Right);
+        const QString a3 = at(), b3 = bar();
+        const int s3 = sel();
+        const bool k4 = key(Qt::Key_Left);
+        const QString a4 = at(), b4 = bar();
+        const int s4 = sel();
+        check(QStringLiteral("(lr2) AT A PANEL'S EDGE (answer 1): Right on HARBOUR panel 1's last frame - panel 2's first, "
+                             "panel 2 on the canvas, the bar in grey \"HARBOUR  ·  panel 2  ·  frame 1\"; Left back - panel "
+                             "1's last, \"...panel 1  ·  frame 24\"; across the scenes the same - ISLAND's panel 1 and back"),
+              k1 && a1 == QLatin1String("1:0") && s1 == 1 && !p1 && g1
+                  && b1 == QStringLiteral("HARBOUR") + dot + QStringLiteral("panel 2") + dot + QStringLiteral("frame 1")
+                  && k2 && a2 == QLatin1String("0:23") && s2 == 0
+                  && b2 == QStringLiteral("HARBOUR") + dot + QStringLiteral("panel 1") + dot + QStringLiteral("frame 24")
+                  && k3 && a3 == QLatin1String("2:0") && s3 == 2
+                  && b3 == QStringLiteral("ISLAND") + dot + QStringLiteral("panel 1") + dot + QStringLiteral("frame 1")
+                  && k4 && a4 == QLatin1String("1:23") && s4 == 1
+                  && b4 == QStringLiteral("HARBOUR") + dot + QStringLiteral("panel 2") + dot + QStringLiteral("frame 24"),
+              QStringLiteral("%1 '%2' (selected %3, grey %4, preview %5); %6 '%7' (%8); %9 '%10' (%11); %12 '%13' (%14)")
+                  .arg(a1, b1).arg(s1).arg(g1).arg(p1).arg(a2, b2).arg(s2).arg(a3, b3).arg(s3).arg(a4, b4).arg(s4));
+        place(0, 0);
+        r.canvas->expireNoteForTest();
+        const bool k5 = key(Qt::Key_Left);
+        const QString a5 = at(), b5 = bar();
+        place(2, 11);
+        r.canvas->expireNoteForTest();
+        const bool k6 = key(Qt::Key_Right);
+        const QString a6 = at(), b6 = bar();
+        check(QStringLiteral("(lr2) control: at the film's first frame Left, and at its last Right, go nowhere and say "
+                             "nothing - the measure sees a step that does not happen"),
+              k5 && a5 == QLatin1String("0:0") && !b5.contains(QLatin1String("panel")) && k6
+                  && a6 == QLatin1String("2:11") && !b6.contains(QLatin1String("panel")),
+              QStringLiteral("%1 '%2'; %3 '%4'").arg(a5, b5, a6, b6));
+    }
+
+    // (lr3) HELD, THEY KEEP STEPPING: Left / Right and Shift+Left / Shift+Right run on with the keyboard's repeats.
+    {
+        place(0, 3);
+        r.storyboard->layerRowClickedForTest(2);
+        pump(80);
+        int taken = 0;
+        for (int i = 0; i < 5; ++i)
+            taken += repeatClaimed(&r.window, Qt::Key_Right) ? 1 : 0;
+        const QString a1 = at();
+        for (int i = 0; i < 2; ++i)
+            taken += repeatClaimed(&r.window, Qt::Key_Left) ? 1 : 0;
+        const QString a2 = at();
+        for (int i = 0; i < 2; ++i)
+            taken += repeatClaimed(&r.window, Qt::Key_Left, Qt::ShiftModifier) ? 1 : 0;
+        const QString a3 = at();
+        check(QStringLiteral("(lr3) HELD, THEY KEEP STEPPING (answer 1): five repeats of a held Right take the playhead "
+                             "from frame 3 to 8, two of Left back to 6, two of a held Shift+Left to Bird's frames before - "
+                             "2, then 0"),
+              taken == 9 && a1 == QLatin1String("0:8") && a2 == QLatin1String("0:6") && a3 == QLatin1String("0:0"),
+              QStringLiteral("repeats taken %1 of 9; %2, %3, %4").arg(taken).arg(a1, a2, a3));
+        int downs = 0;
+        for (int i = 0; i < 3; ++i)
+            downs += repeatClaimed(&r.window, Qt::Key_Down) ? 1 : 0;
+        const int afterRepeats = sel();
+        const bool down = key(Qt::Key_Down);
+        const int afterPress = sel();
+        const bool up = key(Qt::Key_Up);
+        // (Qt's shortcut map takes the repeats of a shortcut that does not repeat and does nothing with them - first
+        // written as "taken by nothing", which failed on 3 of 3 taken with the panel unmoved: my expectation of Qt was
+        // wrong, the key was right. What matters is the panel.)
+        check(QStringLiteral("(lr3) control: Up and Down are a panel a press, as Left and Right were - their repeats move "
+                             "no panel; one press goes to the next"),
+              afterRepeats == 0 && down && afterPress == 1 && up && sel() == 0,
+              QStringLiteral("repeats taken %1, then panel %2; a press: %3 (panel %4); Up %5 (panel %6)").arg(downs)
+                  .arg(afterRepeats).arg(down).arg(afterPress).arg(up).arg(sel()));
+    }
+
+    // (lr4) A PLAYING FILM PAUSES FIRST, THEN STEPS (answer 3) - from the frame it paused on, in the preview.
+    {
+        place(0, 0);
+        QVector<QPair<int, int>> moves;
+        bool playingSeen = false;
+        QObject context;
+        QObject::connect(r.animatic, &AnimaticPage::playheadMoved, &context, [&] {
+            moves.append({r.animatic->currentFlatIndex(), r.animatic->playheadFrameInPanel()});
+            playingSeen = playingSeen || r.animatic->isPlaying();
+        });
+        r.animatic->togglePlay();
+        pump(400);
+        const bool playing = r.animatic->isPlaying() && r.animatic->previewVisible();
+        moves.clear();
+        playingSeen = false;
+        const bool taken = key(Qt::Key_Right);
+        const QPair<int, int> paused = moves.value(0, {-1, -1});
+        const QPair<int, int> stepped = moves.isEmpty() ? QPair<int, int>(-1, -1) : moves.last();
+        QPair<int, int> want(paused.first, paused.second + 1);
+        if (paused.first >= 0 && paused.first < 3 && want.second >= lengths[paused.first])
+            want = {paused.first + 1, 0};
+        const bool stillPreview = r.animatic->previewVisible(), stopped = !r.animatic->isPlaying();
+        check(QStringLiteral("(lr4) A PLAYING FILM PAUSES FIRST, THEN STEPS (answer 3): Right while it plays - it stops on a "
+                             "frame (said once, not playing) and the playhead goes one frame on from there; the preview "
+                             "stays up, the canvas's panel stays panel 1"),
+              playing && taken && stopped && stillPreview && moves.size() >= 2 && !playingSeen && stepped == want
+                  && sel() == 0,
+              QStringLiteral("playing %1, taken %2; paused on %3:%4, then %5:%6 (want %7:%8; %9 moves, playing seen %10); "
+                             "preview %11, selected %12")
+                  .arg(playing).arg(taken).arg(paused.first).arg(paused.second).arg(stepped.first).arg(stepped.second)
+                  .arg(want.first).arg(want.second).arg(moves.size()).arg(playingSeen).arg(stillPreview).arg(sel()));
+        r.animatic->togglePlay();
+        pump(150);
+        const bool playingAgain = r.animatic->isPlaying();
+        const int before = r.animatic->currentFlatIndex();
+        const bool down = key(Qt::Key_Down);
+        const bool playsOn = r.animatic->isPlaying();
+        const int after = r.animatic->currentFlatIndex();
+        QObject::disconnect(r.animatic, &AnimaticPage::playheadMoved, &context, nullptr);
+        r.animatic->leavePreview();
+        pump(200);
+        check(QStringLiteral("(lr4) control: Down while it plays is the panel key it was - the film plays on from the next "
+                             "panel; the measure sees a film that did not stop"),
+              playingAgain && down && playsOn && after == before + 1,
+              QStringLiteral("playing %1; Down %2, playing on %3, panel %4 -> %5").arg(playingAgain).arg(down).arg(playsOn)
+                  .arg(before).arg(after));
+        place(0, 0);
+    }
+
+    // (lr5) SHIFT+LEFT / SHIFT+RIGHT: the selected layer's frame before or after (answer 2).
+    {
+        r.storyboard->layerRowClickedForTest(2);
+        place(0, 3);
+        r.canvas->expireNoteForTest();
+        QStringList walk;
+        auto shift = [&](int k) {
+            const bool taken = key(k, Qt::ShiftModifier);
+            walk << QStringLiteral("%1%2").arg(taken ? QString() : QStringLiteral("(not taken) ")).arg(at());
+            return taken;
+        };
+        bool taken = shift(Qt::Key_Right) && shift(Qt::Key_Left) && shift(Qt::Key_Left);
+        r.canvas->expireNoteForTest();
+        taken = shift(Qt::Key_Left) && taken;
+        const QString first = bar();
+        const bool firstGrey = barGrey();
+        taken = shift(Qt::Key_Right) && shift(Qt::Key_Right) && taken;
+        r.canvas->expireNoteForTest();
+        taken = shift(Qt::Key_Right) && taken;
+        const QString last = bar();
+        check(QStringLiteral("(lr5) SHIFT+LEFT / SHIFT+RIGHT (answer 2): Bird's frames start at 0, 2 and 4 - from frame 3, "
+                             "Shift+Right to 4, Shift+Left to 2 and 0; at its first frame it stays and the bar says in grey "
+                             "\"Bird's first frame: nothing before it\"; on to 2 and 4, and at its last \"Bird's last frame: "
+                             "nothing after it\""),
+              runOk && taken
+                  && walk.join(QLatin1Char(' '))
+                         == QLatin1String("0:4 0:2 0:0 0:0 0:2 0:4 0:4")
+                  && first == QLatin1String("Bird's first frame: nothing before it") && firstGrey
+                  && last == QLatin1String("Bird's last frame: nothing after it"),
+              QStringLiteral("%1; '%2' (grey %3); '%4'").arg(walk.join(QLatin1Char(' ')), first).arg(firstGrey).arg(last));
+        r.storyboard->layerRowClickedForTest(1); // Ground: one frame
+        pump(80);
+        const bool k1 = key(Qt::Key_Right, Qt::ShiftModifier);
+        const int s1 = sel();
+        const bool k2 = key(Qt::Key_Left, Qt::ShiftModifier);
+        const int s2 = sel();
+        check(QStringLiteral("(lr5) control: on Ground, a layer with one frame, Shift+Right goes to the next panel and "
+                             "Shift+Left back (answer 2)"),
+              k1 && s1 == 1 && k2 && s2 == 0, QStringLiteral("%1 -> panel %2; %3 -> panel %4").arg(k1).arg(s1).arg(k2).arg(s2));
+        r.storyboard->layerRowClickedForTest(2);
+        pump(80);
+    }
+
+    // (lr6) UP AND DOWN: the panel before and after, wherever the pointer is (answer 2).
+    {
+        penOver(list->viewport(), QPointF(list->viewport()->width() / 2.0, list->viewport()->height() / 2.0));
+        place(0, 0);
+        QStringList panels;
+        bool taken = true;
+        for (int k : {Qt::Key_Down, Qt::Key_Down, Qt::Key_Up, Qt::Key_Up}) {
+            taken = key(k) && taken;
+            panels << QString::number(sel());
+        }
+        check(QStringLiteral("(lr6) UP AND DOWN (answer 2): the pen over the Layers panel, Down takes the canvas to the next "
+                             "panel - HARBOUR's 2, ISLAND's 1 - and Up back"),
+              taken && panels.join(QLatin1Char(' ')) == QLatin1String("1 2 1 0"),
+              QStringLiteral("taken %1; panels %2").arg(taken).arg(panels.join(QLatin1Char(' '))));
+        penOver(r.canvas, mid);
+        hover(r, r.animatic, false);
+        const bool endAway = key(Qt::Key_End);
+        const int s1 = sel();
+        hover(r, r.animatic, true);
+        const bool endOver = key(Qt::Key_End);
+        const int s2 = sel();
+        const bool homeOver = key(Qt::Key_Home);
+        const int s3 = sel();
+        hover(r, r.animatic, false);
+        check(QStringLiteral("(lr6) control: Home and End are as they were - the timeline's, with the pointer over it: away "
+                             "from it End is taken by nothing; over it End goes to the last panel and Home to the first"),
+              !endAway && s1 == 0 && endOver && s2 == 2 && homeOver && s3 == 0,
+              QStringLiteral("away: End %1 (panel %2); over: End %3 (panel %4), Home %5 (panel %6)").arg(endAway).arg(s1)
+                  .arg(endOver).arg(s2).arg(homeOver).arg(s3));
+    }
+
+    // (lr7) A TEXT FIELD BEING TYPED IN KEEPS THEM (answer 1).
+    {
+        QLineEdit *field = r.timeline->zoomField();
+        place(0, 5);
+        const double zoom0 = r.timeline->zoomForTest();
+        r.timeline->beginZoomEditForTest();
+        pump(80);
+        bool claimed = false, disarmed = false;
+        int cursorAfter = -1;
+        if (field) {
+            field->setText(QStringLiteral("123%"));
+            field->deselect();
+            field->setCursorPosition(2);
+            pump(40);
+            disarmed = !r.storyboard->arrowKeysArmedForTest();
+            for (const auto &[k, mods] : {std::pair{Qt::Key_Left, Qt::NoModifier}, std::pair{Qt::Key_Right, Qt::NoModifier},
+                                          std::pair{Qt::Key_Up, Qt::NoModifier}, std::pair{Qt::Key_Down, Qt::NoModifier},
+                                          std::pair{Qt::Key_Left, Qt::ShiftModifier},
+                                          std::pair{Qt::Key_Right, Qt::ShiftModifier}})
+                claimed = keyClaimed(field, k, Qt::KeyboardModifiers(mods)) || claimed;
+            pressKey(field, Qt::Key_Left);
+            cursorAfter = field->cursorPosition();
+        }
+        const QString a1 = at();
+        const int s1 = sel();
+        if (field)
+            pressKey(field, Qt::Key_Escape);
+        pump(80);
+        check(QStringLiteral("(lr7) A TEXT FIELD BEING TYPED IN KEEPS THEM: editing the timeline's zoom field, the six arrow "
+                             "keys are disarmed and no shortcut takes any; Left moves the field's cursor; the playhead and "
+                             "the panel stay"),
+              field && disarmed && !claimed && cursorAfter == 1 && a1 == QLatin1String("0:5") && s1 == 0,
+              QStringLiteral("field %1, disarmed %2, taken %3, the cursor at %4 (was 2); %5, panel %6").arg(field != nullptr)
+                  .arg(disarmed).arg(claimed).arg(cursorAfter).arg(a1).arg(s1));
+        const bool armed = r.storyboard->arrowKeysArmedForTest();
+        const bool right = key(Qt::Key_Right);
+        check(QStringLiteral("(lr7) control: the field closed (Esc), the arrows are armed again and Right is the frames'"),
+              armed && right && at() == QLatin1String("0:6") && qFuzzyCompare(r.timeline->zoomForTest(), zoom0),
+              QStringLiteral("armed %1, Right %2, %3").arg(armed).arg(right).arg(at()));
+    }
+
+    // (lr8) A SLIDER WITH THE KEYBOARD KEEPS ITS ARROWS WHILE THE POINTER IS OVER IT: the sound's volume.
+    {
+        place(0, 5);
+        penOver(r.canvas, mid);
+        speaker->click();
+        pump(200);
+        const bool open = volume->isVisible() && r.window.focusWidget() == volume;
+        const int volumeBefore = volume->value();
+        volume->setValue(50); // room to go up (the project's sound is at 100 %; put back below)
+        pump(60);
+        const int v0 = volume->value();
+        penOver(volume, QPointF(volume->width() / 2.0, volume->height() / 2.0));
+        const bool upTaken = keyClaimed(volume, Qt::Key_Up);
+        pressKey(volume, Qt::Key_Up);
+        const int v1 = volume->value();
+        const QString a1 = at();
+        const int s1 = sel();
+        check(QStringLiteral("(lr8) A SLIDER KEEPS ITS ARROWS WHILE THE POINTER IS OVER IT: the Speaker opens the volume, "
+                             "which takes the keyboard; the pen over it, Up is taken by no shortcut and goes to the volume - "
+                             "a step louder - and the panel and the frame stay"),
+              open && !upTaken && v1 == qMin(100, v0 + 1) && v0 < 100 && a1 == QLatin1String("0:5") && s1 == 0,
+              QStringLiteral("open %1 (the keyboard there), Up taken %2, the volume %3 -> %4, %5, panel %6").arg(open)
+                  .arg(upTaken).arg(v0).arg(v1).arg(a1).arg(s1));
+        penOver(r.canvas, mid);
+        const bool stillFocused = r.window.focusWidget() == volume;
+        const bool rightTaken = keyClaimed(volume, Qt::Key_Right);
+        const QString a2 = at();
+        const int v2 = volume->value();
+        check(QStringLiteral("(lr8) control: the pen over the canvas, the volume still with the keyboard - Right is the "
+                             "frames': taken, one frame on, the volume as it was"),
+              stillFocused && rightTaken && a2 == QLatin1String("0:6") && v2 == v1,
+              QStringLiteral("the keyboard at the volume %1, Right taken %2, %3, the volume %4").arg(stillFocused)
+                  .arg(rightTaken).arg(a2).arg(v2));
+        volume->setValue(volumeBefore);
+        pressKey(volume, Qt::Key_Escape);
+        pump(100);
+    }
+
+    // (bu1) THE ONION SKIN'S BULB IN THE EYE'S AND THE SPEAKER'S GREY AND LINE. Measured 32 times larger: the
+    // measure's readings come in sixteenths of a pixel there (eighths at 16 times - too coarse to tell 1.17 from 1.22).
+    constexpr int kTimes = 32;
+    {
+        const QByteArray bulbBytes =
+            SankoLightTable::bulbSvg(SankoTimelineTheme::kTrackControl, SankoLightTable::kLayerRowLine);
+        const QRectF there(5.5, 2.75, 9.0, 14.5);
+        const double bulbW = middleOf(lineWeights(drawnSvg(bulbBytes, QSizeF(20, 20), there, kTimes, false), kTimes));
+        const double eyeW = middleOf(lineWeights(
+            drawnSvg(fileBytes(QStringLiteral(":/icons/timeline/track_eye.svg")), QSizeF(16, 16), QRectF(0, 0, 16, 16), kTimes, false),
+            kTimes));
+        const double speakerW = middleOf(lineWeights(drawnSvg(fileBytes(QStringLiteral(":/icons/timeline/track_speaker.svg")),
+                                                              QSizeF(16, 16), QRectF(0, 0, 16, 16), kTimes, false),
+                                                     kTimes));
+        const double oldW = middleOf(lineWeights(
+            drawnSvg(fileBytes(SankoLightTable::kIconPath), QSizeF(20, 20), there, kTimes, false), kTimes));
+        // THE COLOUR. What the button paints (off, the pen elsewhere) is this drawing - the same bytes over its ground,
+        // pixel for pixel in the bulb's box - and the drawing's cores are #a4a7ae, the grey the Eye's icon is drawn in.
+        // (Painted four times its size it cannot be read: the bulb's mask is drawn at the painter's own scale and
+        // stretched - first tried so, its brightest pixel #a0a3aa.)
+        penOver(r.canvas, mid);
+        if (r.canvas->isOnionSkinEnabled())
+            osButton->click();
+        pump(80);
+        const QImage shown = osButton->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        const qreal dpr = shown.devicePixelRatio();
+        QImage mine(shown.size(), QImage::Format_ARGB32_Premultiplied);
+        mine.setDevicePixelRatio(dpr);
+        mine.fill(QColor(0x1c, 0x1e, 0x25));
+        {
+            QPainter p(&mine);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            if (osButton->underMouse()) { // the machine's own pointer resting there: the hover's fill, as the button
+                QColor hover(0x7c, 0x6e, 0xf6);
+                hover.setAlphaF(0.14f);
+                p.fillRect(QRectF(0, 0, 20, 20), hover);
+            }
+            QSvgRenderer renderer(bulbBytes);
+            renderer.render(&p, there);
+        }
+        const QImage mineArgb = mine.convertToFormat(QImage::Format_ARGB32);
+        int paintGap = 0;
+        for (int y = qFloor(2 * dpr); y < qCeil(18 * dpr) && y < shown.height(); ++y)
+            for (int x = qFloor(5 * dpr); x < qCeil(15 * dpr) && x < shown.width(); ++x)
+                paintGap = qMax(paintGap, sl::channelGap(QColor(shown.pixel(x, y)), QColor(mineArgb.pixel(x, y))));
+        const QColor grey = SankoTimelineTheme::kTrackControl;
+        const QImage drawn = drawnSvg(bulbBytes, QSizeF(20, 20), there, kTimes, false);
+        int cores = 0, coreGap = 0;
+        for (int y = 0; y < drawn.height(); ++y)
+            for (int x = 0; x < drawn.width(); ++x)
+                if (qAlpha(drawn.pixel(x, y)) == 255) {
+                    ++cores;
+                    coreGap = qMax(coreGap, sl::channelGap(QColor(drawn.pixel(x, y)), grey));
+                }
+        const QPair<int, int> eyeGap =
+            iconColourGap(eyeAudio->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::Off), grey);
+        const double middle = (eyeW + speakerW) / 2.0;
+        check(QStringLiteral("(bu1) THE ONION SKIN'S BULB IN THE EYE'S AND THE SPEAKER'S GREY AND LINE: the LAYER row's "
+                             "button paints this bulb (its pixels within 2 of the drawing over its ground), drawn in #a4a7ae "
+                             "- the grey the Eye's icon is drawn in (it was white); its line, measured at the size shown, "
+                             "weighs the Eye's (within 0.06 px) and the Speaker's (within 0.12), and lies within 0.05 of "
+                             "the two's middle"),
+              qAbs(bulbW - eyeW) <= 0.06 && qAbs(bulbW - speakerW) <= 0.12 && qAbs(bulbW - middle) <= 0.05
+                  && paintGap <= 2 && cores > 200 && coreGap <= 1 && eyeGap.first <= 3 && eyeGap.second > 20,
+              QStringLiteral("the bulb %1 px, the Eye %2, the Speaker %3 (their middle %4); the button against the drawing: "
+                             "farthest %5; the drawing's cores: %6 px, farthest %7 from #a4a7ae; the Eye's icon: %8 px, "
+                             "farthest %9")
+                  .arg(bulbW, 0, 'f', 3).arg(eyeW, 0, 'f', 3).arg(speakerW, 0, 'f', 3).arg(middle, 0, 'f', 3).arg(paintGap)
+                  .arg(cores).arg(coreGap).arg(eyeGap.second).arg(eyeGap.first));
+        check(QStringLiteral("(bu1) control: the measure tells the lines apart - OS-1's bulb, the file's own line drawn "
+                             "there, reads more than 0.06 px from the Eye's"),
+              qAbs(oldW - eyeW) > 0.06, QStringLiteral("OS-1's %1 px, the Eye %2").arg(oldW, 0, 'f', 3).arg(eyeW, 0, 'f', 3));
+    }
+
+    // (bu2) THE LIGHT TABLE'S BULB IN DUPLICATE'S AND DELETE'S GREY AND LINE, ITS PROPORTIONS KEPT.
+    {
+        auto bucket = [](QAbstractButton *b) {
+            const QSize s = b->iconSize();
+            return QSize(qMax(2, (s.width() / 2) * 2), qMax(2, (s.height() / 2) * 2)); // stripIconPixmap's
+        };
+        const QSize ltBox = bucket(ltButton), dupBox = bucket(dupButton), delBox = bucket(delButton);
+        const QByteArray bulbBytes = SankoLightTable::bulbSvg(SankoLightTable::kStripColor, SankoLightTable::kStripLine);
+        const QImage bulbDrawn = drawnSvg(bulbBytes, QSizeF(ltBox), QRectF(QPointF(0, 0), QSizeF(ltBox)), kTimes, true);
+        const double bulbW = middleOf(lineWeights(bulbDrawn, kTimes));
+        const double dupW = middleOf(lineWeights(drawnSvg(fileBytes(QStringLiteral(":/icons/duplicate.svg")), QSizeF(dupBox),
+                                                          QRectF(QPointF(0, 0), QSizeF(dupBox)), kTimes, false),
+                                                 kTimes));
+        const double delW = middleOf(lineWeights(drawnSvg(fileBytes(QStringLiteral(":/icons/delete.svg")), QSizeF(delBox),
+                                                          QRectF(QPointF(0, 0), QSizeF(delBox)), kTimes, false),
+                                                 kTimes));
+        const double both = (dupW + delW) / 2.0;
+        const QRectF box = inkBox(bulbDrawn, kTimes);
+        const double outline = 12.2502 / 20.125; // the bulb's outline in the file, width to height
+        const double aspect = box.isEmpty() ? 0.0 : box.width() / box.height();
+        const QRectF stretched =
+            inkBox(drawnSvg(fileBytes(SankoLightTable::kIconPath), QSizeF(ltBox), QRectF(QPointF(0, 0), QSizeF(ltBox)), kTimes,
+                            false),
+                   kTimes);
+        const double stretchedAspect = stretched.isEmpty() ? 0.0 : stretched.width() / stretched.height();
+        const QColor stripGrey(0xcc, 0xcc, 0xcc);
+        // The button's own icon is this drawing: the same bytes, proportions kept, in its box - pixel for pixel.
+        const QImage shownIcon =
+            ltButton->icon().pixmap(ltButton->iconSize()).toImage().convertToFormat(QImage::Format_ARGB32);
+        int iconGap = 255;
+        {
+            const qreal dpr = shownIcon.devicePixelRatio();
+            QImage mine(shownIcon.size(), QImage::Format_ARGB32_Premultiplied);
+            mine.setDevicePixelRatio(dpr);
+            mine.fill(Qt::transparent);
+            QPainter p(&mine);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            QSvgRenderer renderer(bulbBytes);
+            renderer.setAspectRatioMode(Qt::KeepAspectRatio);
+            renderer.render(&p, QRectF(QPointF(0, 0), QSizeF(ltBox)));
+            p.end();
+            const QImage mineArgb = mine.convertToFormat(QImage::Format_ARGB32);
+            if (shownIcon.size() == QSize(qRound(ltBox.width() * dpr), qRound(ltBox.height() * dpr))) {
+                iconGap = 0;
+                for (int y = 0; y < shownIcon.height(); ++y)
+                    for (int x = 0; x < shownIcon.width(); ++x) {
+                        const QRgb a = shownIcon.pixel(x, y), b = mineArgb.pixel(x, y);
+                        iconGap = qMax(iconGap, qAbs(qAlpha(a) - qAlpha(b)));
+                        if (qAlpha(a) >= 64 || qAlpha(b) >= 64)
+                            iconGap = qMax(iconGap, sl::channelGap(QColor(a), QColor(b)));
+                    }
+            }
+        }
+        const QPair<int, int> ltGap = iconColourGap(ltButton->icon().pixmap(ltButton->iconSize()), stripGrey);
+        const QPair<int, int> dupGap = iconColourGap(dupButton->icon().pixmap(dupButton->iconSize()), stripGrey);
+        const QPair<int, int> delGap = iconColourGap(delButton->icon().pixmap(delButton->iconSize()), stripGrey);
+        check(QStringLiteral("(bu2) THE LIGHT TABLE'S BULB IN DUPLICATE'S AND DELETE'S GREY AND LINE: the strip's button "
+                             "shows this drawing (its icon within 2 of it, pixel for pixel), drawn in #cccccc as theirs are "
+                             "(it was white); its line, measured at the size shown, weighs theirs - within 0.05 px of the "
+                             "two's middle and 0.12 of each; its proportions are its outline's, 12.25 to 20.125, in the box"),
+              iconGap <= 2 && qAbs(bulbW - both) <= 0.05 && qAbs(bulbW - dupW) <= 0.12 && qAbs(bulbW - delW) <= 0.12
+                  && ltGap.first <= 3 && ltGap.second > 20 && dupGap.first <= 3 && delGap.first <= 3
+                  && qAbs(aspect - outline) <= 0.012,
+              QStringLiteral("the button's icon against the drawing: farthest %20; "
+                             "the bulb %1 px, Duplicate %2, Delete %3 (boxes %4x%5, %6x%7, %8x%9); colours: the bulb %10 px "
+                             "farthest %11, Duplicate %12 / %13, Delete %14 / %15; drawn %16 x %17, %18 (the outline %19)")
+                  .arg(bulbW, 0, 'f', 3).arg(dupW, 0, 'f', 3).arg(delW, 0, 'f', 3).arg(ltBox.width()).arg(ltBox.height())
+                  .arg(dupBox.width()).arg(dupBox.height()).arg(delBox.width()).arg(delBox.height()).arg(ltGap.second)
+                  .arg(ltGap.first).arg(dupGap.second).arg(dupGap.first).arg(delGap.second).arg(delGap.first)
+                  .arg(box.width(), 0, 'f', 2).arg(box.height(), 0, 'f', 2).arg(aspect, 0, 'f', 3).arg(outline, 0, 'f', 3)
+                  .arg(iconGap));
+        check(QStringLiteral("(bu2) control: OS-1's way - the file stretched to the box - is not the outline's proportions "
+                             "(the measure sees a bulb pulled out of shape)"),
+              qAbs(stretchedAspect - outline) > 0.04,
+              QStringLiteral("stretched %1 (the outline %2)").arg(stretchedAspect, 0, 'f', 3).arg(outline, 0, 'f', 3));
+    }
+
+    // (bu3) THE SHAPE IS THE USER'S: only the line inside the outline changes.
+    {
+        const QRectF there(5.5, 2.75, 9.0, 14.5);
+        const QImage file = drawnSvg(fileBytes(SankoLightTable::kIconPath), QSizeF(20, 20), there, kTimes, false);
+        const QImage same = drawnSvg(SankoLightTable::bulbSvg(QColor(0xcc, 0xcc, 0xcc), SankoLightTable::kFileLine),
+                                     QSizeF(20, 20), there, kTimes, false);
+        const QImage now = drawnSvg(SankoLightTable::bulbSvg(SankoTimelineTheme::kTrackControl, SankoLightTable::kLayerRowLine),
+                                    QSizeF(20, 20), there, kTimes, false);
+        auto differing = [](const QImage &a, const QImage &b) {
+            int n = 0, ink = 0;
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x) {
+                    const int aa = qAlpha(a.pixel(x, y)), ba = qAlpha(b.pixel(x, y));
+                    ink += qMax(aa, ba) >= 128 ? 1 : 0;
+                    n += qAbs(aa - ba) > 32 ? 1 : 0;
+                }
+            return QPair<int, int>(n, ink);
+        };
+        const QPair<int, int> sameDiff = differing(file, same), nowDiff = differing(file, now);
+        // Where two differ, as ink: the line measure's heaviest reading over it is the thickest sliver.
+        auto slivers = [&](const QImage &a, const QImage &b) {
+            QImage m(a.size(), QImage::Format_ARGB32);
+            m.fill(Qt::transparent);
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x)
+                    if (qAbs(qAlpha(a.pixel(x, y)) - qAlpha(b.pixel(x, y))) > 32)
+                        m.setPixel(x, y, qRgba(0, 0, 0, 255));
+            const QList<double> r = lineWeights(m, kTimes);
+            return r.isEmpty() ? 0.0 : r.last();
+        };
+        const double thickestSame = slivers(file, same), thickestNow = slivers(file, now);
+        const double fileW = middleOf(lineWeights(file, kTimes)), sameW = middleOf(lineWeights(same, kTimes));
+        file.save(dir + QStringLiteral("/bu3_file.png"));
+        same.save(dir + QStringLiteral("/bu3_same.png"));
+        now.save(dir + QStringLiteral("/bu3_now.png"));
+        const QRectF fileBox = inkBox(file, kTimes), nowBox = inkBox(now, kTimes);
+        auto boxText = [](const QRectF &b) {
+            return QStringLiteral("%1,%2 to %3,%4").arg(b.left(), 0, 'f', 2).arg(b.top(), 0, 'f', 2).arg(b.right(), 0, 'f', 2)
+                .arg(b.bottom(), 0, 'f', 2);
+        };
+        const bool sameBox = qAbs(fileBox.left() - nowBox.left()) <= 0.1 && qAbs(fileBox.top() - nowBox.top()) <= 0.1
+            && qAbs(fileBox.right() - nowBox.right()) <= 0.1 && qAbs(fileBox.bottom() - nowBox.bottom()) <= 0.1;
+        // (First written as "no more than 0.5 % of its ink differs", which failed on 3.4 %, then 2.3 %. Read: the two
+        // strokes masked one by one drew the base's top edge twice - fixed in bulbSvg, one path; what is left are slivers
+        // along the inside of the top's curve, where Qt's stroke rounds the curve's offset and Figma's outline, exported,
+        // has its own. So the measure is now of what the eye can see: their thickness, and the line's weight.)
+        check(QStringLiteral("(bu3) THE SHAPE IS YOUR FIGMA 749:892's: drawn with the file's own line, the new drawing reads "
+                             "the file's line (within 0.02 px) and differs from the file's picture only in slivers thinner "
+                             "than an eighth of a pixel at the size shown (along the inside of the top's curve); with the "
+                             "LAYER row's line its outline lies in the same box, within 0.1 px"),
+              sameDiff.second > 0 && qAbs(sameW - fileW) <= 0.02 && thickestSame <= 0.125 && sameBox,
+              QStringLiteral("the file's line: reads %1 px (the file %2), %3 differing of %4 ink px, the thickest sliver %5 "
+                             "px; the LAYER row's: the box %6 (the file's %7)")
+                  .arg(sameW, 0, 'f', 3).arg(fileW, 0, 'f', 3).arg(sameDiff.first).arg(sameDiff.second)
+                  .arg(thickestSame, 0, 'f', 3).arg(boxText(nowBox), boxText(fileBox)));
+        check(QStringLiteral("(bu3) control: the sliver measure sees a line change - the LAYER row's heavier line differs "
+                             "from the file's picture in a band thicker than an eighth of a pixel"),
+              thickestNow > 0.125,
+              QStringLiteral("the thickest %1 px; %2 differing of %3 ink px").arg(thickestNow, 0, 'f', 3)
+                  .arg(nowDiff.first).arg(nowDiff.second));
+    }
+
+    // The pictures for the report: each bulb beside its neighbours, off and on (put together four times larger outside).
+    {
+        penOver(r.canvas, mid);
+        const int labelW = AnimaticTimeline::labelColumnWidthForTest();
+        const int top = osButton->geometry().top() - 6, bottom = eyeAudio->geometry().bottom() + 6;
+        const QRect rows(0, top, labelW, bottom - top);
+        if (r.canvas->isOnionSkinEnabled())
+            osButton->click();
+        pump(120);
+        r.surface->grab(rows).save(dir + QStringLiteral("/look_layer_off.png"));
+        osButton->click();
+        pump(150);
+        r.surface->grab(rows).save(dir + QStringLiteral("/look_layer_on.png"));
+        osButton->click();
+        pump(120);
+        QWidget *column = ltButton->parentWidget();
+        column->grab().save(dir + QStringLiteral("/look_strip_off.png"));
+        ltButton->click();
+        pump(150);
+        column->grab().save(dir + QStringLiteral("/look_strip_on.png"));
+        ltButton->click();
+        pump(120);
+    }
+
+    if (r.canvas->isOnionSkinEnabled())
+        osButton->click();
+    if (r.storyboard->isLightTableOn())
+        ltButton->click();
+    sankoSettings().remove(SankoOnionSkin::switchKey());
+    sankoSettings().remove(SankoLightTable::switchKey());
+    r.storyboard->setPointerDeviceForTest(-1);
     r.window.markCleanForTest();
 }
 
@@ -44876,6 +45757,14 @@ int main(int argc, char **argv)
               << Qt::endl;
         return g_failures;
     }
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("lr")) {
+        runLrPass(scratch); // the arrows and the bulbs' grey and line (the user's word after hand test OS1, 2026-11-27)
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("os")) {
         runOsPass(scratch); // OS-1: the Light Table and the Onion Skin, each its own switch (2026-11-27)
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
@@ -45201,6 +46090,7 @@ int main(int argc, char **argv)
     runI2bPass(scratch);          // batch I-2 after hand test I2-1: the user's notes 2 to 8 (2026-11-26)
     runSlidersPass(scratch);      // the sliders round: Preferences' sliders, "frame", FRAMES (2026-11-27)
     runOsPass(scratch);           // OS-1: the Light Table for panels, the Onion Skin for frames (2026-11-27)
+    runLrPass(scratch);           // the arrows; the bulbs in their neighbours' grey and line (2026-11-27)
     runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);

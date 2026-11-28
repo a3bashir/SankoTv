@@ -2621,6 +2621,34 @@ void AnimaticPage::goNext()
                                    (m_current < 0 ? 0 : m_current) + 1));
 }
 
+// One frame on from the playhead, or back: past a panel's last frame the next panel's first,
+// before its first the previous panel's last - every panel at least one frame long, so the
+// walk ends.
+bool AnimaticPage::frameFromPlayhead(int delta, int *flatIndex, int *frameInPanel) const
+{
+    if (m_items.isEmpty() || !flatIndex || !frameInPanel)
+        return false;
+    const int fps = projectFps();
+    auto framesOf = [&](int flat) { return qMax(1, shotcam::panelFrames(*m_items.at(flat).panel, fps)); };
+    int flat = qBound(0, m_current, int(m_items.size()) - 1);
+    int frame = (m_current < 0 ? 0 : playheadFrameInPanel()) + delta;
+    while (frame < 0) {
+        if (flat == 0)
+            return false; // the film's first frame
+        --flat;
+        frame += framesOf(flat);
+    }
+    while (frame >= framesOf(flat)) {
+        if (flat + 1 >= m_items.size())
+            return false; // the film's last frame
+        frame -= framesOf(flat);
+        ++flat;
+    }
+    *flatIndex = flat;
+    *frameInPanel = frame;
+    return true;
+}
+
 // --- Audio ----------------------------------------------------------------
 
 namespace {
